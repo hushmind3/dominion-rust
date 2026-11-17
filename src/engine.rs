@@ -888,7 +888,7 @@ impl Engine {
                 Ok(installed)
             } else if call.name == "read_program" {
                 let current=self.store.get(id).await.ok_or("read_program run not found")?;
-                crate::read_program::execute(&self.settings,&current,&call.arguments).await
+                crate::read_program::execute_with_hooks(&self.settings,&current,&call.arguments,chain.clone()).await
             } else if call.name == "compare_strategies" {
                 self.start_strategy_trials(id,&call.arguments).await
             } else if call.name == "spawn_subagent" {
