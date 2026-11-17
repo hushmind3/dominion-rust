@@ -59,6 +59,8 @@ async fn coding_fixture_repairs_two_files_after_missing_path_feedback(){
     });
     let root=std::env::temp_dir().join(format!("dominion-coding-matrix-{}",Uuid::new_v4()));
     let mut settings=Settings::from_env().unwrap();
+        settings.separate_plan_model_call=true;
+        settings.separate_model_audit_enabled=true;
     settings.data_dir=root.join("data");
     settings.workspace_dir=root.join("workspace");
     settings.main.base_url=format!("http://{address}");
@@ -110,6 +112,8 @@ async fn coding_fixture_repairs_two_files_after_missing_path_feedback(){
 async fn connected_github_commit_requires_approval_before_external_dispatch(){
     let root=std::env::temp_dir().join(format!("dominion-github-approval-{}",Uuid::new_v4()));
     let mut settings=Settings::from_env().unwrap();
+        settings.separate_plan_model_call=true;
+        settings.separate_model_audit_enabled=true;
     settings.data_dir=root.join("data");
     settings.workspace_dir=root.join("workspace");
     let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
@@ -164,6 +168,8 @@ async fn github_pr_and_google_docs_mutations_require_approval_before_external_ne
  ]{
   let root=std::env::temp_dir().join(format!("dominion-connection-approval-{}",Uuid::new_v4()));
   let mut settings=Settings::from_env().unwrap();
+        settings.separate_plan_model_call=true;
+        settings.separate_model_audit_enabled=true;
   settings.data_dir=root.join("data");settings.workspace_dir=root.join("workspace");
   let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
   let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
@@ -231,6 +237,8 @@ async fn strategy_trial_two_real_workers_share_base_and_settle_before_comparison
     });
     let root=std::env::temp_dir().join(format!("dominion-strategy-end2end-{}",Uuid::new_v4()));
     let mut settings=Settings::from_env().unwrap();
+        settings.separate_plan_model_call=true;
+        settings.separate_model_audit_enabled=true;
     settings.data_dir=root.join("data");
     settings.workspace_dir=root.join("workspace");
     settings.main.base_url=format!("http://{address}");
