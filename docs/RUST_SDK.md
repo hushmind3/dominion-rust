@@ -107,3 +107,7 @@ The Money HTTP adapter exposes `POST /api/money/candidates/{id}/implement` (also
 Use `GET /api/v1/runs/{id}` to read status and cost; `POST /api/v1/runs/{id}/cancel` for cancellation and `POST /api/v1/runs/{id}/approval` for exact-tool confirmation. An absent or corrupt prior Run receipt blocks automatic re-launch. No customers are contacted or payments initiated merely by selecting a research candidate.
 
 Native SDK parity: `Dominion::money_implement(candidate_id,agent_id,budget_krw,approved)` forwards to the **same** idempotent user-approved handoff as the REST endpoint. The TypeScript SDK uses `sdk.money.implement(id,{approved:true,agentId,budgetKrw})`; neither adapter invents a Money-only execution loop.
+
+### Inert domain-approved Run reservation
+
+`Dominion::reserve_unlaunched_run` is an internal helper shared with the Money adapter, not a new runner. It constructs a configured normal Run under the common SDK but persists it as `Paused` with the `reserved_unlaunched` event. The domain then saves an approval link and calls the existing `Engine::launch`. The ordinary public `prepare_run`, `submit`, `resume`, `cancel` and `reconcile` contracts remain unchanged for other SDK consumers. The Money UI resumes paused tasks via the native `/api/v1/runs/{id}/resume` route; an interrupted mutating operation remains blocked until reconciliation as before.

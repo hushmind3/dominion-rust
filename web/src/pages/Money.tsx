@@ -103,9 +103,8 @@ export function MoneyPage(){
   if(busy)return
   setError('');setBusy('implement')
   try{
-   await post('/api/money/candidates/'+encodeURIComponent(id)+'/implement',{
-    approved:true,agentId,budgetKrw
-   })
+   // Resume the SAME native Run; native journal rejects unresolved effects.
+   await post('/api/v1/runs/'+encodeURIComponent(id)+'/resume',{})
    await refresh()
   }catch(e){setError((e as Error).message)}
   finally{setBusy('')}
@@ -257,7 +256,7 @@ export function MoneyPage(){
        실행·승인 상세 보기
       </a>
       {implementationRuns[lead.implementationRunId]?.status==='paused'&&
-       <button type="button" disabled={!!busy} onClick={()=>void resumeImplementation(lead.id)}
+       <button type="button" disabled={!!busy} onClick={()=>void resumeImplementation(lead.implementationRunId!)}
         className="text-[11px] font-semibold text-[#A75835]">기존 승인 작업 재개</button>}
       {['queued','running','awaiting_approval','paused'].includes(implementationRuns[lead.implementationRunId]?.status||'')&&
        <button type="button" disabled={!!busy} onClick={()=>void cancelImplementation(lead.implementationRunId!)}

@@ -14,7 +14,7 @@ fn git_path_argument(path:&Path)->Result<String,String>{
     #[cfg(windows)]
     {
         if let Some(rest)=raw.strip_prefix(r"\\?\"){
-            if let Some(unc)=rest.strip_prefix("UNC\"){
+            if let Some(unc)=rest.strip_prefix(r"UNC\"){
                 return Ok(format!(r"\\{}",unc));
             }
             return Ok(rest.to_owned());

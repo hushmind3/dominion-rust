@@ -41,3 +41,7 @@ Mac/Windows CI has been reorganized to run each platform's Rust checks, plus one
 ## Release-only build gate
 
 The Windows/macOS platform workflow and manual smoke workflow are `workflow_dispatch` only. Ordinary `dominion-sub4` pushes do not trigger build/check, web/frontend, browser, soak or integration workflows. This follows the owner's instruction to defer release validation. Source-only changes are not reported as passing platform tests.
+
+### Crash-safe cross-store implementation approval
+
+The owner-approved implementation flow now reserves a paused native Run, updates the existing candidate's Run ID (requiring an actual affected SQLite row), and only then launches the common harness. A crash before the candidate write never auto-starts the orphaned Run; a crash after that write allows re-entry through the same approved ID. The candidate's native execution Run remains retrievable independently through the standard SDK and HTTP API. The UI shows original native run status, cost and a resume action, not a separate Money worker or billing loop. This is source code behavior awaiting relevant development-profile test observation.
