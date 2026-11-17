@@ -1,4 +1,4 @@
-use crate::{mcp::{McpCallOutcome,McpProgress},hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
+use crate::{program_session,mcp::{McpCallOutcome,McpProgress},hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::{HashMap,HashSet}, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
@@ -20,7 +20,7 @@ mod benchmark_tests;
 #[cfg(test)]
 mod model_only_tests;
 
-const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If independent workspace inspection is needed, prefer a bounded read_program with conditions over repeated model turns. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests and examine actual receipts before reporting completion. Finish only when the request is materially done, explaining remaining limitations.";
+const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. For independent workspace inspection use bounded read_program; for connected local read/edit/write steps use run_program so the Rust journal executes without intermediate model turns. The latter must be the only call in its turn, and never bypasses shell approval. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests and examine actual receipts before reporting completion. Finish only when the request is materially done, explaining remaining limitations.";
 pub struct Engine {
     pub settings: Settings,
     pub store: Arc<Store>,
@@ -374,6 +374,14 @@ impl Engine {
                 } else {
                     self.store.mutate(id,|run|journal::deny(run,&pending)).await?;
                 }
+                continue;
+            }
+            // Continue a previously installed model-authored program using
+            // its original Run, durable queue and tool-approval gateway.
+            // Never ask the model between dependent native tool receipts.
+            if run.program_session.is_some() && run.queued_calls.is_empty()
+                && run.in_flight.is_none() && run.read_batch_in_flight.is_empty(){
+                self.store.mutate(id,|state|program_session::advance(state,&self.settings)).await?;
                 continue;
             }
             // Codex/DeepSeek-style concurrency: pure inspection calls are
@@ -871,6 +879,13 @@ impl Engine {
                         Err(reason)
                     }
                 }
+            } else if call.name == "run_program" {
+                let mut installed=String::new();
+                self.store.mutate(id,|state|{
+                    installed=program_session::install(state,&call,&self.settings)?;
+                    Ok(())
+                }).await?;
+                Ok(installed)
             } else if call.name == "read_program" {
                 let current=self.store.get(id).await.ok_or("read_program run not found")?;
                 crate::read_program::execute(&self.settings,&current,&call.arguments).await
