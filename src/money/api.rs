@@ -286,6 +286,8 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/money/inference/cancel",post(cancel))
         .route("/money/candidates",get(list_candidates))
         .route("/money/candidates/{id}/decision",post(candidate_decision))
+        .route("/money/candidates/{id}/prices",get(candidate_prices))
+        .route("/money/candidates/{id}/price-compare",post(compare_price))
         .route("/money/candidates/{id}/reject",post(reject))
         .route("/money/candidates/{id}/implement",post(implement))
 }
@@ -311,6 +313,17 @@ pub async fn native_candidates(engine:&Arc<Engine>,status:&str,query:&str,
     input.insert("offset".to_string(),offset.to_string());
     list_candidates(State(Arc::clone(engine)),Query(input)).await.map(|Json(record)|record)
         .map_err(|(_,Json(body))|body["error"].as_str().unwrap_or("Money candidate archive failed").to_owned())
+}
+pub async fn native_compare_price(engine:&Arc<Engine>,id:&str,
+    input:Value)->Result<Value,String>{
+    compare_price(State(Arc::clone(engine)),Path(id.to_owned()),Json(input))
+        .await.map(|Json(value)|value).map_err(|(_,Json(body))|
+        body["error"].as_str().unwrap_or("Price comparison failed").to_owned())
+}
+pub async fn native_price_history(engine:&Arc<Engine>,id:&str)->Result<Value,String>{
+    candidate_prices(State(Arc::clone(engine)),Path(id.to_owned()))
+        .await.map(|Json(value)|value).map_err(|(_,Json(body))|
+        body["error"].as_str().unwrap_or("Price history failed").to_owned())
 }
 pub async fn native_decide_candidate(engine:&Arc<Engine>,id:&str,action:&str,
     reason:&str)->Result<Value,String>{
@@ -428,6 +441,21 @@ pub async fn candidate_decision(State(engine):State<Arc<Engine>>,
     let root=engine.settings.data_dir.clone();
     let (action,reason)=(action.to_owned(),reason.to_owned());
     blocking(move||super::decide_candidate(&root,&id,&action,&reason)).await.map(Json)
+}
+/// Owner-entered amounts are recorded as assumptions, never source-verified
+/// deal prices. Saving an incomplete comparison is allowed for later review.
+pub async fn compare_price(State(engine):State<Arc<Engine>>,
+    Path(id):Path<String>,Json(body):Json<Value>)->Result<Json<Value>,Fault>{
+    let _lock=FIND_LOCK.lock().await;
+    require_enabled(&engine).await?;
+    let root=engine.settings.data_dir.clone();
+    blocking(move||super::pricing::compare_and_store(&root,&id,&body)).await.map(Json)
+}
+pub async fn candidate_prices(State(engine):State<Arc<Engine>>,
+    Path(id):Path<String>)->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
+    let root=engine.settings.data_dir.clone();
+    blocking(move||super::pricing::comparisons(&root,&id)).await.map(Json)
 }
 pub async fn reject(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{

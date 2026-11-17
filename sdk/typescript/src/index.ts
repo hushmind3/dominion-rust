@@ -239,6 +239,15 @@ export class Dominion {
       return this.request<{items:MoneyDraft[];hasMore:boolean;nextOffset:number}>(
         'GET','/money/candidates'+(params.size?'?'+params.toString():''));
     },
+    priceHistory:(id:string)=>this.request<Array<{
+      id:string;status:string;spreadKrw:number|null;issues:string[];
+      tradeVerified:false;sourceChecks:Record<string,unknown>}>>(
+        'GET','/money/candidates/'+encodeURIComponent(id)+'/prices'),
+    comparePrice:(id:string,input:{buyer:Record<string,unknown>;
+      supplier:Record<string,unknown>;costs:Record<string,unknown>;fxAsOf?:string})=>
+      this.request<{id:string;status:string;spreadKrw:number|null;issues:string[];
+        tradeVerified:false;sourceChecks:Record<string,unknown>}>(
+        'POST','/money/candidates/'+encodeURIComponent(id)+'/price-compare',input),
     decide:(id:string,action:'hold'|'restore'|'reject',reason='')=>
       this.request<MoneyDraft>('POST','/money/candidates/'+encodeURIComponent(id)+'/decision',{action,reason}),
     settings:()=>this.request<{enabled:boolean}>('GET','/money/settings'),

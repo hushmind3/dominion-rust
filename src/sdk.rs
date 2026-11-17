@@ -286,6 +286,14 @@ impl Dominion {
         reason:&str)->Result<Value,String>{
         crate::money::api::native_decide_candidate(&self.engine,id,action,reason).await
     }
+    /// Price calculations are owner assumptions with original-source pointers,
+    /// stored under the same optional Money domain. They never call a model.
+    pub async fn money_compare_price(&self,id:&str,input:Value)->Result<Value,String>{
+        crate::money::api::native_compare_price(&self.engine,id,input).await
+    }
+    pub async fn money_price_history(&self,id:&str)->Result<Value,String>{
+        crate::money::api::native_price_history(&self.engine,id).await
+    }
     pub async fn money_latest(&self)->Result<Value,String>{
         crate::money::api::native_latest(&self.engine).await
     }
