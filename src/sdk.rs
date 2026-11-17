@@ -254,6 +254,20 @@ impl Dominion {
     pub async fn remember(&self,scope:&str,title:&str,content:&str)->Result<crate::knowledge::MemoryEntry,String>{
         self.engine.knowledge.remember(scope,title,content).await
     }
+    /// Market observations remain separate from native Run receipts.
+    pub async fn money_latest(&self)->Result<Value,String>{
+        let root=self.engine.settings.data_dir.clone();
+        tokio::task::spawn_blocking(move||crate::money::latest(&root))
+            .await.map_err(|e|e.to_string())?
+    }
+    pub async fn money_signals(&self,limit:usize)->Result<Vec<Value>,String>{
+        let root=self.engine.settings.data_dir.clone();
+        tokio::task::spawn_blocking(move||crate::money::signals(&root,limit))
+            .await.map_err(|e|e.to_string())?
+    }
+    pub async fn money_collect(&self,force:bool)->Result<Value,String>{
+        crate::money::sources::collect(&self.engine.settings.data_dir,force).await
+    }
     pub async fn search_memory(&self,scope:&str,query:&str)->Vec<crate::knowledge::MemoryEntry>{
         self.engine.knowledge.search(scope,query,20).await
     }

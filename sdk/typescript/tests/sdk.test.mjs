@@ -195,3 +195,22 @@ test('SDK wait timeout cancels an idle event subscription',async()=>{
    e=>e instanceof DominionError && e.status===408);
  assert.equal(cancellations,1);
 });
+
+test('Money discovery shares the authenticated native Rust API',async()=>{
+ const calls=[];
+ const sdk=new Dominion({token:'research-token',fetch:async(url,options)=>{
+  calls.push({url,options});
+  return new Response(JSON.stringify({drafts:[],modelCalls:0,signals:0,candidates:0}),{status:200});
+ }});
+ await sdk.money.latest();
+ await sdk.money.find({mode:'db'});
+ await sdk.money.find({mode:'agent',agentId:'research',budgetKrw:100});
+ await sdk.money.collect(true);
+ await sdk.money.automation(false);
+ assert.equal(calls.length,5);
+ assert.ok(calls.every(({options})=>options.headers.Authorization==='Bearer research-token'));
+ assert.ok(calls[0].url.endsWith('/api/v1/money/find'));
+ assert.equal(JSON.parse(calls[2].options.body).agentId,'research');
+ assert.equal(JSON.parse(calls[3].options.body).force,true);
+ assert.equal(JSON.parse(calls[4].options.body).enabled,false);
+});
