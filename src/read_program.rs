@@ -561,6 +561,33 @@ mod tests{
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]
+    async fn partial_nested_source_failure_is_not_a_false_success_receipt(){
+        let mut settings=Settings::from_env().unwrap();
+        let root=std::env::temp_dir().join(format!("dominion-typed-partial-{}",Uuid::new_v4()));
+        settings.workspace_dir=root.clone();
+        let run=example();
+        let dir=root.join(run.id.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("real.rs"),"available\n").await.unwrap();
+        let program=parse(&json!({"steps":[
+            {"id":"files","tool":"list_files","arguments":{"path":""}},
+            {"id":"sources","tool":"read_listed_files","from":"files","max_files":2}
+        ]}),&run,&settings).unwrap();
+        let step=&program.steps[1];
+        let (result,count)=read_many(&settings,run.id,
+            "[\"real.rs\",\"deleted.rs\"]",step).await;
+        assert_eq!(count,2);
+        let receipt=receive(step,result,count,1);
+        assert_eq!(receipt.status,"error");
+        assert_eq!(receipt.calls,2);
+        assert_eq!(receipt.failures,1);
+        let condition=Guard{source:"sources".into(),status:"ok".into(),
+            contains:Some("available".into()),negate:false};
+        assert!(!guard_condition(&condition,&receipt),
+            "partial failed source inspection cannot become success evidence");
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
     async fn prohibited_nested_side_effects_fail_before_any_dispatch(){
         let settings=Settings::from_env().unwrap();
         let run=example();
