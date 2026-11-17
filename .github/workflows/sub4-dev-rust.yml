@@ -21,6 +21,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Model-authored program cursor, typed receipts, policy and crash recovery (dev profile)
         run: cargo test --lib program_session::tests
+      - name: Programmatic native shell remains approval-gated (dev profile)
+        run: cargo test --lib programmatic_shell_step_cannot_skip_existing_human_approval
       - name: Mixed write/search/read/edit/verify via one native Run journal (dev profile)
         run: cargo test --lib programmatic_tool_calls_write_edit_search_verify_via_existing_journal
       - name: Shared typed IR and strict observation binding semantics (dev profile)
