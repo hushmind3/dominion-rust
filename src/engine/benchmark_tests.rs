@@ -539,3 +539,88 @@ async fn programmatic_tool_calls_write_edit_search_verify_via_existing_journal()
     server.abort();
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+
+async fn approval_program_mock(State(counter):State<Arc<AtomicUsize>>,
+    Json(_request):Json<Value>)->Json<Value>{
+    let round=counter.fetch_add(1,Ordering::SeqCst);
+    let message=match round{
+        0=>json!({"role":"assistant","content":null,"tool_calls":[{
+            "id":"approval-program","type":"function","function":{
+                "name":"run_program","arguments":json!({"steps":[
+                    {"id":"command","tool":"shell",
+                        "arguments":{"command":"touch forbidden-by-approval.txt"}}
+                ]}).to_string()
+            }
+        }]}),
+        _=>json!({"role":"assistant","content":
+            "Approval was denied; the shell command was not executed."})
+    };
+    Json(json!({"choices":[{"message":message}],
+        "usage":{"prompt_tokens":18,"completion_tokens":5}}))
+}
+#[tokio::test]
+async fn programmatic_shell_step_cannot_skip_existing_human_approval(){
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address=listener.local_addr().unwrap();
+    let turns=Arc::new(AtomicUsize::new(0));
+    let fixture=tokio::spawn({
+        let count=Arc::clone(&turns);
+        async move{
+            axum::serve(listener,Router::new()
+                .route("/chat/completions",post(approval_program_mock))
+                .with_state(count)).await.unwrap();
+        }
+    });
+    let root=std::env::temp_dir().join(format!("dominion-program-approval-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    settings.main.base_url=format!("http://{address}");
+    settings.main.api_key.clear();
+    settings.economy=settings.main.clone();
+    settings.shell_enabled=true;
+    settings.separate_plan_model_call=false;
+    settings.separate_model_audit_enabled=false;
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+    let engine=Engine::new(settings.clone(),store.clone(),groups).unwrap();
+    let run=Run::new(CreateRun{instruction:"Propose a shell command".into(),
+        budget_krw:Some(500.0),max_steps:Some(5)},5).unwrap();
+    let id=run.id;
+    store.put(run).await.unwrap();
+    engine.launch(id).await.unwrap();
+    let mut approval=None;
+    for _ in 0..120 {
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let state=store.get(id).await.unwrap();
+        if state.status==RunStatus::AwaitingApproval {approval=Some(state);break;}
+    }
+    let awaiting=approval.expect("shell program step must wait for owner");
+    assert_eq!(awaiting.pending_approval.as_ref().unwrap().name,"shell");
+    assert!(awaiting.program_session.is_some());
+    assert_eq!(awaiting.events.iter()
+        .filter(|ev|ev.kind=="tool_started"
+            &&ev.detail.as_ref().is_some_and(|d|d["name"]=="shell")).count(),0);
+    assert!(tokio::fs::metadata(settings.workspace_dir.join(id.to_string())
+        .join("forbidden-by-approval.txt")).await.is_err());
+    engine.approve(id,false).await.unwrap();
+    let mut completed=None;
+    for _ in 0..120 {
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let state=store.get(id).await.unwrap();
+        if state.terminal(){completed=Some(state);break;}
+    }
+    let state=completed.expect("rejected program step did not settle");
+    assert_eq!(state.status,RunStatus::Completed);
+    assert!(state.events.iter().any(|ev|ev.kind=="tool_denied"));
+    assert!(state.events.iter().any(|ev|ev.kind=="program_stopped"));
+    assert!(tokio::fs::metadata(settings.workspace_dir.join(id.to_string())
+        .join("forbidden-by-approval.txt")).await.is_err());
+    for _ in 0..100 {
+        if !engine.active.lock().await.contains(&id){break;}
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    fixture.abort();
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
