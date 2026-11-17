@@ -435,4 +435,36 @@ mod tests{
   assert!(!granted_workspace(GOOGLE_DRIVE));
   assert!(granted_workspace(&format!("{GOOGLE_DRIVE} {GOOGLE_DOCS} {GOOGLE_SHEETS}")));
  }
+
+ #[test]
+ fn connected_oauth_scopes_advertise_only_authorized_tools_without_leaking_tokens(){
+  let mut settings=Settings::from_env().unwrap();
+  let root=std::env::temp_dir().join(format!("dominion-connected-catalog-{}",Uuid::new_v4()));
+  settings.data_dir=root.clone();
+  let mut vault=Snapshot::default();
+  vault.accounts.insert("google".into(),Account{
+    display_name:"demo@example.invalid".into(),access_token:"google-secret-test-token".into(),
+    refresh_token:"refresh-secret".into(),scopes:"openid email profile".into(),
+    expires_at_ms:now_ms()+120_000
+  });
+  vault.accounts.insert("github".into(),Account{
+    display_name:"demo".into(),access_token:"github-secret-test-token".into(),
+    refresh_token:String::new(),scopes:"read:user user:email".into(),expires_at_ms:0
+  });
+  write(&settings,&vault).unwrap();
+  assert!(crate::connected_tools::definitions(&settings).is_empty());
+  vault.accounts.get_mut("github").unwrap().scopes="read:user user:email repo".into();
+  vault.accounts.get_mut("google").unwrap().scopes=
+    format!("{GOOGLE_DRIVE} {GOOGLE_DOCS} {GOOGLE_SHEETS}");
+  write(&settings,&vault).unwrap();
+  let tools=crate::connected_tools::definitions(&settings);
+  let names=tools.iter().filter_map(|x|x.pointer("/function/name").and_then(Value::as_str)).collect::<Vec<_>>();
+  assert_eq!(tools.len(),23);
+  assert!(names.contains(&"google_docs_create"));
+  assert!(names.contains(&"google_sheets_append"));
+  assert!(names.contains(&"github_create_pull_request"));
+  assert!(!tools.to_string().contains("test-token"));
+  assert!(!tools.to_string().contains("refresh-secret"));
+  fs::remove_dir_all(root).unwrap();
+ }
 }

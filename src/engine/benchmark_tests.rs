@@ -151,3 +151,48 @@ async fn connected_github_commit_requires_approval_before_external_dispatch(){
     drop(engine);drop(store);
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+
+#[tokio::test]
+async fn github_pr_and_google_docs_mutations_require_approval_before_external_network(){
+ for (name,args) in [
+  ("github_create_pull_request",json!({
+   "owner":"demo","repo":"demo","title":"Proposed change",
+   "head":"fix/case","base":"main","body":"Evidence"
+  })),
+  ("google_docs_create",json!({"title":"New document"}))
+ ]{
+  let root=std::env::temp_dir().join(format!("dominion-connection-approval-{}",Uuid::new_v4()));
+  let mut settings=Settings::from_env().unwrap();
+  settings.data_dir=root.join("data");settings.workspace_dir=root.join("workspace");
+  let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+  let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+  let engine=Engine::new(settings,Arc::clone(&store),groups).unwrap();
+  let mut run=Run::new(CreateRun{
+   instruction:format!("External account tool {name}"),budget_krw:Some(50.0),max_steps:Some(4)
+  },4).unwrap();
+  run.plan=Some("Use only the queued account tool".into());
+  let id=run.id;
+  let call=ToolCall{id:"external-approved-1".into(),name:name.into(),arguments:args};
+  run.advertised_tools=crate::connected_tools::definitions(&engine.settings);
+  // No OAuth account is configured, and the advertised snapshot is empty:
+  // durable approval must be requested before any attempt at dispatch.
+  run.advertised_tools.clear();
+  run.queued_calls.push(call);
+  store.put(run).await.unwrap();
+  engine.launch(id).await.unwrap();
+  let state=tokio::time::timeout(std::time::Duration::from_secs(3),async{
+   loop{
+    let state=store.get(id).await.unwrap();
+    if state.status==RunStatus::AwaitingApproval{break state;}
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+   }
+  }).await.unwrap();
+  assert_eq!(state.pending_approval.as_ref().unwrap().name,name);
+  assert!(state.in_flight.is_none());
+  assert_eq!(state.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+  engine.cancel(id).await.unwrap();
+  drop(engine);drop(store);
+  tokio::fs::remove_dir_all(root).await.unwrap();
+ }
+}
