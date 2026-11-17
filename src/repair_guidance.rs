@@ -54,7 +54,7 @@ fn classify(kind:&str,code:&str,description:&str)->(&'static str,&'static str){
             "Check whether the request could have caused side effects before taking another action; never automatically replay an uncertain mutation.");
     }
     ("tool_failure",
-        "Inspect the durable tool error, isolate the failed step and change the approach; do not repeat the identical failed call.");
+        "Inspect the durable tool error, isolate the failed step and change the approach; do not repeat the identical failed call.")
 }
 /// Look only at authenticated, persisted event kinds since the last model
 /// receipt. Historical unrelated failures and model-authored prose never
