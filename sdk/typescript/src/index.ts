@@ -87,6 +87,11 @@ export interface LegacyArchiveRow {
 export interface LegacyArchivePage {
   total:number;rows:LegacyArchiveRow[];limit:number;offset:number;
 }
+export interface ConnectedAccount {
+  id:string;provider:string;displayName:string;scopes:string;hasToken:boolean;
+  repositoryAccess?:boolean;workspaceAccess?:boolean;tools?:string[];
+}
+export interface OAuthProviderStatus {id:string;configured:boolean;callback?:string|null}
 export interface ClientOptions {
   baseUrl?: string; token?: string; fetch?: typeof globalThis.fetch;
 }
@@ -128,6 +133,14 @@ export class Dominion {
   }
   /** Active main-frontend functionality, mapped onto actual native Rust services. */
   readonly frontend={
+    accounts:{
+      list:()=>this.frontendRequest<ConnectedAccount[]>('GET','/oauth/connections'),
+      providers:()=>this.frontendRequest<OAuthProviderStatus[]>('GET','/oauth/providers'),
+      toolNames:async(provider:'google'|'github')=>{
+        const accounts=await this.frontendRequest<ConnectedAccount[]>('GET','/oauth/connections');
+        return accounts.find(a=>a.provider===provider)?.tools||[];
+      }
+    },
     agents:{
       list:()=>this.frontendRequest<MainAgent[]>('GET','/agents'),
       save:(record:Partial<MainAgent>&{name:string})=>this.frontendRequest<MainAgent>('POST','/agents',record),

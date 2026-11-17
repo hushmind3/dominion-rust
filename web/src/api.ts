@@ -56,16 +56,14 @@ export async function resolveApproval(id: string, allow: boolean) {
  if (!result.resolved) throw Error(result.error ? translateError(result.error) : t('chat.approvalGone'))
 }
 
-export async function openOAuth(id: string, repository = false) {
+export async function openOAuth(id: string, repository = false, workspace = false) {
  const path = '/api/oauth/' + encodeURIComponent(id)
- if ('__DOMINION_NATIVE__' in window) {
-  await post(path + '/open', {})
-  return
- }
+ // Browser OAuth must use the real authorization redirect. The historical
+ // native '/open' placeholder returned 501 and never connected an account.
  const popup = window.open('', 'dominion_oauth', 'width=650,height=780')
  if (!popup) throw Error(t('oauth.popupBlocked'))
  try {
-  const {url} = await get<{url: string}>(path + '/start' + (repository && id === 'github' ? '?repository=true' : ''))
+  const {url} = await get<{url: string}>(path + '/start' + (repository && id === 'github' ? '?repository=true' : workspace && id === 'google' ? '?workspace=true' : ''))
   popup.location.replace(url)
  } catch (error) {
   popup.close()

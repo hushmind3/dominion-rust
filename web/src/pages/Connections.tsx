@@ -3,17 +3,16 @@ import {StatusPill} from '../components/StatusPill'
 import {Button,TextInput,SelectInput} from '../components/Primitives'
 import {useEffect,useMemo,useState} from 'react'
 import {Activity,Blocks,BookOpenText,PackagePlus,Sparkles,Server,ArrowRight,Check,ChevronRight,Cloud,ExternalLink,Filter,Globe2,Github,KeyRound,Link2,LockKeyhole,MessageCircle,Plus,RadioTower,Search,Send,Settings2,ShieldCheck,Trash2,UsersRound,X} from 'lucide-react'
-import {del,openOAuth,post} from '../api'
+import {del,post} from '../api'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {t,useLocale,type LocaleKey} from '../i18n'
 import {ExtensionsPage,type ExtensionTab} from './Extensions'
 import {CapabilitiesPage} from './Capabilities'
+import {AccountConnector,type OAuthProvider,type AccountConnection} from './AccountConnector'
 
 type ChannelField={key:string;label:string;type:'secret'|'text'|'url';required?:boolean;placeholder?:string}
 type ChannelEntry={id:string;name:string;category:string;mode:string;description:string;docs:string;available:boolean;status:string;features:string[];fields:ChannelField[];instructions?:string[];requiresPublicUrl?:boolean;requiresRoom?:boolean;maxRoomParticipants?:number}
 type Channel={id:string;name:string;kind:string;agentId:string;providerId:string;model:string;enabled:boolean;mentionOnly:boolean;roomId?:string;roomPolicy?:string;status:string;runtimeError?:string;configured:boolean;missing?:string[];credentialsPresent:Record<string,boolean>;channelId?:string;chatId?:string;delivery?:{pending?:number;sending?:number;sent?:number;needsReview?:number;lastError?:string};toolsEnabled?:boolean;replyMentionBots?:boolean;webhookPath?:string}
-type OAuthProvider={id:string;configured:boolean;scope:string}
-type Connection={id:string;provider:string;displayName:string;scopes:string;hasToken:boolean;repositoryAccess?:boolean}
 const groups=[{id:'all',name:'conn.group.all'},{id:'messaging',name:'conn.group.messaging'},{id:'workplace',name:'conn.group.workplace'},{id:'community',name:'conn.group.community'},{id:'decentralized',name:'conn.group.decentralized'}] as const
 const badge=(s:string)=>{const keys:Record<string,LocaleKey>={connected:'conn.status.connected',outbound_ready:'conn.status.outbound_ready',sync_disabled:'conn.status.sync_disabled',webhook_ready:'conn.status.webhook_ready',starting:'conn.status.starting',reconnecting:'conn.status.reconnecting',error:'conn.status.error',disabled:'conn.status.disabled',not_started:'conn.status.not_started',stopped:'conn.status.stopped'};return keys[s]?t(keys[s]):s};
 const active=(s:string)=>s==='connected';
@@ -23,7 +22,7 @@ export function ConnectionsPage(){
  const registry=useRemote<ChannelEntry[]>('/api/channels/catalog',[]);
  const channels=useRemote<Channel[]>('/api/channels',[]);
  const oauth=useRemote<OAuthProvider[]>('/api/oauth/providers',[]);
- const accounts=useRemote<Connection[]>('/api/oauth/connections',[]);
+ const accounts=useRemote<AccountConnection[]>('/api/oauth/connections',[]);
  const agents=useRemote<any[]>('/api/agents',[]);
  const rooms=useRemote<any[]>('/api/rooms',[]);
  const providers=useRemote<any[]>('/api/providers',[]);
@@ -56,10 +55,6 @@ export function ConnectionsPage(){
   try{const r=await post<any>('/api/channels/'+id+'/diagnose',{});
    setProbe(x=>({...x,[id]:r.verified?t('conn.dlg.verified'):r.message||t('conn.dlg.checkNeeded')}));
   }catch(e){setProbe(x=>({...x,[id]:(e as Error).message}))}
- };
- const connect=async(id:string,repository=false)=>{
-  setError('');
-  try{await openOAuth(id,repository)}catch(e){setError((e as Error).message)}
  };
  const tabs=[{id:'channels',label:t('conn.tab.channels'),icon:RadioTower},{id:'accounts',label:t('conn.tab.accounts'),icon:Link2},{id:'market',label:'MCP 마켓',icon:Blocks},{id:'installed',label:t('ext.tab.installed'),icon:Server},{id:'skills',label:t('ext.tab.skills'),icon:BookOpenText},{id:'plugins',label:t('ext.tab.plugins'),icon:PackagePlus},{id:'capabilities',label:'역량 마켓',icon:Sparkles}] as const
  const sectionTabs=<nav className="connection-tabs" aria-label="연결 및 확장 기능">{tabs.map(({id,label,icon:Icon})=><Button key={id} variant="bare" aria-current={section===id?'page':undefined} onClick={()=>setSection(id)}><Icon size={15}/>{label}</Button>)}</nav>
@@ -94,7 +89,8 @@ export function ConnectionsPage(){
   </>}
   {section==='accounts'&&<>
    <Subheading title={t('conn.accounts')} extra={<span className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">{t('ui.label.oauth')}</span>}/>
-   <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">{oauth.value.map(item=>{const account=accounts.value.find(a=>a.provider===item.id);const Icon=item.id==='github'?Github:Globe2;return <Panel className="flex min-w-0 flex-col gap-3 p-5" key={item.id}><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><Icon size={28}/></div><h3>{item.id==='github'?'GitHub':'Google · YouTube'}</h3><p>{item.id==='github'?t('conn.dlg.githubTitle'):t('conn.dlg.googleTitle')}</p><div className="integration-status"><StateTag online={Boolean(account)}>{account?t('conn.accountReady',{name:account.displayName}):item.configured?t('conn.oauthReady'):t('conn.oauthNeeded')}</StateTag></div><div className="mt-auto flex flex-wrap items-center gap-2"><Action variant="secondary" disabled={!item.configured} onClick={()=>connect(item.id)}><Link2 size={16}/>{account?t('conn.reconnect'):t('conn.connect')}</Action>{item.id==='github'&&!account?.repositoryAccess&&<Action variant="secondary" disabled={!item.configured} onClick={()=>connect(item.id,true)}><Github size={16}/> 저장소 작업 권한 연결</Action>}</div>{item.id==='github'&&<p className="text-xs text-[#7C7469]">{account?.repositoryAccess?'GitHub 저장소 읽기·커밋 권한이 연결됐습니다. 커밋은 매번 승인합니다.':'저장소 수정에는 별도 repo 권한이 필요합니다. 이 권한에는 비공개 저장소도 포함됩니다.'}</p>}</Panel>})}</div>
+   <AccountConnector providers={oauth.value} accounts={accounts.value}
+     reload={()=>{void oauth.reload();void accounts.reload()}}/>
   </>}
   {editor&&<DialogBackdrop onDismiss={()=>{if(!saving)setEditor(null)}}><DialogPanel size="wide">
    <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small>CHANNEL CONFIGURATION · {editor.entry.id.toUpperCase()}</small><h2>{editor.record.id?t('conn.edit'):t('conn.new')}</h2></div><Button size="icon" variant="ghost" onClick={()=>setEditor(null)}><X size={18}/></Button></div>
