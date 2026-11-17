@@ -85,6 +85,12 @@ pub(super) fn index_signal(conn:&Connection,row:&Value)->Result<(),String>{
 /// on ordinary SDK startup. Small transactions bound peak memory and let
 /// partial failures retry from the durable index IDs.
 fn backfill(conn:&mut Connection)->Result<(),String>{
+    // New ingestions are indexed transactionally; the legacy scan is a
+    // one-time migration rather than an O(corpus) query on every search.
+    let complete:Option<String>=conn.query_row(
+        "SELECT record FROM money_state WHERE key='fts_backfilled_v1'",[],
+        |row|row.get(0)).optional().map_err(err)?;
+    if complete.as_deref()==Some("true"){return Ok(());}
     loop{
         let items={
             let mut stmt=conn.prepare("SELECT s.record FROM money_signals s
@@ -94,7 +100,11 @@ fn backfill(conn:&mut Connection)->Result<(),String>{
             rows.map(|r|r.map_err(err).and_then(|s|
                 serde_json::from_str::<Value>(&s).map_err(err))).collect::<Result<Vec<_>,_>>()?
         };
-        if items.is_empty(){return Ok(());}
+        if items.is_empty(){
+            conn.execute("INSERT INTO money_state(key,record) VALUES('fts_backfilled_v1','true')
+                ON CONFLICT(key) DO UPDATE SET record='true'",[]).map_err(err)?;
+            return Ok(());
+        }
         let tx=conn.transaction().map_err(err)?;
         for row in &items{index_signal(&tx,row)?;}
         tx.commit().map_err(err)?;
