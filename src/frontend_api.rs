@@ -150,8 +150,10 @@ async fn health()->Json<Value>{
     Json(json!({
         "ok":true,"service":"dominion","engine":"rust","runtime":"rust",
         "version":env!("CARGO_PKG_VERSION"),
-        "branch":option_env!("DOMINION_BUILD_BRANCH").unwrap_or("unknown"),
-        "commit":option_env!("DOMINION_BUILD_COMMIT").unwrap_or("unknown")
+        "branch":crate::build_identity::running().branch,
+        "commit":crate::build_identity::running().commit,
+        "dirty":crate::build_identity::running().dirty,
+        "identitySource":crate::build_identity::running().source
     }))
 }
 fn is_configured(engine:&Engine)->bool{

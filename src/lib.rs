@@ -1,5 +1,6 @@
 //! Dominion native Rust SDK and owned execution runtime.
 pub mod api;
+pub mod build_identity;
 pub mod config;
 pub mod context;
 pub mod domain;
