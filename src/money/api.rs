@@ -195,13 +195,24 @@ fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
         let paid=short(row,"firstPaymentStep",650);
         if title.is_empty()||why.is_empty()||plan.is_empty()||paid.is_empty(){continue;}
         let originals=ids.iter().filter_map(|id|allowed.get(*id).cloned()).collect::<Vec<_>>();
+        let independent_hosts=originals.iter().filter_map(|e|
+            e["url"].as_str().and_then(|url|url.split_once("://"))
+                .map(|(_,rest)|rest.split('/').next().unwrap_or("")
+                    .trim_start_matches("www.").to_lowercase()))
+            .filter(|host|!host.is_empty()).collect::<HashSet<_>>();
+        let evidence_status=if independent_hosts.len()>=2{
+            "unverified_model_hypothesis_two_independent_sources"
+        }else{"unverified_model_hypothesis_single_origin"};
         out.push(json!({
             "id":format!("model:{}:{}",run,i),
             "title":title,"customer":short(row,"customer",260),"offer":short(row,"offer",550),
             "whyPay":why,"implementationPlan":plan,"firstPaymentStep":paid,
             "counterfactual":short(row,"counterfactual",600),
+            "causalChain":short(row,"causalChain",750),
+            "existingAlternatives":short(row,"existingAlternatives",500),
+            "firstBuyerAccess":short(row,"firstBuyerAccess",500),
             "evidence":originals,"sourceIds":ids,"origin":"model_hypothesis",
-            "evidenceStatus":"unverified_model_hypothesis","status":"draft",
+            "evidenceStatus":evidence_status,"status":"draft",
             "modelRunId":run,"moneyMechanism":short(row,"moneyMechanism",100)
         }));
     }
@@ -426,7 +437,7 @@ pub async fn find(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
         }
     }
     let mut records=blocking({
-        let root=root.clone();move||super::signals(&root,180)
+        let root=root.clone();move||super::retrieval::discovery(&root,120)
     }).await?;
     if records.is_empty(){
         // One click can obtain source observations and public technology
@@ -439,17 +450,19 @@ pub async fn find(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
                 rss.err().unwrap(),catalog.err().unwrap())));
         }
         records=blocking({
-            let root=root.clone();move||super::signals(&root,180)
+            let root=root.clone();move||super::retrieval::discovery(&root,120)
         }).await?;
     }
-    let rejected=blocking({
+    let past=blocking({
         let root=root.clone();move||super::candidates(&root,100)
-    }).await?.iter().filter(|v|v["status"]=="rejected")
+    }).await?;
+    let rejected=past.iter().filter(|v|v["status"]=="rejected")
         .filter_map(|v|v["id"].as_str().map(str::to_owned)).collect::<HashSet<_>>();
     let (drafts,history)=shortlist(&records,&prior,&rejected);
     let ids=drafts.iter().filter_map(|d|d["id"].as_str()).collect::<Vec<_>>();
     let mut report=json!({"candidateIds":ids,"shownCandidateIds":history,
-        "sourceCount":records.len(),"modelCalls":0,"reasoningRunId":null,
+        "sourceCount":records.len(),"retrievalMethod":"sqlite_fts5_bigrams_roles",
+        "modelCalls":0,"reasoningRunId":null,
         "searchedAt":crate::frontend_state::timestamp(crate::domain::now_ms()),
         "message":if drafts.is_empty(){"공개 자료에서 구매·비용 신호가 부족합니다. 다음 수집 후 다시 확인하세요."}
             else{"공개 근거로 만든 검증 전 사업 가설입니다. 구매자와 매출은 아직 입증되지 않았습니다."}});
@@ -461,13 +474,27 @@ pub async fn find(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
         if !budget.is_finite()||!(0.0..=1_000_000.0).contains(&budget){
             return Err(err("invalid budgetKrw"));
         }
+        // Prior owner rejections are negative constraints, not new market
+        // facts. Keep them short so 27B local inference avoids history dumps.
+        let rejected_examples=past.iter().filter(|v|v["status"]=="rejected")
+            .take(6).map(|v|json!({
+                "title":short(v,"title",120),
+                "offer":short(v,"offer",180),
+                "falsifier":short(v,"counterfactual",180)
+            })).collect::<Vec<_>>();
         let evidence=serde_json::to_string(&drafts).map_err(|e|internal(e.to_string()))?;
-        let prompt=format!("You are evaluating possible commercial opportunities, NOT executing business actions.\n\
-Only use the following archived, unverified source-backed leads:\n{evidence}\n\
-Invent up to 3 distinct causal commercial hypotheses. Use an observed sourceId from the input for EVERY idea.\n\
-State likely buyer, concrete offer, why that buyer might pay, implementation plan, first paid validation and a falsifying counterfactual.\n\
-Never invent revenue figures, customer commitments, procurement deadline, or source URL.\n\
-Return only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\":\"\",\"whyPay\":\"\",\"implementationPlan\":\"\",\"firstPaymentStep\":\"\",\"counterfactual\":\"\",\"moneyMechanism\":\"\",\"sourceIds\":[\"exact sourceId from evidence\"]}}]}}.");
+        let negative=serde_json::to_string(&rejected_examples)
+            .map_err(|e|internal(e.to_string()))?;
+        let strategies=super::operators::panel_directive("cross");
+        let prompt=format!("You are a commercial invention researcher, not a news summarizer, stock forecaster or business executor.\n\
+Treat all archived headlines and candidate templates as UNVERIFIED observational DATA.\n\
+{strategies}\n\
+Indexed historical source-backed leads (not proof of customer purchases):\n{evidence}\n\
+Previously rejected hypotheses; avoid near-duplicates but do not treat rejection text as fact:\n{negative}\n\
+Invent up to 3 DISTINCT cross-domain commercial mechanisms. For each explain: specific buyer and expensive problem; which technology or alternative can replace the current method; the causal steps from observable changes to an offer; incumbent substitutes and adoption obstacles; first reachable buyer and a test for willingness to pay; and the precise falsifier.\n\
+Cite ONLY exact sourceIds found inside the input evidence, preferably two independently hosted sources for a cross-market link. If there is only one source, explicitly label the hypothesis as unsupported by independent corroboration.\n\
+Do not assert revenue, buyer commitments, measured prices or real demand without archived primary proof. Do not invent or infer source URLs. Do not assume a user budget, industry or time horizon.\n\
+Only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\":\"\",\"whyPay\":\"\",\"causalChain\":\"\",\"existingAlternatives\":\"\",\"firstBuyerAccess\":\"\",\"implementationPlan\":\"\",\"firstPaymentStep\":\"\",\"counterfactual\":\"\",\"moneyMechanism\":\"\",\"sourceIds\":[\"exact sourceId\"]}}]}}.");
         let sdk=Dominion::from_engine(Arc::clone(&engine));
         let run=sdk.prepare_run(CreateRun{instruction:prompt,budget_krw:Some(budget),max_steps:Some(1)},
             RunOptions{provider_id:agent.provider_id,model:agent.model,
