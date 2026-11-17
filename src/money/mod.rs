@@ -2,6 +2,7 @@
  //! market observations are not task/tool receipts or verified transactions.
 pub mod intelligence;
 pub mod provenance;
+pub mod pricing;
 pub mod retrieval;
 pub mod mechanism;
 pub mod operators;
@@ -42,6 +43,14 @@ fn open(root:&Path)->Result<Connection,String>{
             id TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL, record TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS money_metrics_recent ON money_metrics(observed_ms DESC);
+        CREATE TABLE IF NOT EXISTS money_price_comparisons(
+            id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL,
+            created_ms INTEGER NOT NULL,
+            record TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS money_price_recent
+            ON money_price_comparisons(candidate_id,created_ms DESC);
     ").map_err(err)?;
     retrieval::schema(&conn)?;
     provenance::schema(&conn)?;
