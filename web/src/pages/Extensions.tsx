@@ -336,7 +336,8 @@ function StatusLine({
     </span>
   );
 }
-export function ExtensionsPage() {
+export type ExtensionTab='market'|'installed'|'plugins'|'skills'
+export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;embedded?:boolean}={}) {
   const loc = useLocale();
   const mcp = useRemote<Mcp[]>("/api/mcp", []),
     skills = useRemote<Skill[]>("/api/skills", []),
@@ -349,7 +350,7 @@ export function ExtensionsPage() {
   const [repo, setRepo] = useState(""),
     [repoBusy, setRepoBusy] = useState(false),
     [pluginRemote, setPluginRemote] = useState<any[]>([]);
-  const [tab, setTab] = useState<"market" | "installed" | "plugins" | "skills">(
+  const [localTab, setTab] = useState<ExtensionTab>(
       "market",
     ),
     [query, setQuery] = useState(""),
@@ -358,6 +359,7 @@ export function ExtensionsPage() {
     [installing, setInstalling] = useState(""),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
+  const tab=section??localTab;
   const [skillQuery, setSkillQuery] = useState(""),
     [skillCategory, setSkillCategory] = useState("all");
   const [pluginQuery, setPluginQuery] = useState(""),
@@ -615,7 +617,7 @@ export function ExtensionsPage() {
     void loadCatalog();
   }, []);
   return (
-    <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
+    <div className={embedded?"min-w-0":"mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8"}>
       <Headline
         eyebrow={t('ui.eyebrow.marketplace')}
         title={t('ext.title')}
@@ -653,7 +655,7 @@ export function ExtensionsPage() {
           }
         />
       </div>
-      <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3">
+      {!embedded&&<div className="mb-6 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3">
         <Button
           variant={tab === "market" ? "primary" : "ghost"}
           onClick={() => setTab("market")}
@@ -681,7 +683,7 @@ export function ExtensionsPage() {
             {skills.value.filter((s) => s.enabled).length}/{skills.value.length}
           </b>
         </Button>
-      </div>
+      </div>}
       {error && <Notice message={error} />}
       {message && (
         <div className="my-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">

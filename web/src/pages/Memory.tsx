@@ -3,7 +3,9 @@ import {BookOpenText, Check, Plus, Trash2} from 'lucide-react'
 import {del, post, type Agent} from '../api'
 import {Button, TextInput, TextArea, SelectInput} from '../components/Primitives'
 import {Action, FormField, Headline, Notice, Panel, Subheading, useRemote} from '../components/UI'
+import {LearningRecords} from './memory/LearningRecords'
 import {t,useLocale,type LocaleKey} from '../i18n'
+import {GrowthDashboard} from './memory/Growth'
 
 type Memory={
  id:string;text:string;scope?:string;agentId?:string;sessionId?:string;partitionKey?:string;
@@ -23,6 +25,7 @@ export function MemoryPage(){
  const [query,setQuery]=useState(''),[text,setText]=useState(''),[scope,setScope]=useState('shared')
  const [status,setStatus]=useState('active'),[owner,setOwner]=useState('all')
  const [error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false)
+ const [showRecords,setShowRecords]=useState(false)
  const [visibleLimit,setVisibleLimit]=useState(40)
  useEffect(()=>setVisibleLimit(40),[query,status,owner])
  const agentNames=new Map(agents.value.map(agent=>[agent.id,agent.name]))
@@ -86,8 +89,13 @@ export function MemoryPage(){
     {!filtered.length&&<Panel className="p-6 text-center text-sm text-[#7C7469]">{memories.loading?t('memory.loading'):t('memory.empty')}</Panel>}
    </div>
   </div>
-  <div className="mt-6 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] p-4 text-xs text-[#7C7469]">
-   사용자 교정과 명시적으로 저장한 기억은 유지됩니다. 작업 실행·실패 기록은 활동 메뉴에서 확인할 수 있습니다.
-  </div>
+  <details className="mt-6 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] p-4" onToggle={event=>setShowRecords(event.currentTarget.open)}>
+   <summary className="cursor-pointer font-semibold">{t('memory.records')}</summary>
+   {showRecords&&<LearningRecords/>}
+  </details>
+  <details className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] p-4">
+   <summary className="cursor-pointer font-semibold">{t('memory.growth')}</summary>
+   <GrowthDashboard/>
+  </details>
  </div>
 }

@@ -2,11 +2,11 @@ import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {StatusPill} from '../components/StatusPill'
 import {Button,TextInput,SelectInput} from '../components/Primitives'
 import {useEffect,useMemo,useState} from 'react'
-import {Activity,ArrowRight,Check,ChevronRight,Cloud,ExternalLink,Filter,Globe2,Github,KeyRound,Link2,LockKeyhole,MessageCircle,Plus,RadioTower,Search,Send,Settings2,ShieldCheck,Trash2,UsersRound,X} from 'lucide-react'
+import {Activity,Blocks,BookOpenText,PackagePlus,Sparkles,Server,ArrowRight,Check,ChevronRight,Cloud,ExternalLink,Filter,Globe2,Github,KeyRound,Link2,LockKeyhole,MessageCircle,Plus,RadioTower,Search,Send,Settings2,ShieldCheck,Trash2,UsersRound,X} from 'lucide-react'
 import {del,openOAuth,post} from '../api'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {t,useLocale,type LocaleKey} from '../i18n'
-import {ExtensionsPage} from './Extensions'
+import {ExtensionsPage,type ExtensionTab} from './Extensions'
 import {CapabilitiesPage} from './Capabilities'
 
 type ChannelField={key:string;label:string;type:'secret'|'text'|'url';required?:boolean;placeholder?:string}
@@ -27,8 +27,8 @@ export function ConnectionsPage(){
  const agents=useRemote<any[]>('/api/agents',[]);
  const rooms=useRemote<any[]>('/api/rooms',[]);
  const providers=useRemote<any[]>('/api/providers',[]);
- const [query,setQuery]=useState(''),[category,setCategory]=useState('all'),[view,setView]=useState<'channels'|'accounts'>('channels');
- const [section,setSection]=useState<'channels'|'extensions'|'capabilities'>('channels');
+ const [query,setQuery]=useState(''),[category,setCategory]=useState('all');
+ const [section,setSection]=useState<'channels'|'accounts'|'capabilities'|ExtensionTab>('channels');
  const [editor,setEditor]=useState<{entry:ChannelEntry;record:any}|null>(null);
  const [error,setError]=useState(''),[info,setInfo]=useState(''),[probe,setProbe]=useState<Record<string,string>>({}),[saving,setSaving]=useState(false);
  const installed=useMemo(()=>new Set(channels.value.map(x=>x.kind)),[channels.value]);
@@ -57,34 +57,27 @@ export function ConnectionsPage(){
    setProbe(x=>({...x,[id]:r.verified?t('conn.dlg.verified'):r.message||t('conn.dlg.checkNeeded')}));
   }catch(e){setProbe(x=>({...x,[id]:(e as Error).message}))}
  };
- const connect=async(id:string, repository=false)=>{
+ const connect=async(id:string,repository=false)=>{
   setError('');
   try{await openOAuth(id,repository)}catch(e){setError((e as Error).message)}
  };
- const sectionTabs=<div className="mb-4 flex flex-wrap items-center gap-2">
-  <Button variant={section==='channels'?'primary':'ghost'} onClick={()=>setSection('channels')}>채널 연결</Button>
-  <Button variant={section==='extensions'?'primary':'ghost'} onClick={()=>setSection('extensions')}>MCP · 스킬</Button>
-  <Button variant={section==='capabilities'?'primary':'ghost'} onClick={()=>setSection('capabilities')}>역량 마켓</Button>
- </div>;
- if(section!=='channels'){
-  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
-   {sectionTabs}
-   {section==='extensions'?<ExtensionsPage/>:<CapabilitiesPage navigate={page=>setSection(page==='extensions'?'extensions':'channels')}/>}
-  </div>
- }
- return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
+ const tabs=[{id:'channels',label:t('conn.tab.channels'),icon:RadioTower},{id:'accounts',label:t('conn.tab.accounts'),icon:Link2},{id:'market',label:'MCP 마켓',icon:Blocks},{id:'installed',label:t('ext.tab.installed'),icon:Server},{id:'skills',label:t('ext.tab.skills'),icon:BookOpenText},{id:'plugins',label:t('ext.tab.plugins'),icon:PackagePlus},{id:'capabilities',label:'역량 마켓',icon:Sparkles}] as const
+ const sectionTabs=<nav className="connection-tabs" aria-label="연결 및 확장 기능">{tabs.map(({id,label,icon:Icon})=><Button key={id} variant="bare" aria-current={section===id?'page':undefined} onClick={()=>setSection(id)}><Icon size={15}/>{label}</Button>)}</nav>
+ if(section!=='channels'&&section!=='accounts')return <div className="mx-auto w-full max-w-[1320px] px-4 py-3 sm:px-6">{sectionTabs}{section==='capabilities'?<CapabilitiesPage navigate={page=>setSection(page==='extensions'?'market':'channels')}/>:<ExtensionsPage section={section} embedded/>}</div>
+ return <div className="mx-auto w-full max-w-[1320px] px-4 py-3 sm:px-6">
   {sectionTabs}
   <Headline eyebrow={t('ui.eyebrow.connections')} title={t('conn.title')} description={t('conn.description')} actions={<Action variant="secondary" onClick={()=>{void registry.reload();void channels.reload()}}><Activity size={16}/> {t('conn.refresh')}</Action>}/>
+  {section==='channels'&&<>
   <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-[#F3EEE5] text-[#7C7469]"><Globe2 size={20}/></span><div><small className="block text-[11px] text-[#8A8176]">{t('conn.platforms')}</small><strong className="mt-0.5 block text-[19px] font-bold leading-none text-[#24211D]">{registry.value.length}</strong></div></div>
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><RadioTower size={20}/></span><div><small className="block text-[11px] text-[#8A8176]">{t('conn.code')}</small><strong className="mt-0.5 block text-[19px] font-bold leading-none text-[#24211D]">{ready}</strong></div></div>
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-teal-50 text-teal-600"><Check size={20}/></span><div><small className="block text-[11px] text-[#8A8176]">{t('conn.connected')}</small><strong className="mt-0.5 block text-[19px] font-bold leading-none text-[#24211D]">{online}</strong></div></div>
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-[#F3EEE5] text-[#7C7469]"><Send size={20}/></span><div><small className="block text-[11px] text-[#8A8176]">{t('conn.outbound')}</small><strong className="mt-0.5 block text-[19px] font-bold leading-none text-[#24211D]">{outbound}</strong></div></div>
   </div>
-  <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3"><Button variant={view==='channels'?'primary':'ghost'} onClick={()=>setView('channels')}><RadioTower size={17}/> {t('conn.tab.channels')} <b>{registry.value.length}</b></Button><Button variant={view==='accounts'?'primary':'ghost'} onClick={()=>setView('accounts')}><Link2 size={17}/> {t('conn.tab.accounts')} <b>{accounts.value.length}</b></Button></div>
+  </>}
   {error&&<Notice message={error}/>}
   {info&&<div className="my-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"><Check size={16}/>{info}</div>}
-  {view==='channels'&&<>
+  {section==='channels'&&<>
    <div className="mb-5 flex flex-wrap items-center gap-3"><div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[#E7E0D5] bg-white px-3 py-2"><Search size={17}/><TextInput value={query} onChange={e=>setQuery(e.target.value)} placeholder={t('conn.search')}/></div><div className="flex flex-wrap items-center gap-2"><Filter size={15}/>{groups.map(g=><Button variant={category===g.id?'primary':'ghost'} onClick={()=>setCategory(g.id)} key={g.id}>{t(g.name)}</Button>)}</div></div>
    {registry.error&&<Notice message={registry.error}/>}
    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -99,11 +92,9 @@ export function ConnectionsPage(){
    {!filtered.length&&<Panel><div className="flex min-h-40 flex-col items-center justify-center gap-2 p-5 text-center text-[#7C7469]">{t('conn.noResults')}</div></Panel>}
    <Panel className="flex min-w-0 items-start gap-3 rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-4 text-sm leading-6"><div className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#F1DCCF] text-[#A94E30]"><ShieldCheck size={21}/></div><div><strong>{t('conn.noteTitle')}</strong><p>{t('conn.note')}</p></div></Panel>
   </>}
-  {view==='accounts'&&<>
+  {section==='accounts'&&<>
    <Subheading title={t('conn.accounts')} extra={<span className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">{t('ui.label.oauth')}</span>}/>
-   <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">{oauth.value.map(item=>{const account=accounts.value.find(a=>a.provider===item.id);const Icon=item.id==='github'?Github:Globe2;return <Panel className="flex min-w-0 flex-col gap-3 p-5" key={item.id}><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><Icon size={28}/></div><h3>{item.id==='github'?'GitHub':'Google · YouTube'}</h3><p>{item.id==='github'?t('conn.dlg.githubTitle'):t('conn.dlg.googleTitle')}</p><div className="integration-status"><StateTag online={Boolean(account)}>{account?t('conn.accountReady',{name:account.displayName}):item.configured?t('conn.oauthReady'):t('conn.oauthNeeded')}</StateTag></div><div className="mt-auto flex flex-wrap items-center gap-2"><Action variant="secondary" disabled={!item.configured} onClick={()=>connect(item.id)}><Link2 size={16}/>{account?t('conn.reconnect'):t('conn.connect')}</Action>
-   {item.id==='github'&&!account?.repositoryAccess&&<Action variant="secondary" disabled={!item.configured} onClick={()=>connect(item.id,true)}><Github size={16}/> 저장소 작업 권한 연결</Action>}</div>
-   {item.id==='github'&&<p className="text-xs text-[#7C7469]">{account?.repositoryAccess?'GitHub 저장소 읽기·커밋 권한이 연결됐습니다. 커밋은 매번 승인합니다.':'저장소 수정에는 GitHub OAuth의 repo 권한이 추가로 필요합니다. 선택할 경우 비공개 저장소까지 허용하는 광범위한 권한을 요청합니다.'}</p>}</Panel>})}</div>
+   <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">{oauth.value.map(item=>{const account=accounts.value.find(a=>a.provider===item.id);const Icon=item.id==='github'?Github:Globe2;return <Panel className="flex min-w-0 flex-col gap-3 p-5" key={item.id}><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><Icon size={28}/></div><h3>{item.id==='github'?'GitHub':'Google · YouTube'}</h3><p>{item.id==='github'?t('conn.dlg.githubTitle'):t('conn.dlg.googleTitle')}</p><div className="integration-status"><StateTag online={Boolean(account)}>{account?t('conn.accountReady',{name:account.displayName}):item.configured?t('conn.oauthReady'):t('conn.oauthNeeded')}</StateTag></div><div className="mt-auto flex flex-wrap items-center gap-2"><Action variant="secondary" disabled={!item.configured} onClick={()=>connect(item.id)}><Link2 size={16}/>{account?t('conn.reconnect'):t('conn.connect')}</Action>{item.id==='github'&&!account?.repositoryAccess&&<Action variant="secondary" disabled={!item.configured} onClick={()=>connect(item.id,true)}><Github size={16}/> 저장소 작업 권한 연결</Action>}</div>{item.id==='github'&&<p className="text-xs text-[#7C7469]">{account?.repositoryAccess?'GitHub 저장소 읽기·커밋 권한이 연결됐습니다. 커밋은 매번 승인합니다.':'저장소 수정에는 별도 repo 권한이 필요합니다. 이 권한에는 비공개 저장소도 포함됩니다.'}</p>}</Panel>})}</div>
   </>}
   {editor&&<DialogBackdrop onDismiss={()=>{if(!saving)setEditor(null)}}><DialogPanel size="wide">
    <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small>CHANNEL CONFIGURATION · {editor.entry.id.toUpperCase()}</small><h2>{editor.record.id?t('conn.edit'):t('conn.new')}</h2></div><Button size="icon" variant="ghost" onClick={()=>setEditor(null)}><X size={18}/></Button></div>

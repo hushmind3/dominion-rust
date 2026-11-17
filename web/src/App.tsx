@@ -1,8 +1,9 @@
+import {DialogBackdrop} from './components/Dialog'
 import { ContextMenu } from './components/ContextMenu'
 import {OwnerProfileProvider} from './components/OwnerProfile'
 import {Component,lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState,type ReactNode} from 'react'
 import {get} from './api'
-import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
+import {WorkspaceSidebar,SettingsHeader,navigation,type PageId} from './components/WorkspaceShell'
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
 const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
@@ -88,17 +89,18 @@ class PageLoadBoundary extends Component<{children:ReactNode},{failed:boolean}>{
 function locationState(){
  const raw=window.location.hash.replace(/^#\/?/,'')
  const [name,query]=raw.split('?')
- const valid=navigation.some(group=>group.items.some(item=>item.id===name))
+ const valid=['extensions','capabilities'].includes(name)||navigation.some(group=>group.items.some(item=>item.id===name))
  const params=new URLSearchParams(query)
  return {page:(valid?name:'chat') as PageId,session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
 export default function App(){
  const [{page,session,agent,provider,model},setRoute]=useState(locationState)
+ const [chatRoute,setChatRoute]=useState(()=>{const route=locationState();return route.page==='chat'?route:{page:'chat' as PageId,session:undefined,agent:undefined,provider:undefined,model:undefined}})
+ const [mode,setMode]=useState<'chat'|'rooms'>(()=>locationState().page==='rooms'?'rooms':'chat')
+ const [visited,setVisited]=useState(()=>({chat:locationState().page!=='rooms',rooms:locationState().page==='rooms'}))
  const [chatDraft,setChatDraft]=useState(0)
- const [sidebar,setSidebar]=useState(false)
- const [collapsed,setCollapsed]=useState(()=>{try{const saved=localStorage.getItem('dominion.nav.collapsed');return saved===null?window.innerWidth<1200:saved==='1'}catch{return false}})
- const [palette,setPalette]=useState(false)
+ const settingsOpen=page!=='chat'&&page!=='rooms'
  const [online,setOnline]=useState(false)
  const [running,setRunning]=useState(0)
  const [pending,setPending]=useState(0)
@@ -112,31 +114,34 @@ export default function App(){
   window.addEventListener('focus',focus)
   return()=>{live=false;window.removeEventListener('focus',focus)}
  },[])
- const toggleNav=useCallback(()=>{
-  try{
-   if(window.innerWidth<520){setSidebar(open=>!open);return}
-   const next=!collapsed
-   setCollapsed(next)
-   try{localStorage.setItem('dominion.nav.collapsed',next?'1':'0')}catch{}
-  }catch{setSidebar(open=>!open)}
- },[collapsed])
  const navigate=useCallback((target:PageId,sessionId?:string)=>{
   const next='#/'+target+(sessionId?'?session='+encodeURIComponent(sessionId):'')
   if(window.location.hash!==next)window.history.pushState(null,'',next)
   setRoute(locationState())
-  setSidebar(false)
-  setPalette(false)
   // Hash navigation stays immediate. Reload only when the server's built
   // entry changed; never block menu clicks on a network request.
   void checkForUpdatedUi()
  },[])
  useEffect(()=>{
-  const sync=()=>{setRoute(locationState());setSidebar(false);setPalette(false)}
+  const sync=()=>setRoute(locationState())
   window.addEventListener('hashchange',sync)
   window.addEventListener('popstate',sync)
   return()=>{window.removeEventListener('hashchange',sync);window.removeEventListener('popstate',sync)}
  },[])
- useLayoutEffect(()=>{window.scrollTo({top:0,behavior:'instant'})},[page])
+ useLayoutEffect(()=>{
+  if(page==='chat'){setChatRoute({page,session,agent,provider,model});setMode('chat');setVisited(previous=>previous.chat?previous:{...previous,chat:true})}
+  if(page==='rooms'){setMode('rooms');setVisited(previous=>previous.rooms?previous:{...previous,rooms:true})}
+ },[page,session,agent,provider,model])
+ const returnToChat=useCallback(()=>{
+  const params=new URLSearchParams()
+  for(const key of ['session','agent','provider','model'] as const)if(chatRoute[key])params.set(key,chatRoute[key]!)
+  const next='#/chat'+(params.size?'?'+params.toString():'')
+  if(window.location.hash!==next)window.history.pushState(null,'',next)
+  setRoute(locationState())
+  void checkForUpdatedUi()
+ },[chatRoute])
+ const switchMode=useCallback((next:'chat'|'rooms')=>{if(next==='chat')returnToChat();else navigate('rooms')},[returnToChat,navigate])
+ const closeSettings=useCallback(()=>switchMode(mode),[switchMode,mode])
  useEffect(()=>{
   const check=()=>{if(document.visibilityState==='visible')void checkForUpdatedUi()}
   window.addEventListener('focus',check)
@@ -168,7 +173,7 @@ export default function App(){
      pendingEventTypes.add(item.type)
      refreshTimer ??= setTimeout(()=>{
       refreshTimer=undefined
-      const types=Array.from(pendingEventTypes)
+      const types=[...pendingEventTypes]
       pendingEventTypes.clear()
       window.dispatchEvent(new CustomEvent('dominion-refresh',{detail:{types}}))
      },100)
@@ -178,34 +183,40 @@ export default function App(){
    }catch{}
   }
   const shortcuts=(e:KeyboardEvent)=>{
-   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();setPalette(open=>!open)}
-   if(e.key==='Escape')setPalette(false)
+   if((e.metaKey||e.ctrlKey)&&e.key===','){e.preventDefault();navigate('settings')}
   }
   window.addEventListener('keydown',shortcuts)
   return()=>{mounted=false;clearInterval(poll);clearTimeout(refreshTimer);stream.close();window.removeEventListener('keydown',shortcuts)}
- },[])
- return <OwnerProfileProvider><div className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
-   <ContextMenu />
-  <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>{setChatDraft(value=>value+1);navigate('chat')}} onClose={()=>setSidebar(false)}/>
-  <main className={'min-h-dvh min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
-   <WorkspaceHeader page={page} online={online} collapsed={collapsed} build={engineBuild} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
-   <div className={'min-w-0 page-'+page}>
-    <PageLoadBoundary key={page}>
-    <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
-    {page==='home'&&<HomePage navigate={navigate}/>}
-    {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
-    {page==='memory'&&<MemoryPage/>}
-    {page==='chat'&&<ChatPage key={chatDraft} sessionId={session} initialAgent={agent} initialProvider={provider} initialModel={model} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
-    {page==='models'&&<ModelHub/>}
-    {page==='agents'&&<AgentsPage/>}
-    {page==='rooms'&&<RoomsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='extensions'&&<ExtensionsPage/>}
-    {page==='connections'&&<ConnectionsPage/>}
-    {(page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
-    </Suspense>
-    </PageLoadBoundary>
-   </div>
+ },[navigate])
+ return <OwnerProfileProvider><div className="h-dvh overflow-hidden bg-[#FFFDF9] font-sans text-[#24211D]">
+  <ContextMenu/>
+  <main inert={settingsOpen} className="h-dvh min-w-0">
+   {visited.chat&&<div hidden={mode!=='chat'} className="h-full page-chat"><PageLoadBoundary><Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">대화 불러오는 중…</div>}>
+    <ChatPage key={chatDraft} active={mode==='chat'&&!settingsOpen} sessionId={chatRoute.session} initialAgent={chatRoute.agent} initialProvider={chatRoute.provider} initialModel={chatRoute.model} onSession={id=>{
+     setChatRoute(previous=>({...previous,session:id}))
+     if(locationState().page==='chat')navigate('chat',id)
+    }} openModels={()=>navigate('models')} openSettings={()=>navigate('settings')} switchMode={switchMode}/>
+   </Suspense></PageLoadBoundary></div>}
+   {visited.rooms&&<div hidden={mode!=='rooms'} className="h-full page-rooms"><PageLoadBoundary><Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">대화 불러오는 중…</div>}><RoomsPage active={mode==='rooms'&&!settingsOpen} openSession={id=>navigate('chat',id)} openSettings={()=>navigate('settings')} switchMode={switchMode}/></Suspense></PageLoadBoundary></div>}
+
   </main>
-  {palette&&<CommandPalette onNavigate={navigate} onClose={()=>setPalette(false)}/>}
+  {settingsOpen&&<DialogBackdrop onDismiss={closeSettings}><div role="dialog" aria-modal="true" aria-label="설정" className="workspace-settings relative h-[calc(100dvh-40px)] w-full max-w-[1440px] overflow-hidden rounded-2xl border border-[#E7E0D5] bg-[#F6F3EC] shadow-2xl">
+   <WorkspaceSidebar settingsOnly page={page} open collapsed={false} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>navigate('chat')} onClose={closeSettings}/>
+   <div className="workspace-settings-main ml-[216px] flex h-full min-w-0 flex-col">
+    <SettingsHeader page={page} online={online} build={engineBuild} onClose={closeSettings}/>
+    <div className="workspace-settings-content min-h-0 flex-1 overflow-y-auto">
+     <PageLoadBoundary key={page}><Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
+      {page==='home'&&<HomePage navigate={navigate}/>}
+      {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
+      {page==='memory'&&<MemoryPage/>}
+      {page==='models'&&<ModelHub/>}
+      {page==='agents'&&<AgentsPage/>}
+      {page==='extensions'&&<ExtensionsPage/>}
+      {page==='connections'&&<ConnectionsPage/>}
+      {(page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
+     </Suspense></PageLoadBoundary>
+    </div>
+   </div>
+  </div></DialogBackdrop>}
  </div></OwnerProfileProvider>
 }
