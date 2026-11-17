@@ -9,7 +9,8 @@ test('main chat/group switch preserves a mounted conversation and opens native s
  await page.locator('.conversation-switch button').last().click();
  await expect(page.locator('.page-rooms')).toBeVisible();
  await expect(chat).toBeHidden();
- await page.locator('.conversation-switch button').first().click();
+ // Both chat and rooms stay mounted: scope the click to the visible room view.
+ await page.locator('.page-rooms .conversation-switch button').first().click();
  await expect(chat).toBeVisible();
  // The chat tree stays mounted across a room turn, preserving draft state.
  await expect(page.locator('.page-chat')).toHaveCount(1);

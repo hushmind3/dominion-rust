@@ -62,6 +62,14 @@ Archived/room/channel sessions, the old vault, memory and execution artifacts ar
 
 The historical archive is separate from the 8 MiB chat frontend snapshot, keeping large job transcripts out of the ordinary UI/session write path. It is not an automatic prompt memory cache; no redundant background scan runs at startup. The browser panel only fetches requested archive pages and selected record details.
 
+## Frontend source and runtime contract
+
+The React workspace was synchronized from main commit `76e2e5e5de742d8f43761e8a9cd3265158030b00` into `dominion-sub4` while leaving the sub4 Rust engine, adapters, and databases intact. The main conversation layout retains mounted chat and group views when switching between them, with an overlay settings workspace. New components include `ConversationSettings`, `ExecutionPermissions`, `GrowthDashboard`, and `LearningRecords` along with source styles/locales.
+
+The preserved sub4 `OperationsPage` continues to mount the `LegacyImportPanel` and `LegacyHistoryPanel`; the connected GitHub repository grant is reattached in the main `ConnectionsPage`. The main event shell emits typed `dominion-refresh` events so the native `useRemote` hook can skip unrelated query refreshes.
+
+The historical/research panels are frontend-only where an API is not implemented; they must not be mistaken for live native functionality. Growth panels are lazy-mounted on user expansion to avoid idle background API requests. Browser tests confirm main chat/group navigation, settings, legacy import/history visibility and the repository authorization control against the native Rust API.
+
 ## Provider and pricing boundary
 
 `src/provider.rs` handles OpenAI-compatible chat completions and Anthropic Messages with selected models. A provider response reporting truncation or missing tool-call payload is not a final answer. The provider adapter applies a bounded 8MiB response limit. Only a definite HTTP 429 rejection is eligible for automatic retry/fallback: transport loss and HTTP 5xx may have already consumed billable tokens.
