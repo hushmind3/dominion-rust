@@ -1,5 +1,6 @@
 [package]
 name = "dominion"
+default-run = "dominion"
 version = "0.1.0"
 edition = "2021"
 description = "Dominion autonomous execution engine"
