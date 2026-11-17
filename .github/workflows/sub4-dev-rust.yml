@@ -25,6 +25,8 @@ jobs:
         run: cargo test --lib runtime_trials_tests
       - name: Candidate policy, budget and cancellation regressions (dev profile)
         run: cargo test --lib strategy_trial_
+      - name: Two real workspace workers and mock-model verification (dev profile)
+        run: cargo test --lib strategy_trial_two_real_workers_share_base_and_settle_before_comparison
       - name: Full mock model-path correction integration (dev profile)
         run: cargo test --lib coding_fixture_repairs_two_files_after_missing_path_feedback
       - name: Indexed delegation lineage and durable restart regression (dev profile)
