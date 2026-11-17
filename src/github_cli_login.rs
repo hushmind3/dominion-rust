@@ -139,7 +139,11 @@ async fn start(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
   phase(&worker,state,message).await;
   *worker.cancel.lock().await=None;
  });
- Ok(Json(public(&*login.progress.lock().await)))
+ let payload={
+  let guard=login.progress.lock().await;
+  public(&guard)
+ };
+ Ok(Json(payload))
 }
 async fn cancel(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  if !crate::frontend_oauth::local_cli_eligible(&engine.settings){
