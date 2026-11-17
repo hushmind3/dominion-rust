@@ -27,6 +27,8 @@ pub struct Settings {
     /// Off by default: planning and first action share one model request.
     /// Enable to use the legacy separate planning request.
     pub separate_plan_model_call: bool,
+    /// Independent model audit is opt-in: external judge may verify separately.
+    pub separate_model_audit_enabled: bool,
     /// User-controlled evidence reuse; never changes configured model weights.
     pub strategy_learning_enabled: bool,
     /// Maximum concurrent side-effect-free inspections per model step.
@@ -91,6 +93,7 @@ impl Settings {
             main, economy, max_steps,
             shell_enabled: var("DOMINION_ENABLE_SHELL", "false") == "true",
             separate_plan_model_call: var("DOMINION_SEPARATE_PLAN_MODEL_CALL", "false") == "true",
+            separate_model_audit_enabled: var("DOMINION_SEPARATE_MODEL_AUDIT", "false") == "true",
             strategy_learning_enabled: var("DOMINION_STRATEGY_LEARNING","false")=="true",
             max_parallel_reads:var("DOMINION_MAX_PARALLEL_READS","4").parse::<usize>().unwrap_or(4).clamp(1,8),
             denied_tools:var("DOMINION_DENIED_TOOLS","").split(',')
