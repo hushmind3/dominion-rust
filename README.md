@@ -112,11 +112,13 @@ The legacy archive is a separate SQLite store with an indexed `(kind,updated_at,
 
 ## Main frontend integration (2026-11-17)
 
-The `dominion-sub4` web frontend now adopts the **main branch at `76e2e5e5de742d8f43761e8a9cd3265158030b00`** for the persistent chat/group workspace, conversation settings, execution-permission controls, settings overlay, rooms layout, connection tabs, memory views, CSS and Korean/English translations. Fifteen source files were merged without replacing the Rust SDK, backend or Run storage.
+The `dominion-sub4` web frontend now adopts the **main branch at `a026ce8e237fde2272b92cf929c7a944337f1d38`** for the persistent chat/group workspace, conversation settings, execution-permission controls, settings overlay, rooms layout, connection tabs, memory views, CSS and Korean/English translations. Fifteen source files were merged without replacing the Rust SDK, backend or Run storage.
 
 Sub4-specific endpoints and UI are preserved: the operator-approved main SQLite import, archived history and memory promotion panels, GitHub repository-permission OAuth action, precise SSE invalidation, backups, and Playwright/native tests. Files imported directly from main are tracked by the frontend sync commit; `App.tsx` and `Connections.tsx` include small compatibility patches.
 
 The main frontend's older research/learning endpoints (e.g. `/api/synergy`, `/api/sessions/:id/learn`) remain outside the sub4 native backend contract. The memory growth panel is mounted only if opened, so an idle memory page does not query retired research services. No product capability is claimed until the native backend supports it.
+
+The follow-up main UI merge adds scoped SSE event routing, inactive-view request gating, a faster model explorer, and native Rust `job_event` compatibility. The dedicated Node test suite is executed in the web CI job.
 
 ## Verification
 

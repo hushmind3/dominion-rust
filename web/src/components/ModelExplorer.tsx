@@ -2,6 +2,7 @@ import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react'
 import {ArrowDownToLine,ArrowRight,Check,ChevronDown,CircleAlert,CloudDownload,Cpu,ExternalLink,FolderOpen,HardDrive,LoaderCircle,Pause,Play,RefreshCw,Search,Square,Trash2,X} from 'lucide-react'
 import {Button,SelectInput,TextInput} from './Primitives'
 import {get,post,del} from '../api'
+import {matchesRefreshTarget,type RefreshScope} from '../refreshEvents'
 import {t,useLocale} from '../i18n'
 import {translateError} from '../i18n/errors'
 type Catalog={id:string;author:string;name:string;library:string;createdAt?:string;downloads:number;likes:number;gated:boolean;updatedAt:string;description:string;task:string;tags:string[]}
@@ -61,7 +62,11 @@ export function ModelExplorer(){
   // Throttle event-triggered refreshes instead of waiting for the 10-second
   // fallback poll or starting one request per incoming download chunk.
   let eventTimer:ReturnType<typeof setTimeout>|undefined;
-  const onChange=()=>{
+  const onChange=(event?:Event)=>{
+   if(event?.type==='dominion-data-change'){
+    const targets=(event as CustomEvent<RefreshScope>).detail?.targets||[]
+    if(!matchesRefreshTarget('/api/model-library/runtime',targets))return
+   }
    if(document.hidden||eventTimer)return;
    eventTimer=setTimeout(()=>{
     eventTimer=undefined;
@@ -70,12 +75,14 @@ export function ModelExplorer(){
   };
   document.addEventListener('visibilitychange',onVisible);
   window.addEventListener('dominion-refresh',onChange);
+  window.addEventListener('dominion-data-change',onChange);
   void update();
   return()=>{
    live=false;
    clearTimeout(timer);clearTimeout(eventTimer);
    document.removeEventListener('visibilitychange',onVisible);
    window.removeEventListener('dominion-refresh',onChange);
+   window.removeEventListener('dominion-data-change',onChange);
   };
  },[refresh])
  useLayoutEffect(()=>{if(detailScroll.current)detailScroll.current.scrollTop=0},[selected])

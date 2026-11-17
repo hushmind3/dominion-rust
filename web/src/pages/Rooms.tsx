@@ -1,4 +1,5 @@
 import {ConversationSettings} from '../components/ConversationSettings'
+import {matchesRoomRefresh,type RefreshScope} from '../refreshEvents'
 import {ExecutionPermissions} from '../components/ExecutionPermissions'
 import {createPortal} from 'react-dom'
 import {useAnchoredPanel} from '../hooks/useAnchoredPanel'
@@ -51,9 +52,9 @@ function Avatar({agent,name,owner=false,size='normal',index=0}:{agent?:Agent;nam
 
 export function RoomsPage({openSession,openSettings,switchMode,active:visibleView=true}:{openSession:(id:string)=>void;openSettings:()=>void;switchMode:(mode:'chat'|'rooms')=>void;active?:boolean}){
  useLocale()
- const rooms=useRemote<RoomConfig[]>('/api/rooms',[])
- const agents=useRemote<Agent[]>('/api/agents',[])
- const providers=useRemote<Provider[]>('/api/providers',[])
+ const rooms=useRemote<RoomConfig[]>('/api/rooms',[],visibleView)
+ const agents=useRemote<Agent[]>('/api/agents',[],visibleView)
+ const providers=useRemote<Provider[]>('/api/providers',[],visibleView)
  const [selected,setSelected]=useState(()=>{try{return localStorage.getItem('dominion.room.selected')||''}catch{return ''}})
  const [showList,setShowList]=useState(false)
  useEffect(()=>{if(!visibleView)setShowList(false)},[visibleView])
@@ -177,6 +178,7 @@ function RoomConversation({room,agents,providers,openList,showList,openSession,o
  const pendingApprovals=feed.approvals.filter(approval=>approval.status==='pending')
  const mode=current.routingMode||'discussion'
  const sessionId=feed.sessionId||current.sessionId
+ const sessionRef=useRef(sessionId);sessionRef.current=sessionId
  const visible=messages.filter(message=>(message.role==='user'&&!message.agent_id&&(!('metadata' in message)||(message as any).metadata?.authorKind!=='agent_context'))||(message.role==='assistant'&&Boolean(message.content.trim())))
  const learningActive=feed.learningJobs.filter(job=>active(job.status)).length
  const memoryCount=feed.learningJobs.filter(job=>job.status==='completed').reduce((sum,job)=>sum+(typeof job.result?.memories==='number'?job.result.memories:0),0)
@@ -248,13 +250,19 @@ function RoomConversation({room,agents,providers,openList,showList,openSession,o
     setLive(previous=>previous?.turnId===turnId?(previous.error||previous.messageId?{...previous,done:true,tool:''}:null):previous);update()
    }
   }
-  window.addEventListener('dominion-refresh',update);window.addEventListener('dominion-room-event',stream)
+  const scopedUpdate=(event:Event)=>{
+   const scope=(event as CustomEvent<RefreshScope>).detail
+   if(scope&&matchesRoomRefresh(scope,room.id,sessionRef.current))update()
+  }
+  window.addEventListener('dominion-refresh',update)
+  window.addEventListener('dominion-data-change',scopedUpdate)
+  window.addEventListener('dominion-room-event',stream)
   // SSE carries live events; this poll is only a fallback. Ten seconds and no
   // hidden-tab traffic removes the duplicate 2.5s loop.
   const timer=setInterval(()=>{if(!document.hidden&&viewActive.current)void load()},10000)
   const onVisible=()=>{if(!document.hidden&&viewActive.current)void load()}
   document.addEventListener('visibilitychange',onVisible)
-  return()=>{mounted.current=false;clearTimeout(debounce);clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);window.removeEventListener('dominion-refresh',update);window.removeEventListener('dominion-room-event',stream)}
+  return()=>{mounted.current=false;clearTimeout(debounce);clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);window.removeEventListener('dominion-refresh',update);window.removeEventListener('dominion-data-change',scopedUpdate);window.removeEventListener('dominion-room-event',stream)}
  },[room.id,load])
  useEffect(()=>{if(visibleView)void load()},[visibleView,load])
  useEffect(()=>{if(!dirty)setDraft(draftOf(current))},[current,dirty])

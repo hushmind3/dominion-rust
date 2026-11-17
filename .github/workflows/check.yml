@@ -47,7 +47,7 @@ jobs:
       # Rust all-target tests already execute in the dedicated Rust job.
       # Avoid rebuilding the same release Rust dependency graph in web CI.
       - name: Frontend typecheck and production bundle
-        run: npm run typecheck && npm run build
+        run: npm run typecheck && npm run test:refresh && npm run build
 
   external-mcp:
     runs-on: ubuntu-latest

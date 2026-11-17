@@ -15,6 +15,7 @@
     "build": "vite build",
     "start": "cargo run --release --manifest-path ../Cargo.toml -- --home .. --open",
     "typecheck": "tsc --noEmit",
+    "test:refresh": "node --experimental-strip-types --test tests/refresh-events.test.mjs",
     "test": "cargo test --release --manifest-path ../Cargo.toml",
     "check": "npm run typecheck && npm test && npm run build",
     "e2e": "playwright test",
