@@ -319,3 +319,102 @@ async fn strategy_trial_two_real_workers_share_base_and_settle_before_comparison
     server.abort();
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+
+/// A complete read-program job uses ONE tool-capable model turn plus ONE final
+/// answer turn. Old default path added a separate plan and auditor turn.
+/// The mock exposes protocol behavior, not external model quality.
+async fn fused_read_program_model(
+    State(count):State<Arc<AtomicUsize>>,Json(request):Json<Value>
+)->Json<Value>{
+    let turn=count.fetch_add(1,Ordering::SeqCst);
+    let message=match turn{
+        0=>{
+            assert!(request["tools"].as_array().is_some_and(|tools|
+                tools.iter().any(|t|t.pointer("/function/name").and_then(Value::as_str)
+                    ==Some("read_program"))));
+            json!({"role":"assistant","content":null,"tool_calls":[{
+                "id":"program-inspection-1","type":"function","function":{
+                    "name":"read_program",
+                    "arguments":json!({"steps":[
+                        {"id":"files","tool":"list_files","arguments":{"path":""}},
+                        {"id":"scan","tool":"read_listed_files","from":"files",
+                            "suffix":".txt","max_files":2,"contains":"signal"},
+                        {"id":"target","tool":"read_file","arguments":{"path":"target.txt"},
+                            "when":{"step":"files","contains":"target.txt"}}
+                    ]}).to_string()
+                }
+            }]})
+        },
+        1=>{
+            let observed=request["messages"].as_array().is_some_and(|messages|
+                messages.iter().any(|m|m["role"]=="tool"
+                    &&m["tool_call_id"]=="program-inspection-1"
+                    &&m["content"].as_str().is_some_and(|s|
+                        s.contains("signal=present")&&s.contains("nested_read_calls"))));
+            assert!(observed,"one durable program tool result must provide real read evidence");
+            json!({"role":"assistant","content":"Observed signal=present in target.txt."})
+        },
+        _=>json!({"role":"assistant","content":"Unexpected additional paid model turn"})
+    };
+    Json(json!({"choices":[{"message":message}],
+        "usage":{"prompt_tokens":26,"completion_tokens":8}}))
+}
+#[tokio::test]
+async fn read_program_fuses_planning_and_skips_duplicate_model_audit(){
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address=listener.local_addr().unwrap();
+    let turns=Arc::new(AtomicUsize::new(0));
+    let server=tokio::spawn({
+        let count=Arc::clone(&turns);
+        async move{
+            axum::serve(listener,Router::new()
+                .route("/chat/completions",post(fused_read_program_model))
+                .with_state(count)).await.unwrap();
+        }
+    });
+    let root=std::env::temp_dir().join(format!("dominion-fused-program-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    settings.main.base_url=format!("http://{address}");
+    settings.main.api_key.clear();
+    settings.economy=settings.main.clone();
+    settings.separate_plan_model_call=false;
+    settings.separate_model_audit_enabled=false;
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+    let engine=Engine::new(settings.clone(),store.clone(),groups).unwrap();
+    let run=Run::new(CreateRun{
+        instruction:"Inspect target.txt and report observed signal".into(),
+        budget_krw:Some(500.0),max_steps:Some(5)
+    },5).unwrap();
+    let id=run.id;
+    let folder=settings.workspace_dir.join(id.to_string());
+    tokio::fs::create_dir_all(&folder).await.unwrap();
+    tokio::fs::write(folder.join("target.txt"),"signal=present\n").await.unwrap();
+    store.put(run).await.unwrap();
+    engine.launch(id).await.unwrap();
+    let mut completed=None;
+    for _ in 0..100{
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let state=store.get(id).await.unwrap();
+        if state.terminal(){completed=Some(state);break;}
+    }
+    let result=completed.expect("fused read-program did not finish");
+    assert_eq!(result.status,RunStatus::Completed,"events={:?}",result.events);
+    assert_eq!(turns.load(Ordering::SeqCst),2,
+        "exactly one program decision and one final answer; no plan/auditor model call");
+    assert_eq!(result.steps,2);
+    assert!(result.events.iter().any(|e|e.kind=="planning_fused"));
+    assert!(!result.events.iter().any(|e|e.kind=="verification"));
+    assert_eq!(result.events.iter().filter(|e|e.kind=="tool_started").count(),1);
+    assert_eq!(result.events.iter().filter(|e|e.kind=="tool_result").count(),1);
+    assert!(result.answer.unwrap().contains("signal=present"));
+    for _ in 0..100{
+        if !engine.active.lock().await.contains(&id){break;}
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    server.abort();
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
