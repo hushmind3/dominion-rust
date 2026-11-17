@@ -36,9 +36,17 @@ fn short(value:&Value,key:&str,max:usize)->String{
 }
 fn digest(input:&str)->String{format!("{:x}",Sha256::digest(input.as_bytes()))}
 fn evidence(row:&Value)->Value{
+    let revision=super::provenance::prepare(row);
+    let (field,quote)=["articleExcerpt","description","title"].iter()
+        .find_map(|key|row[*key].as_str().filter(|s|!s.trim().is_empty())
+            .map(|s|(*key,s.chars().take(320).collect::<String>())))
+        .unwrap_or(("title",String::new()));
+    let check=super::provenance::citation_status(row,&quote);
     json!({"sourceId":row["id"],"url":row["url"],"claim":row["title"],
         "publishedAt":row["publishedAt"],"sourceName":row["sourceName"],
-        "contentStatus":row["contentStatus"],"kind":"source_observation_unverified"})
+        "contentStatus":row["contentStatus"],"kind":"source_observation_unverified",
+        "quote":quote,"quoteField":field,"quoteStatus":check,
+        "revisionId":revision["revisionId"],"storyKey":revision["storyKey"]})
 }
 fn business(kind:&str)->(&'static str,&'static str,&'static str,&'static str){
     match kind{
@@ -216,12 +224,38 @@ fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
         let paid=short(row,"firstPaymentStep",650);
         if title.is_empty()||why.is_empty()||plan.is_empty()||paid.is_empty(){continue;}
         let originals=ids.iter().filter_map(|id|allowed.get(*id).cloned()).collect::<Vec<_>>();
+        // A syndicated headline has different URLs but may be ONE underlying
+        // report. Never promote same-title mirrors to independent evidence.
+        let story_keys=originals.iter().filter_map(|e|
+            e["storyKey"].as_str().filter(|v|!v.is_empty()))
+            .collect::<Vec<_>>();
+        let potentially_syndicated=story_keys.len()>=2
+            && story_keys.iter().collect::<HashSet<_>>().len()==1;
+        let source_quotes=row["sourceQuotes"].as_array().into_iter().flatten()
+            .take(6).filter_map(|quoted|{
+                let id=quoted["sourceId"].as_str()?;
+                let text=quoted["quote"].as_str()?.trim();
+                if !ids.contains(&id){return None;}
+                let source=allowed.get(id)?;
+                let matched=!text.is_empty()&&text.chars().count()<=400
+                    && ["quote","claim"].iter().any(|field|
+                        source[*field].as_str().is_some_and(|v|v.contains(text)));
+                Some(json!({"sourceId":id,"quote":text.chars().take(400).collect::<String>(),
+                    "status":if matched{"exact_saved_evidence_field"}else{"mismatch_with_saved_evidence"},
+                    "revisionId":source["revisionId"]}))
+            }).collect::<Vec<_>>();
+        let citation_check=if source_quotes.is_empty(){"source_ids_only_no_quote"}
+            else if source_quotes.iter().any(|q|q["status"]=="mismatch_with_saved_evidence"){
+                "quote_mismatch_requires_review"
+            }else{"quotes_match_saved_fields_not_purchase_verified"};
         let independent_hosts=originals.iter().filter_map(|e|
             e["url"].as_str().and_then(|url|url.split_once("://"))
                 .map(|(_,rest)|rest.split('/').next().unwrap_or("")
                     .trim_start_matches("www.").to_lowercase()))
             .filter(|host|!host.is_empty()).collect::<HashSet<_>>();
-        let evidence_status=if independent_hosts.len()>=2{
+        let evidence_status=if potentially_syndicated{
+            "unverified_model_hypothesis_syndicated_story"
+        }else if independent_hosts.len()>=2{
             "unverified_model_hypothesis_two_independent_sources"
         }else{"unverified_model_hypothesis_single_origin"};
         out.push(json!({
@@ -233,7 +267,8 @@ fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
             "existingAlternatives":short(row,"existingAlternatives",500),
             "firstBuyerAccess":short(row,"firstBuyerAccess",500),
             "evidence":originals,"sourceIds":ids,"origin":"model_hypothesis",
-            "evidenceStatus":evidence_status,"status":"draft",
+            "evidenceStatus":evidence_status,"citationStatus":citation_check,
+            "sourceQuoteChecks":source_quotes,"status":"draft",
             "modelRunId":run,"moneyMechanism":short(row,"moneyMechanism",100)
         }));
     }
@@ -245,6 +280,7 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/money/settings",get(module_settings).post(configure_module))
         .route("/money/stats",get(stats))
         .route("/money/search",get(search_archive))
+        .route("/money/sources/{id}/history",get(source_history))
         .route("/money/collect",post(collect))
         .route("/money/automation",post(automation))
         .route("/money/inference/cancel",post(cancel))
@@ -323,6 +359,12 @@ pub async fn search_archive(State(engine):State<Arc<Engine>>,
     Ok(Json(json!({"results":found,"count":found.len(),
         "query":q,"modelCalls":0,
         "note":"archived source observations, not verified demand or sales"})))
+}
+pub async fn source_history(State(engine):State<Arc<Engine>>,
+    Path(id):Path<String>)->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
+    let root=engine.settings.data_dir.clone();
+    blocking(move||super::provenance::history(&root,&id)).await.map(Json)
 }
 pub async fn collect(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     ->Result<Json<Value>,Fault>{
@@ -599,9 +641,9 @@ Treat all archived headlines and candidate templates as UNVERIFIED observational
 Indexed historical source-backed leads (not proof of customer purchases):\n{evidence}\n\
 Previously rejected hypotheses; avoid near-duplicates but do not treat rejection text as fact:\n{negative}\n\
 Invent up to 3 DISTINCT cross-domain commercial mechanisms. For each explain: specific buyer and expensive problem; which technology or alternative can replace the current method; the causal steps from observable changes to an offer; incumbent substitutes and adoption obstacles; first reachable buyer and a test for willingness to pay; and the precise falsifier.\n\
-Cite ONLY exact sourceIds found inside the input evidence, preferably two independently hosted sources for a cross-market link. If there is only one source, explicitly label the hypothesis as unsupported by independent corroboration.\n\
+Cite ONLY exact sourceIds found inside the input evidence; two links may report one syndicated story. When possible include sourceQuotes with exact, short text from evidence quote/claim, e.g. [{{"sourceId":"exact sourceId","quote":"exact words"}}]. If not available, leave it empty. Independent hostnames alone do not verify a market gap.\n\
 Do not assert revenue, buyer commitments, measured prices or real demand without archived primary proof. Do not invent or infer source URLs. Do not assume a user budget, industry or time horizon.\n\
-Only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\":\"\",\"whyPay\":\"\",\"causalChain\":\"\",\"existingAlternatives\":\"\",\"firstBuyerAccess\":\"\",\"implementationPlan\":\"\",\"firstPaymentStep\":\"\",\"counterfactual\":\"\",\"moneyMechanism\":\"\",\"sourceIds\":[\"exact sourceId\"]}}]}}.");
+Only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\":\"\",\"whyPay\":\"\",\"causalChain\":\"\",\"existingAlternatives\":\"\",\"firstBuyerAccess\":\"\",\"implementationPlan\":\"\",\"firstPaymentStep\":\"\",\"counterfactual\":\"\",\"moneyMechanism\":\"\",\"sourceIds\":[\"exact sourceId\"],\"sourceQuotes\":[]}}]}}.");
         let sdk=Dominion::from_engine(Arc::clone(&engine));
         let run=sdk.prepare_run(CreateRun{instruction:prompt,budget_krw:Some(budget),max_steps:Some(1)},
             RunOptions{provider_id:agent.provider_id,model:agent.model,

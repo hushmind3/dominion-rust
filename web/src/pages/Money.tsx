@@ -4,11 +4,12 @@ import {get,post,type Agent} from '../api'
 
 type Evidence={
  sourceId?:string;url?:string;claim?:string;publishedAt?:string;
- sourceName?:string;kind?:string;contentStatus?:string
+ sourceName?:string;kind?:string;contentStatus?:string;
+ quote?:string;quoteStatus?:string;revisionId?:string;storyKey?:string
 }
 type ArchivedSource={id:string;title:string;url:string;sourceName?:string;
  publishedAt?:string;verification?:string;description?:string;changeTags?:string[];
- feedOriginal?:string}
+ feedOriginal?:string;feedOriginalTruncated?:boolean;revisionId?:string;storyKey?:string}
 type Lead={
  id:string;title:string;offer?:string;customer?:string;
  whyPay?:string;implementationPlan?:string;firstPaymentStep?:string;
@@ -56,6 +57,10 @@ export function MoneyPage(){
  const [loadingCandidates,setLoadingCandidates]=useState(false)
  const [archiveQuery,setArchiveQuery]=useState('')
  const [archiveResults,setArchiveResults]=useState<ArchivedSource[]>([])
+ const [sourceHistory,setSourceHistory]=useState<Record<string,{
+    revisions:ArchivedSource[];relatedSameTitle:ArchivedSource[];
+    legacyRevisionUnavailable?:boolean;relationStatus:string
+ }>>({})
  const [archiveSearched,setArchiveSearched]=useState(false)
  const [searchingArchive,setSearchingArchive]=useState(false)
  const inferring=report.reasoningStatus==='running'||report.reasoningStatus==='queued'
@@ -117,6 +122,15 @@ export function MoneyPage(){
    await refresh()
   }catch(e){setError((e as Error).message)}
   finally{setBusy('');setModuleLoading(false)}
+ }
+ async function showSourceHistory(id:string){
+  setError('')
+  try{
+   const record=await get<{revisions:ArchivedSource[];relatedSameTitle:ArchivedSource[];
+       legacyRevisionUnavailable?:boolean;relationStatus:string}>(
+     '/api/money/sources/'+encodeURIComponent(id)+'/history')
+   setSourceHistory(prev=>({...prev,[id]:record}))
+  }catch(e){setError((e as Error).message)}
  }
  async function searchArchive(){
   const term=archiveQuery.trim()
@@ -339,11 +353,31 @@ export function MoneyPage(){
       {row.sourceName||'공개 출처'} · {row.publishedAt||'발행일 미상'} · {row.verification||'검증 전'}
      </p>
      {row.feedOriginal&&<details className="mt-2">
-      <summary className="cursor-pointer text-[11px] text-[#877567]">수집 당시 RSS 원본 펼치기</summary>
+      <summary className="cursor-pointer text-[11px] text-[#877567]">
+       수집 당시 RSS 항목 펼치기{row.feedOriginalTruncated?' (길이 제한으로 일부 생략)':''}
+      </summary>
       <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-[#F8F5EE] p-2 text-[10px]">
        {row.feedOriginal}
       </pre>
      </details>}
+     <button type="button" onClick={()=>void showSourceHistory(row.id)}
+      className="mt-2 text-[11px] font-semibold text-[#A75835] hover:underline">
+      저장 버전·동일 제목 출처 비교
+     </button>
+     {sourceHistory[row.id]&&<div className="mt-2 space-y-2 rounded-lg bg-[#F8F5EE] p-3 text-[11px]">
+      <p className="font-semibold">저장 리비전 {sourceHistory[row.id].revisions.length}건
+       {sourceHistory[row.id].legacyRevisionUnavailable?' · 이전 버전 기록 없음':''}</p>
+      {sourceHistory[row.id].revisions.map((rev,i)=><details key={rev.revisionId||i}>
+       <summary className="cursor-pointer">{rev.revisionId?.slice(0,12)||'레거시'} · {rev.title}</summary>
+       <p className="mt-1 whitespace-pre-wrap">{rev.description||'설명 없음'}</p>
+       {rev.feedOriginal&&<pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">{rev.feedOriginal}</pre>}
+      </details>)}
+      <p>동일 제목의 다른 URL {sourceHistory[row.id].relatedSameTitle.length}건
+       · 독립 보도 또는 실제 거래를 의미하지 않습니다.</p>
+      {sourceHistory[row.id].relatedSameTitle.map(other=><a key={other.id}
+       className="block text-[#A75835] underline" href={other.url}
+       target="_blank" rel="noreferrer">{other.sourceName||'다른 출처'} · {other.title}</a>)}
+     </div>}
     </div>)}
    </div>}
   </section>
@@ -354,7 +388,7 @@ export function MoneyPage(){
    {candidates.map((lead,index)=><article key={lead.id}
     className="rounded-2xl border border-[#E8DFD3] bg-white p-5 shadow-[0_2px_10px_rgba(55,42,25,.04)]">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-     <span className="text-[11px] font-bold text-[#C96442]">후보 {index+1} · {lead.origin==='model_hypothesis'?'AI 가설':lead.evidence?.length===2?'독립 2개 출처':'단일 출처'}</span>
+     <span className="text-[11px] font-bold text-[#C96442]">후보 {index+1} · {lead.origin==='model_hypothesis'?'AI 가설':lead.evidence?.length===2?'2개 출처 언급':'단일 출처'}</span>
      <span className="text-[10px] text-[#95857A]">{lead.evidenceStatus||'검증 전'}</span>
     </div>
     <h2 className="text-lg font-extrabold">{lead.title}</h2>

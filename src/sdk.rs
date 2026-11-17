@@ -298,6 +298,18 @@ impl Dominion {
     }
     /// Indexed archive recall with no model calls; shares the Money domain
     /// database and standard Rust SDK lifecycle.
+    /// Original persisted source snapshots and revision/syndication lineage.
+    /// This is a domain read, not an agent or paid model invocation.
+    pub async fn money_source_history(&self,id:&str)->Result<Value,String>{
+        if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
+            return Err("Money tool is disabled".into());
+        }
+        let root=self.engine.settings.data_dir.clone();
+        let key=id.to_string();
+        tokio::task::spawn_blocking(move||
+            crate::money::provenance::history(&root,&key))
+            .await.map_err(|e|e.to_string())?
+    }
     pub async fn money_search(&self,query:&str,limit:usize)->Result<Vec<Value>,String>{
         if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
             return Err("Money tool is disabled".into());

@@ -333,6 +333,29 @@ pub fn stats(root:&Path)->Result<Value,String>{
 mod tests{
  use super::*;
  use uuid::Uuid;
+ #[test] fn same_url_revisions_and_same_title_across_hosts_remain_recoverable(){
+    let root=std::env::temp_dir().join(format!("dominion-money-revision-{}",Uuid::new_v4()));
+    let first=json!({"id":"url-a","url":"https://seller.example/a",
+        "title":"Industry new supplier price","description":"First statement",
+        "sourceName":"Seller","publishedAt":"2026-11-17","contentStatus":"headline_observed"});
+    assert_eq!(save_signals(&root,&[first.clone()]).unwrap(),1);
+    assert_eq!(save_signals(&root,&[first.clone()]).unwrap(),0);
+    let mut changed=first.clone();changed["description"]=json!("Revised statement");
+    assert_eq!(save_signals(&root,&[changed.clone()]).unwrap(),0);
+    let mirror=json!({"id":"url-b","url":"https://reporter.example/b",
+        "title":"Industry new supplier price","description":"Different reporter",
+        "sourceName":"Reporter","contentStatus":"headline_observed"});
+    assert_eq!(save_signals(&root,&[mirror]).unwrap(),1);
+    let lineage=provenance::history(&root,"url-a").unwrap();
+    assert_eq!(lineage["revisions"].as_array().unwrap().len(),2);
+    assert_eq!(lineage["current"]["description"],"Revised statement");
+    assert_eq!(lineage["relatedSameTitle"].as_array().unwrap().len(),1);
+    let index=retrieval::search(&root,"Revised statement",10).unwrap();
+    assert!(index.iter().any(|r|r["id"]=="url-a"));
+    assert!(retrieval::search(&root,"First statement",10).unwrap()
+        .iter().all(|r|r["id"]!="url-a"));
+    std::fs::remove_dir_all(root).unwrap();
+ }
  #[test] fn non_shortlisted_candidates_can_be_held_searched_restored_and_rejected(){
     let root=std::env::temp_dir().join(format!("dominion-money-archive-{}",Uuid::new_v4()));
     let drafts=(0..18).map(|i|json!({"id":format!("lead-{i}"),
