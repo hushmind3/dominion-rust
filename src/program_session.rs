@@ -30,6 +30,10 @@ pub struct ProgramSession{
     pub cursor:usize,
     #[serde(default)]
     pub pending_step:Option<String>,
+    /// A new owner directive invalidates future steps, but an already-started
+    /// external effect must reach its exact durable receipt first.
+    #[serde(default)]
+    pub halt_requested:bool,
     #[serde(default)]
     pub observations:Map<String,Value>,
 }
@@ -116,7 +120,7 @@ pub fn validate(run:&Run,request:&Value,settings:&Settings)->Result<ProgramSessi
         steps.push(step);
     }
     Ok(ProgramSession{
-        id:String::new(),steps,cursor:0,pending_step:None,observations:Map::new()
+        id:String::new(),steps,cursor:0,pending_step:None,halt_requested:false,observations:Map::new()
     })
 }
 /// Called in one Store mutation while the outer run_program tool intent is
@@ -143,6 +147,64 @@ pub fn install(run:&mut Run,call:&ToolCall,settings:&Settings)->Result<String,St
     Ok(json!({"state":"scheduled","program_id":call.id,"steps":steps,
         "note":"Every step uses the ordinary Run journal, approval, tool policy and crash recovery"}).to_string())
 }
+/// A new user's direction takes precedence over an unstarted model program.
+/// If an effect has entered the original write-ahead journal, let it settle
+/// first: no speculative cancellation, duplicate dispatch or fake receipt.
+pub fn supersede(run:&mut Run)->Result<(),String>{
+    let Some(state)=run.program_session.as_ref()else{return Ok(())};
+    let program_id=state.id.clone();
+    let current=state.pending_step.clone();
+    if let Some(ref id)=current {
+        if run.in_flight.as_ref().is_some_and(|c|c.id==*id)
+            || run.read_batch_in_flight.iter().any(|c|c.id==*id) {
+            if let Some(active)=run.program_session.as_mut(){active.halt_requested=true;}
+            run.event("program_directive_barrier",
+                "New instruction takes effect after started operation settles",
+                Some(json!({"program_id":program_id,"call_id":id,
+                    "in_flight":true})));
+            return Ok(());
+        }
+        if run.pending_approval.as_ref().is_some_and(|c|c.id==*id) {
+            run.pending_approval=None;
+            run.approval_decision=None;
+            run.status=crate::domain::RunStatus::Running;
+            run.messages.push(json!({"role":"tool","tool_call_id":id,
+                "content":"TOOL ERROR [SUPERSEDED]: Owner directive replaced the pending program step before approval."}));
+            run.program_session=None;
+            run.event("program_superseded",
+                "Cancelled an unstarted approval without executing the old program step",
+                Some(json!({"program_id":program_id,"call_id":id})));
+            return Ok(());
+        }
+        if let Some(index)=run.queued_calls.iter().position(|c|c.id==*id) {
+            let call=run.queued_calls.remove(index);
+            run.messages.push(json!({"role":"tool","tool_call_id":call.id,
+                "content":"TOOL ERROR [SUPERSEDED]: Owner directive cancelled this unstarted program step."}));
+            run.program_session=None;
+            run.event("program_superseded",
+                "Discarded an unstarted tool intent, leaving a correlated tool receipt",
+                Some(json!({"program_id":program_id,"call_id":id})));
+            return Ok(());
+        }
+        let settled=run.messages.iter().any(|m|m["role"]=="tool"
+            &&m["tool_call_id"]==id.as_str());
+        if !settled {
+            // Paused uncertain outcomes stay uncertain until an observed receipt.
+            if let Some(active)=run.program_session.as_mut(){active.halt_requested=true;}
+            run.event("program_directive_barrier",
+                "Tool receipt unavailable; owner directive cannot erase uncertain effect",
+                Some(json!({"program_id":program_id,"call_id":id,
+                    "reconciliation_required":true})));
+            return Ok(());
+        }
+    }
+    run.program_session=None;
+    run.event("program_superseded",
+        "New owner directive replaced unstarted native program steps",
+        Some(json!({"program_id":program_id,"call_id":current})));
+    Ok(())
+}
+
 /// One cursor transition per Store mutation. The caller only invokes this
 /// when no pending approval, queued calls or side effects are in-flight.
 /// Install and all progress updates use the same existing persistent Run.
@@ -152,6 +214,11 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
         return Err("program advance requires an idle running Run".into());
     }
     let Some(mut state)=run.program_session.take()else{return Ok(())};
+    if state.halt_requested && state.pending_step.is_none(){
+        run.event("program_superseded","Owner directive superseded all unstarted program steps",
+            Some(json!({"program_id":state.id,"remaining":state.steps.len().saturating_sub(state.cursor)})));
+        return Ok(());
+    }
     if let Some(id)=state.pending_step.take(){
         let receipt=run.messages.iter().rev().find(|m|
             m["role"]=="tool"&&m["tool_call_id"]==id);
@@ -189,6 +256,12 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
             format!("Native program step {}: {}",step.id,if succeeded{"ok"}else{"error"}),
             Some(json!({"program_id":complete,"step":step.id,
                 "call_id":id,"succeeded":succeeded,"sha256":proof(body)})));
+        if state.halt_requested {
+            run.event("program_superseded",
+                "Stopped program after original effect reached its durable receipt",
+                Some(json!({"program_id":state.id,"last_step":step.id,"succeeded":succeeded})));
+            return Ok(());
+        }
         let stopping=!succeeded&&step.on_error.as_deref()!=Some("continue");
         state.cursor+=1;
         if stopping {
@@ -316,7 +389,7 @@ mod tests{
             id:"p".into(),steps:vec![ProgramStep{id:"danger".into(),
                 tool:"write_file".into(),arguments:json!({"path":"x","content":"x"}),
                 when:Some(json!({"type":"equals","from":"missing","value":"ok"})),
-                on_error:None}],cursor:0,pending_step:None,observations:Map::new()});
+                on_error:None}],cursor:0,pending_step:None,halt_requested:false,observations:Map::new()});
         advance(&mut r,&s).unwrap();
         assert!(r.program_session.is_none());
         assert!(r.queued_calls.is_empty());
@@ -331,7 +404,7 @@ mod tests{
                 arguments:json!({"path":"s.txt","content":"effect"}),
                 when:None,on_error:None}],
             cursor:0,pending_step:Some("program:p:write".into()),
-            observations:Map::new()
+            halt_requested:false,observations:Map::new()
         });
         advance(&mut r,&settings).unwrap();
         assert_eq!(r.status,RunStatus::Paused);
