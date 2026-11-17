@@ -199,6 +199,13 @@ export class Dominion {
     fromRepository: (input: CreateRun & {repository:string}) => this.request<Run>('POST','/runs/from-repository',input),
     list: () => this.request<Run[]>('GET','/runs'),
     get: (id: string) => this.request<Run>('GET','/runs/'+encodeURIComponent(id)),
+    repairObservations:(id:string)=>this.request<{
+      runId:string;status:RunStatus;observations:Array<{
+        strategy:string;failureSeq:number;appliedEventSeq:number;modelStep:number;
+        chargedModelInputTokens:number;chargedModelOutputTokens:number;
+        subsequentSuccessfulToolReceipts:number;subsequentFailedToolReceipts:number;
+        completedAfterStrategy:boolean;attribution:'temporal_association_not_causal_lift'
+      }>;note:string}>('GET','/runs/'+encodeURIComponent(id)+'/repair-observations'),
     resume: (id: string) => this.request<{ok:boolean}>('POST','/runs/'+encodeURIComponent(id)+'/resume',{}),
     cancel: (id: string) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/cancel',{}),
     approve: (id: string, allow: boolean) => this.request<{ok:boolean}>('POST','/runs/'+encodeURIComponent(id)+'/approval',{allow}),

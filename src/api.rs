@@ -93,6 +93,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/runs/{id}/reconcile",post(reconcile))
         .route("/runs/{id}/subagents",get(list_subagents).post(create_subagent))
         .route("/runs/{id}/events",get(events))
+        .route("/runs/{id}/repair-observations",get(repair_observations))
         .route("/runs/{id}/skills",get(list_skills))
         .route("/runs/{id}/skills/{name}",get(read_skill))
         .route("/runs/{id}/files",get(list_files))
@@ -200,6 +201,11 @@ async fn create_repository_run(State(engine):State<Arc<Engine>>,Json(input):Json
 }
 async fn get_run(State(engine): State<Arc<Engine>>, Path(id):Path<Uuid>) -> Result<Json<Run>,ApiError> {
     engine.store.get(id).await.map(Json).ok_or_else(not_found)
+}
+async fn repair_observations(State(engine):State<Arc<Engine>>,
+    Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{
+    let run=engine.store.get(id).await.ok_or_else(not_found)?;
+    Ok(Json(crate::repair_guidance::observations(&run)))
 }
 async fn resume(State(engine): State<Arc<Engine>>, Path(id):Path<Uuid>) -> Result<Json<Value>,ApiError> {
     engine.launch(id).await.map_err(bad)?;

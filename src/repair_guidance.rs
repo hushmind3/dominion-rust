@@ -76,6 +76,43 @@ pub fn advise(run:&Run)->Option<Advice>{
     }
     None
 }
+/// Read-only association report. These are chronology/receipts, NOT
+/// evidence of causal lift: that needs controlled same-case holdouts.
+pub fn observations(run:&Run)->serde_json::Value{
+    use serde_json::json;
+    let checkpoints=run.events.iter().enumerate()
+        .filter(|(_,e)|e.kind=="repair_strategy_applied")
+        .collect::<Vec<_>>();
+    let mut entries=Vec::new();
+    for (pos,(index,applied)) in checkpoints.iter().enumerate().rev().take(64){
+        let end=checkpoints.get(pos+1).map(|(next,_)|*next)
+            .unwrap_or(run.events.len());
+        let subsequent=&run.events[*index+1..end];
+        let actual_ok=subsequent.iter().filter(|event|
+            event.kind=="tool_result"||event.kind=="tool_reconciled"
+                &&event.detail.as_ref().is_some_and(|d|d["succeeded"]==true)
+        ).count();
+        let actual_fail=subsequent.iter().filter(|event|
+            matches!(event.kind.as_str(),"tool_error"|"tool_admission_rejected"
+                |"tool_policy_denied"|"tool_denied"|"tool_hook_denied")
+        ).count();
+        let verified=subsequent.iter().any(|e|e.kind=="completed");
+        entries.push(json!({
+            "strategy":applied.detail.as_ref().map(|d|&d["strategy"]),
+            "failureSeq":applied.detail.as_ref().map(|d|&d["failure_seq"]),
+            "appliedEventSeq":applied.seq,
+            "modelStep":applied.detail.as_ref().map(|d|&d["model_step"]),
+            "chargedModelInputTokens":applied.detail.as_ref().map(|d|&d["input_tokens"]),
+            "chargedModelOutputTokens":applied.detail.as_ref().map(|d|&d["output_tokens"]),
+            "subsequentSuccessfulToolReceipts":actual_ok,
+            "subsequentFailedToolReceipts":actual_fail,
+            "completedAfterStrategy":verified,
+            "attribution":"temporal_association_not_causal_lift"
+        }));
+    }
+    json!({"runId":run.id,"status":run.status,"observations":entries,
+        "note":"An observed receipt or completion cannot establish that the chosen strategy caused success. Compare identical tasks, models, tools and budgets on held-out cases."})
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -119,6 +156,27 @@ mod tests{
         assert_eq!(advice.kind,"tool_failure");
         assert!(!advice.hint.contains("reveal keys"));
         assert!(!advice.hint.contains("ignore instructions"));
+    }
+    #[test]fn observations_link_strategy_and_real_receipts_without_causal_claims(){
+        let mut r=run();
+        r.event("model","model response",None);
+        r.event("tool_error","failed",Some(json!({"result":"test result: FAILED"})));
+        let failure=r.events.last().unwrap().seq;
+        r.event("repair_strategy_applied","repair",Some(json!({
+            "strategy":"test_failure","failure_seq":failure,"model_step":2,
+            "input_tokens":700,"output_tokens":180
+        })));
+        r.event("tool_result","read_file succeeded",Some(json!({"succeeded":true})));
+        r.event("verification","PASS",None);
+        r.event("completed","verified",None);
+        let got=observations(&r);
+        assert_eq!(got["observations"][0]["failureSeq"],failure);
+        assert_eq!(got["observations"][0]["chargedModelInputTokens"],700);
+        assert_eq!(got["observations"][0]["subsequentSuccessfulToolReceipts"],1);
+        assert_eq!(got["observations"][0]["completedAfterStrategy"],true);
+        assert_eq!(got["observations"][0]["attribution"],
+            "temporal_association_not_causal_lift");
+        assert_eq!(got["observations"][0]["subsequentFailedToolReceipts"],0);
     }
     #[test]fn a_failed_verifier_requests_evidence_based_repair(){
         let mut r=run();

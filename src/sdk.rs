@@ -168,6 +168,12 @@ impl Dominion {
     }
     pub async fn get(&self,id:Uuid)->Result<Run,String>{self.engine.store.get(id).await.ok_or("execution not found".into())}
     pub async fn list(&self)->Vec<Run>{self.engine.store.list().await}
+    /// Chronological strategy→tool receipt associations for controlled
+    /// offline evaluation. Does not infer causal benefit or launch a model.
+    pub async fn repair_observations(&self,id:Uuid)->Result<Value,String>{
+        let run=self.get(id).await?;
+        Ok(crate::repair_guidance::observations(&run))
+    }
     pub async fn events(&self,id:Uuid,since:u64)->Result<Vec<TimelineEvent>,String>{
         Ok(self.get(id).await?.events.into_iter().filter(|e|e.seq>since).collect())
     }
