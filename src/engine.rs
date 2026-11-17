@@ -452,7 +452,7 @@ impl Engine {
                         run,&call,&deny.code,&deny.reason)).await?;
                     continue;
                 }
-                if call.name == "shell" || call.name == "merge_subagent" ||
+                if matches!(call.name.as_str(),"shell"|"merge_subagent"|"compare_strategies") ||
                    crate::connected_tools::mutates(&call.name) || call.name.starts_with("mcp__") {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
@@ -462,7 +462,11 @@ impl Engine {
                         run.event("approval_required",
                             if call.name == "shell" { format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")) }
                             else if call.name == "merge_subagent" {format!("Integrating a child Git patch needs approval: {}",call.arguments.get("id").and_then(Value::as_str).unwrap_or("?"))}
-                            else if crate::connected_tools::mutates(&call.name) {
+                            else if call.name == "compare_strategies" {
+                                 format!("Two isolated candidate Runs require approval: budget up to {:.2} KRW each, plus parent work. No automatic patch adoption.",
+                                     call.arguments["budget_krw_per_candidate"].as_f64().unwrap_or(0.0))
+                             }
+                             else if crate::connected_tools::mutates(&call.name) {
                                 format!("Connected account action needs approval: {} args={}",
                                     call.name,call.arguments.to_string().chars().take(1200).collect::<String>())
                             }
