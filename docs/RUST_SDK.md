@@ -125,3 +125,9 @@ Native SDK parity: `Dominion::money_implement(candidate_id,agent_id,budget_krw,a
 - Fresh installations are disabled until explicitly enabled, with no idle Money SQLite initialization. Pre-existing Money databases stay enabled for backward compatibility. When disabled, the Money scan, find, archive search and implementation endpoints reject new work; previously authorized native Runs stay in the shared Run journal and can be separately cancelled or reconciled.
 
 All entries remain research observations or model hypotheses unless independently confirmed. RSS `feedOriginal` contains the original feed item (up to 2,400 characters), not a live copy of the destination article. Release and frontend validation are outside this development step.
+
+### Native execution context and tool admission (2026-11-18)
+
+All regular Rust SDK/HTTP/TypeScript/GUI `Run` submissions still share `Engine::launch` and one persisted `Run.messages`/tool journal. Context projection now leaves full within-budget history intact; over-budget history pins exact direct owner changes and the latest bounded verifier repair feedback, keeping paired tool-call/receipt groups. No changes are made to public Run payloads, model credentials, user files, or existing journal serialization.
+
+The configured denied-tool list is re-applied at actual dispatch, including queued calls restored from a prior process and tool calls explicitly approved earlier. A rejected call produces a durable `TOOL ERROR [OPERATOR_TOOL_DENIED]` correlation receipt; on-demand skill tools remain available after the one-time initial skill catalog hint. These are internal execution-policy upgrades and introduce no new client SDK endpoints.

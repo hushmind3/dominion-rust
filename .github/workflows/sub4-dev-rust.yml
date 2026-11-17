@@ -23,6 +23,10 @@ jobs:
         run: 'cargo test --lib money::'
       - name: Native SDK inert reservation and recovery regression (dev profile)
         run: cargo test --lib reserved_unlaunched_run_is_not_auto_resumed_on_restart
+      - name: Agent context retention and repair regression (dev profile)
+        run: 'cargo test --lib context::'
+      - name: Operator tool admission and budget policy regressions (dev profile)
+        run: 'cargo test --lib policy::'
       - name: Common workspace path regression (dev profile)
         run: cargo test --lib paginates_large_repository_and_searches_beyond_first_200
 # Full macOS / Windows builds, frontend checks, packaging, E2E and soak
