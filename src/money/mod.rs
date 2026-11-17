@@ -162,8 +162,9 @@ pub fn candidate_archive(root:&Path,status:&str,query:&str,offset:usize,
         .collect::<Result<Vec<_>,_>>()?;
     let has_more=items.len()>page;
     items.truncate(page);
+    let next_offset=offset+items.len();
     Ok(json!({"items":items,"hasMore":has_more,
-        "nextOffset":offset+items.len(),"modelCalls":0}))
+        "nextOffset":next_offset,"modelCalls":0}))
 }
 /// Keep user decisions and reasons in the same Money candidate row. One
 /// transactional mutation protects the native implementation receipt.
