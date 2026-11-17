@@ -21,6 +21,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Money domain and implementation approval regressions (dev profile)
         run: 'cargo test --lib money::'
+      - name: Indexed delegation lineage and durable restart regression (dev profile)
+        run: cargo test --lib indexed_lineage_tracks_reparent_replace_and_durable_restart
       - name: Native SDK inert reservation and recovery regression (dev profile)
         run: cargo test --lib reserved_unlaunched_run_is_not_auto_resumed_on_restart
       - name: Domain approval receipt crash-state regression (dev profile)
