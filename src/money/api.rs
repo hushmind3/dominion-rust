@@ -371,13 +371,12 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
         instruction,budget_krw:Some(budget),max_steps:Some(25)
     },RunOptions{provider_id:agent.provider_id,model:agent.model,
         strategy_learning:false,model_only:false}).await.map_err(err)?;
-    candidate["implementationRunId"]=json!(run.id.to_string());
-    candidate["implementationAgentId"]=json!(agent_id);
-    candidate["implementationApprovedAt"]=json!(
-        crate::frontend_state::timestamp(crate::domain::now_ms()));
-    candidate["status"]=json!("implementation_requested");
     let root=engine.settings.data_dir.clone();
-    if let Err(error)=blocking(move||super::replace_candidate(&root,&candidate)).await{
+    let run_id=run.id;
+    let chosen_agent=agent_id.to_string();
+    if let Err(error)=blocking(move||
+        super::claim_implementation(&root,&candidate,run_id,&chosen_agent).map(|_|())
+    ).await{
         // Orphaned reservations remain inert at startup. Explicitly cancel
         // one when the domain record fails to commit.
         let _=engine.cancel(run.id).await;

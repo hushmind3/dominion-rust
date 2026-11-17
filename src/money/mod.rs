@@ -128,6 +128,39 @@ pub fn save_report(root:&Path,items:&[Value],report:&Value)->Result<(),String>{
     tx.commit().map_err(err)?;
     Ok(())
 }
+/// Atomic domain receipt for an externally approved native Run.
+/// No second job scheduler or execution journal: this stores only the
+/// candidate -> Run reference. A concurrent claimant cannot overwrite it.
+pub fn claim_implementation(root:&Path,expected:&Value,run_id:uuid::Uuid,
+    agent_id:&str)->Result<Value,String>{
+    let id=expected["id"].as_str().filter(|value|!value.is_empty())
+        .ok_or("candidate id missing")?;
+    let mut conn=open(root)?;
+    let tx=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
+    let raw:Option<String>=tx.query_row(
+        "SELECT record FROM money_candidates WHERE id=?1",params![id],
+        |row|row.get(0)).optional().map_err(err)?;
+    let Some(raw)=raw else{return Err("candidate removed before approval".into());};
+    let mut current:Value=serde_json::from_str(&raw).map_err(err)?;
+    if current!=*expected{return Err("candidate changed during approval; reload it".into());}
+    if current["status"]=="rejected"{
+        return Err("rejected candidate cannot be implemented".into());
+    }
+    if !current["implementationRunId"].is_null(){
+        return Err("candidate already has an implementation receipt".into());
+    }
+    current["implementationRunId"]=json!(run_id.to_string());
+    current["implementationAgentId"]=json!(agent_id);
+    current["implementationApprovedAt"]=json!(
+        crate::frontend_state::timestamp(crate::domain::now_ms()));
+    current["status"]=json!("implementation_requested");
+    let changed=tx.execute(
+        "UPDATE money_candidates SET record=?1,updated_ms=?2 WHERE id=?3",
+        params![current.to_string(),crate::domain::now_ms() as i64,id]).map_err(err)?;
+    if changed!=1{return Err("candidate disappeared before commit".into());}
+    tx.commit().map_err(err)?;
+    Ok(current)
+}
 pub fn replace_candidate(root:&Path,record:&Value)->Result<(),String>{
     let id=record["id"].as_str().filter(|s|!s.is_empty()).ok_or("candidate id missing")?;
     let conn=open(root)?;
@@ -171,6 +204,20 @@ pub fn stats(root:&Path)->Result<Value,String>{
 mod tests{
  use super::*;
  use uuid::Uuid;
+ #[test] fn concurrent_claims_cannot_replace_a_approved_implementation_run(){
+    let root=std::env::temp_dir().join(format!("dominion-money-claim-{}",Uuid::new_v4()));
+    let saved=json!({"id":"c-1","title":"Business idea","offer":"Prototype","status":"draft"});
+    save_report(&root,&[saved.clone()],&json!({"candidateIds":["c-1"]})).unwrap();
+    let first=Uuid::new_v4();
+    let second=Uuid::new_v4();
+    let accepted=claim_implementation(&root,&saved,first,"general").unwrap();
+    assert_eq!(accepted["implementationRunId"],first.to_string());
+    assert!(claim_implementation(&root,&saved,second,"general").is_err());
+    let reread=candidate(&root,"c-1").unwrap().unwrap();
+    assert_eq!(reread["implementationRunId"],first.to_string());
+    assert_eq!(reread["status"],"implementation_requested");
+    std::fs::remove_dir_all(root).unwrap();
+ }
  #[test] fn candidate_update_must_match_an_existing_row(){
     let root=std::env::temp_dir().join(format!("dominion-money-update-{}",Uuid::new_v4()));
     assert!(replace_candidate(&root,&json!({"id":"missing","status":"implementation_requested"})).is_err());
