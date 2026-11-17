@@ -46,6 +46,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       # Rust all-target tests already execute in the dedicated Rust job.
       # Avoid rebuilding the same release Rust dependency graph in web CI.
+      - name: Enforce bounded source modules
+        run: node ../scripts/check-source-size.mjs
       - name: Frontend typecheck and production bundle
         run: npm run typecheck && npm run test:refresh && npm run build
 
