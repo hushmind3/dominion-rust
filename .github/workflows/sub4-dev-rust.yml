@@ -23,6 +23,12 @@ jobs:
         run: 'cargo test --lib money::'
       - name: Native SDK inert reservation and recovery regression (dev profile)
         run: cargo test --lib reserved_unlaunched_run_is_not_auto_resumed_on_restart
+      - name: Domain approval receipt crash-state regression (dev profile)
+        run: cargo test --lib committed_domain_receipt_survives_restart_without_extra_worker
+      - name: Focused per-run memory cache regression (dev profile)
+        run: cargo test --lib repeated_model_turns_reuse_scoped_memory_until_owner_edit
+      - name: Durable memory revision persistence (dev profile)
+        run: 'cargo test --lib knowledge::'
       - name: Agent context retention and repair regression (dev profile)
         run: 'cargo test --lib context::'
       - name: Operator tool admission and budget policy regressions (dev profile)
