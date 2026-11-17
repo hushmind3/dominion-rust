@@ -532,3 +532,57 @@ use super::*;
         assert!(restored.events.iter().any(|e| e.kind == "recovered_ready"));
         fs::remove_dir_all(dir).await.unwrap();
     }
+
+    /// A completed transaction must not keep a strong lock for every Run ever
+    /// touched. Meanwhile, a live transaction must retain its exact lock
+    /// identity even when hundreds of unrelated entries are swept.
+    #[tokio::test]
+    async fn write_gate_cache_reaps_inactive_ids_without_splitting_a_live_lock(){
+        use std::sync::Arc;
+        use tokio::sync::oneshot;
+        use tokio::time::{timeout,Duration};
+        let root=std::env::temp_dir().join(format!("dominion-weak-gates-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let live_id=Uuid::new_v4();
+        let live=store.gate(live_id).await;
+        let live_weak=Arc::downgrade(&live);
+        let held=live.lock().await;
+        for _ in 0..384{
+            let temporary=store.gate(Uuid::new_v4()).await;
+            drop(temporary);
+        }
+        assert!(store.gates.lock().await.len()<=128,
+            "inactive per-Run gates must not grow with completed historical Runs");
+        let same=store.gate(live_id).await;
+        assert!(Arc::ptr_eq(&live,&same),"sweep split an active Run transaction lock");
+        let (tx,mut rx)=oneshot::channel();
+        let waiter=tokio::spawn(async move{
+            let _guard=same.lock().await;
+            let _=tx.send(());
+        });
+        tokio::task::yield_now().await;
+        assert!(rx.try_recv().is_err(),"same-Run waiter bypassed the held write gate");
+        drop(held);
+        timeout(Duration::from_secs(1),rx).await.unwrap().unwrap();
+        waiter.await.unwrap();
+        drop(live);
+        assert!(live_weak.upgrade().is_none(),"completed write retained a strong gate");
+        drop(store);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[test]
+    fn startup_recovery_predicate_distinguishes_stable_and_interrupted_snapshots(){
+        let mut run=Run::new(CreateRun{
+            instruction:"startup gate".into(),budget_krw:None,max_steps:None
+        },4).unwrap();
+        assert!(journal::needs_recovery(&run));
+        run.status=RunStatus::Completed;
+        assert!(!journal::needs_recovery(&run));
+        run.status=RunStatus::Paused;
+        assert!(!journal::needs_recovery(&run));
+        run.status=RunStatus::AwaitingApproval;
+        assert!(!journal::needs_recovery(&run));
+        run.approval_decision=Some(false);
+        assert!(journal::needs_recovery(&run));
+    }

@@ -22,3 +22,11 @@ Scope: `dominion-sub4` only. Main and competing branches unchanged.
 - The existing native crash-recovery and browser E2E remain required; no full Run journal, fsync or tool receipt retention was dropped.
 - The front-end snapshot is still a complete JSON rewrite up to 8 MiB and individual Run writes remain full durable snapshots. The changes target **blocking, cloning, and unnecessary remote discovery**, not an unimplemented incremental storage protocol.
 - Actual CPU, disk bytes, allocations, and latency improvements require before/after measurement. CI passing alone is not a performance percentage.
+
+
+## November 17 continuation: bounded writer-gate index and cheaper restart
+
+- Per-Run write gates now retain **Weak** references. The transaction owns a strong lock while it is in progress, ensuring same-Run fsync ordering and no partial snapshot publication. After 128 cached entries, dead weak entries are swept. Long-lived processes no longer retain a mutex for every historical Run they have ever mutated. This is metadata reclamation; durable snapshots remain untouched.
+- Startup uses the journal's single `needs_recovery` predicate before allocating semantic JSON comparisons. Stable completed/paused/approval-waiting snapshots are still read and parsed, but they are not encoded two extra times merely to detect that they were unchanged. Recoverable records and interrupted model-only runs retain semantic comparison, conservative non-replay and fsync persistence.
+- Regression coverage protects a live per-Run lock across index sweeping, bounds expired entries, and checks the recovery classification of finished, paused, queued and decided-approval executions.
+- **Not measured:** memory usage reduction in bytes and startup wall time across a real historical repository. No claim of incremental journal storage, bounded Run history RAM, or frontier coding success. These changes do not require a UI or DB schema migration.

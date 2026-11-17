@@ -290,13 +290,19 @@ pub fn finish(run:&mut Run,call:&ToolCall,outcome:&Result<String,String>,observe
 
 /// Returns true only for a previously running operation whose pending work can
 /// be retried without externally-visible duplicate side effects.
+/// Single authority for deciding whether startup recovery can change a
+/// snapshot. The Store uses this to avoid re-serializing settled history.
+pub fn needs_recovery(run:&Run)->bool{
+    matches!(run.status,RunStatus::Running|RunStatus::Queued)
+        || (run.status==RunStatus::AwaitingApproval && run.approval_decision.is_some())
+        || (run.terminal() && run.in_flight.is_some())
+        || (run.status==RunStatus::Paused && !run.read_batch_in_flight.is_empty())
+}
 pub fn recover(run:&mut Run)->bool{
+    if !needs_recovery(run){return false;}
     let interrupted=matches!(run.status,RunStatus::Running|RunStatus::Queued);
     let approved_but_not_started=run.status==RunStatus::AwaitingApproval
         && run.approval_decision.is_some();
-    let malformed_terminal=run.terminal() && run.in_flight.is_some();
-    let paused_read_batch=run.status==RunStatus::Paused && !run.read_batch_in_flight.is_empty();
-    if !interrupted && !approved_but_not_started && !malformed_terminal && !paused_read_batch{return false;}
     run.status=RunStatus::Paused;
     if !run.read_batch_in_flight.is_empty(){
         // Nothing in this batch can cause user-visible mutations.

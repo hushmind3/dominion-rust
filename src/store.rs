@@ -1,5 +1,5 @@
 use crate::{domain::{Run,RunStatus},journal};
-use std::{collections::{HashMap,HashSet}, path::{Path,PathBuf},sync::Arc};
+use std::{collections::{HashMap,HashSet}, path::{Path,PathBuf},sync::{Arc,Weak}};
 use tokio::{fs, io::AsyncWriteExt, sync::{Mutex,broadcast}};
 use uuid::Uuid;
 
@@ -94,7 +94,9 @@ pub struct Store {
     state: Mutex<HashMap<Uuid, Run>>,
     // A run's write-ahead snapshot must commit in order; unrelated run
     // transactions must not hold the global metadata lock during fsync.
-    gates: Mutex<HashMap<Uuid,Arc<Mutex<()>>>>,
+    // Weak entries cannot retain completed Run transaction locks indefinitely.
+    // An active put/mutate always owns a strong Arc until its fsync completes.
+    gates: Mutex<HashMap<Uuid,Weak<Mutex<()>>>>,
     updates: broadcast::Sender<RunUpdate>,
 }
 impl Store {
@@ -109,9 +111,15 @@ impl Store {
             if entry.path().extension().and_then(|e| e.to_str()) != Some("json") { continue; }
             let data = fs::read(entry.path()).await.map_err(|e| e.to_string())?;
             let mut run: Run = serde_json::from_slice(&data).map_err(|e| format!("corrupt run {}: {e}", entry.path().display()))?;
-            // Compare semantic Run snapshots, not raw file bytes: legacy
-            // JSON whitespace/key ordering must not trigger disk writes.
-            let before = serde_json::to_vec(&run).map_err(|e| e.to_string())?;
+            // Historical terminal and stable paused records have no recovery
+            // transition. Do not serialize them twice merely to prove that a
+            // no-op remains a no-op. The journal owns the recovery predicate.
+            // Changed candidates still receive semantic JSON comparison to
+            // preserve legacy formatting and migration compatibility.
+            let before = if journal::needs_recovery(&run)
+                || (run.model_only && !run.terminal()) {
+                Some(serde_json::to_vec(&run).map_err(|e| e.to_string())?)
+            } else {None};
             // Risk-aware restart. Never replay mutating tool intents with
             // unknown results; auto-retry only the locally pure inspection set.
             journal::recover(&mut run);
@@ -123,8 +131,10 @@ impl Store {
                     "Provider turn interrupted by restart; no model retry or tool execution performed",
                     None);
             }
-            if serde_json::to_vec(&run).map_err(|e| e.to_string())? != before {
-                dirty.insert(run.id);
+            if let Some(previous)=before {
+                if serde_json::to_vec(&run).map_err(|e|e.to_string())? != previous {
+                    dirty.insert(run.id);
+                }
             }
             state.insert(run.id, run);
         }
@@ -159,8 +169,20 @@ impl Store {
         Ok(Self { root, state: Mutex::new(state), gates:Mutex::new(HashMap::new()), updates })
     }
     async fn gate(&self,id:Uuid)->Arc<Mutex<()>>{
+        const SWEEP_AT:usize=128;
         let mut locks=self.gates.lock().await;
-        Arc::clone(locks.entry(id).or_insert_with(||Arc::new(Mutex::new(()))))
+        if let Some(active)=locks.get(&id).and_then(Weak::upgrade){
+            return active;
+        }
+        // Sweep only when the index reaches a useful batch size. Expired
+        // weak entries have no active writer or waiter; live locks cannot be
+        // removed while their transactions still hold a strong Arc.
+        if locks.len()>=SWEEP_AT {
+            locks.retain(|_,weak|weak.strong_count()>0);
+        }
+        let active=Arc::new(Mutex::new(()));
+        locks.insert(id,Arc::downgrade(&active));
+        active
     }
     pub async fn put(&self, run: Run) -> Result<(), String> {
         // Serialize same-run writes, including put vs mutate, but release the
