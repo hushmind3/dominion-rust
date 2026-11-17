@@ -10,7 +10,7 @@ type Lead={
  id:string;title:string;offer?:string;customer?:string;
  whyPay?:string;implementationPlan?:string;firstPaymentStep?:string;
  counterfactual?:string;firstTest?:string;evidenceStatus?:string;
- evidence?:Evidence[];origin?:string;status?:string
+ evidence?:Evidence[];origin?:string;status?:string;implementationRunId?:string
 }
 type Report={
  drafts:Lead[];candidateIds?:string[];sourceCount?:number;modelCalls?:number;
@@ -32,10 +32,14 @@ export function MoneyPage(){
  const [stats,setStats]=useState<Stats|null>(null)
  const [agents,setAgents]=useState<Agent[]>([])
  const [agentId,setAgentId]=useState('general')
- const [busy,setBusy]=useState<'find'|'infer'|'scan'|'automation'|'cancel'|''>('')
+ const [budgetKrw,setBudgetKrw]=useState(100)
+ const [implementationId,setImplementationId]=useState('')
+ const [implementationRuns,setImplementationRuns]=useState<Record<string,{status:string;steps?:number;cost_krw?:number}>>({})
+ const [busy,setBusy]=useState<'find'|'infer'|'scan'|'automation'|'cancel'|'implement'|''>('')
  const [loading,setLoading]=useState(true)
  const [error,setError]=useState('')
  const inferring=report.reasoningStatus==='running'||report.reasoningStatus==='queued'
+ const runIds=(report.drafts||[]).map(lead=>lead.implementationRunId).filter(Boolean).join('|')
  const refresh=async()=>{
   const [latest,summary]=await Promise.all([
    get<Report>('/api/money/find'),get<Stats>('/api/money/stats')
@@ -61,13 +65,56 @@ export function MoneyPage(){
   },2500)
   return()=>{active=false;window.clearInterval(timer)}
  },[inferring])
+ useEffect(()=>{
+  const ids=runIds.split('|').filter(Boolean)
+  if(!ids.length)return
+  let live=true
+  let timer:ReturnType<typeof setInterval>|undefined
+  const check=async()=>{
+   const results=await Promise.all(ids.map(async id=>{
+    try{return {id,run:await get<{status:string;steps:number;cost_krw:number}>('/api/v1/runs/'+encodeURIComponent(id))}}
+    catch{return {id,run:null}}
+   }))
+   if(!live)return
+   const next:Record<string,{status:string;steps?:number;cost_krw?:number}>={}
+   for(const {id,run} of results)next[id]=run||{status:'unknown'}
+   setImplementationRuns(next)
+   if(results.every(({run})=>run&&['completed','cancelled','failed'].includes(run.status))&&timer)
+    clearInterval(timer)
+  }
+  timer=setInterval(()=>{void check()},3000)
+  void check()
+  return()=>{live=false;if(timer)clearInterval(timer)}
+ },[runIds])
+ async function implement(id:string){
+  if(busy)return
+  setError('');setBusy('implement');setImplementationId(id)
+  try{
+   // This button is an explicit approval to start a native agent Run,
+   // not permission for sales, deployments or external payments.
+   await post('/api/money/candidates/'+encodeURIComponent(id)+'/implement',{
+    approved:true,agentId,budgetKrw
+   })
+   await refresh()
+  }catch(e){setError((e as Error).message)}
+  finally{setBusy('');setImplementationId('')}
+ }
+ async function cancelImplementation(id:string){
+  if(busy)return
+  setError('');setBusy('cancel')
+  try{
+   await post('/api/v1/runs/'+encodeURIComponent(id)+'/cancel',{})
+   await refresh()
+  }catch(e){setError((e as Error).message)}
+  finally{setBusy('')}
+ }
  async function action(kind:'find'|'infer'|'scan'|'automation'|'cancel',payload?:unknown){
   if(busy)return
   setBusy(kind);setError('')
   try{
    if(kind==='find')setReport(await post<Report>('/api/money/find',{mode:'db'}))
    if(kind==='infer')setReport(await post<Report>('/api/money/find',{
-    mode:'agent',agentId,budgetKrw:100
+    mode:'agent',agentId,budgetKrw
    }))
    if(kind==='scan')await post('/api/money/collect',{force:true})
    if(kind==='automation')await post('/api/money/automation',payload)
@@ -143,7 +190,13 @@ export function MoneyPage(){
      className="rounded-lg border border-[#D6B297] bg-[#F8EFE6] px-4 py-2 text-[12px] font-bold text-[#9B5633] disabled:opacity-50">
      {busy==='infer'?'분석 시작 중…':'선택 모델로 다시 추론'}
     </button>
-    <span className="text-[11px] text-[#998A7C]">요청 1회 · 실행 예산 100원 (제공자 요금 미등록 시 실제 과금과 차이 가능)</span>
+    <label className="inline-flex items-center gap-2 text-[11px] text-[#998A7C]">
+     모델 실행 한도
+     <input type="number" min="0" max="1000000" step="10" value={budgetKrw}
+      onChange={event=>setBudgetKrw(Number(event.target.value))}
+      className="w-[100px] rounded-md border border-[#DCCFC1] bg-white px-2 py-1 text-[#514638]"/>
+     원 · 제공자 요금 미등록 시 실제 과금과 차이 가능
+    </label>
     {inferring&&<>
       <span className="inline-flex items-center gap-1 text-[12px] text-[#B16342]">
        <LoaderCircle size={14} className="animate-spin"/> 모델 분석 중
@@ -184,6 +237,20 @@ export function MoneyPage(){
      실패 조건: {lead.counterfactual}
     </p>}
     <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[#EEEAE5] pt-3">
+     {lead.implementationRunId?<>
+      <span role="status" className="text-[11px] font-semibold text-[#946044]">
+       공통 하네스 작업 · {implementationRuns[lead.implementationRunId]?.status||'상태 확인 중'} ·
+       {implementationRuns[lead.implementationRunId]?.steps??0}단계
+      </span>
+      {['queued','running','awaiting_approval','paused'].includes(implementationRuns[lead.implementationRunId]?.status||'')&&
+       <button type="button" disabled={!!busy} onClick={()=>void cancelImplementation(lead.implementationRunId!)}
+        className="text-[11px] text-rose-700">작업 취소</button>}
+     </>:<button type="button" disabled={!!busy||inferring||!Number.isFinite(budgetKrw)||budgetKrw<0||budgetKrw>1000000}
+      onClick={()=>void implement(lead.id)}
+      className="rounded-lg border border-[#D6B297] bg-[#F8EFE6] px-3 py-2 text-[11px] font-bold text-[#9B5633] disabled:opacity-50">
+      {busy==='implement'&&implementationId===lead.id?'작업 요청 중…':'이 후보 구현 승인'}
+     </button>}
+     <span className="text-[10px] text-[#948678]">구현은 도미니언 공통 실행기 사용 · 외부 변경은 별도 승인</span>
      <span className="text-[11px] font-bold text-[#8B7D70]">근거 원문</span>
      {(lead.evidence||[]).map((item,i)=>item.url?.startsWith('https://')?
       <a key={item.sourceId||i} href={item.url} target="_blank" rel="noreferrer"
@@ -193,7 +260,7 @@ export function MoneyPage(){
      <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-[#948678]">
       <CheckCircle2 size={13}/>자료와 수익 검증 상태 분리
      </span>
-     <button type="button" disabled={!!busy} onClick={()=>void reject(lead.id)}
+     <button type="button" disabled={!!busy||!!lead.implementationRunId} onClick={()=>void reject(lead.id)}
       className="text-[11px] text-[#9B8F86] hover:text-rose-600">후보 제외</button>
     </div>
    </article>)}
