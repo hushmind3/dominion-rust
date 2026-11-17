@@ -94,7 +94,7 @@ fn public(progress:&Progress)->Value{
 }
 async fn status()->Json<Value>{
  let current=active().lock().await.clone();
- match current{Some(login)=>Json(public(&login.progress.lock().await)),
+ match current{Some(login)=>Json(public(&*login.progress.lock().await)),
   None=>Json(json!({"phase":"idle"}))}
 }
 async fn start(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
@@ -108,7 +108,7 @@ async fn start(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  if let Some(existing)=slot.as_ref(){
   let progress=existing.progress.lock().await;
   if matches!(progress.phase,"starting"|"waiting"){
-   return Ok(Json(public(&progress)));
+   return Ok(Json(public(&*progress)));
   }
  }
  let mut child=command().spawn().map_err(|e|bad(format!("GitHub CLI login launch failed: {e}")))?;
