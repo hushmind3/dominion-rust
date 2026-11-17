@@ -17,14 +17,12 @@ pub(super) fn is_configured(engine:&Engine)->bool{
         || engine.settings.main.base_url.contains("127.0.0.1")
 }
 pub(super) async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
-    let runs=engine.store.list().await;
-    let agents=engine.frontend.agents().await;
-    let sessions=engine.frontend.sessions().await;
-    let active=runs.iter().filter(|run|matches!(run.status,RunStatus::Queued|RunStatus::Running)).count();
+    let stats=engine.store.stats().await;
+    let (agents,sessions)=engine.frontend.counts().await;
     Json(json!({
         "engine":"rust","runtime":"rust",
         "providers":usize::from(is_configured(&engine))+engine.providers.list().iter().filter(|p|p.enabled).count(),
-        "agents":agents.len(),"sessions":sessions.len(),"jobs":active,
-        "executions":runs.len(),"mcp":engine.mcp.server_count()
+        "agents":agents,"sessions":sessions,"jobs":stats.active,
+        "executions":stats.total,"mcp":engine.mcp.server_count()
     }))
 }
