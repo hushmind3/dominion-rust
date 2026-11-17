@@ -207,10 +207,14 @@ test('Money discovery shares the authenticated native Rust API',async()=>{
  await sdk.money.find({mode:'agent',agentId:'research',budgetKrw:100});
  await sdk.money.collect(true);
  await sdk.money.automation(false);
- assert.equal(calls.length,5);
+ await sdk.money.implement('lead:a/b',{approved:true,agentId:'research',budgetKrw:200});
+ assert.equal(calls.length,6);
  assert.ok(calls.every(({options})=>options.headers.Authorization==='Bearer research-token'));
  assert.ok(calls[0].url.endsWith('/api/v1/money/find'));
  assert.equal(JSON.parse(calls[2].options.body).agentId,'research');
  assert.equal(JSON.parse(calls[3].options.body).force,true);
  assert.equal(JSON.parse(calls[4].options.body).enabled,false);
+ assert.ok(calls[5].url.endsWith('/api/v1/money/candidates/lead%3Aa%2Fb/implement'));
+ assert.equal(JSON.parse(calls[5].options.body).approved,true);
+ assert.equal(JSON.parse(calls[5].options.body).budgetKrw,200);
 });

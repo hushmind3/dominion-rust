@@ -25,7 +25,7 @@ export interface MemoryEntry {
   id: string; scope: string; title: string; content: string; created_at_ms: number; updated_at_ms: number;
 }
 export interface MoneyEvidence { sourceId?:string; url?:string; claim?:string; publishedAt?:string; sourceName?:string; kind?:string; contentStatus?:string; }
-export interface MoneyDraft { id:string; title:string; customer?:string; offer?:string; whyPay?:string; implementationPlan?:string; firstPaymentStep?:string; counterfactual?:string; evidenceStatus?:string; evidence?:MoneyEvidence[]; origin?:string; status?:string; }
+export interface MoneyDraft { id:string; title:string; customer?:string; offer?:string; whyPay?:string; implementationPlan?:string; firstPaymentStep?:string; counterfactual?:string; evidenceStatus?:string; evidence?:MoneyEvidence[]; origin?:string; status?:string; implementationRunId?:string; }
 export interface MoneyReport {drafts:MoneyDraft[]; sourceCount?:number; modelCalls?:number; reasoningRunId?:string|null; reasoningStatus?:RunStatus; inferenceCostKrw?:number; inferenceError?:string; searchedAt?:string; message?:string;}
 export interface MoneyStats {signals:number; candidates:number; metrics?:number; lastCatalog?:{newMetrics?:number;capturedAt?:string}|null; lastIngest?:{capturedAt?:string;found?:number;new?:number}|null; automation?:{enabled:boolean;periodMinutes?:number};}
 export interface OwnerProfile { name: string; avatar: string; updated_at_ms: number }
@@ -240,6 +240,9 @@ export class Dominion {
       'POST','/money/automation',{enabled}),
     reject:(id:string)=>this.request<MoneyDraft>(
       'POST','/money/candidates/'+encodeURIComponent(id)+'/reject',{}),
+    implement:(id:string,options:{approved:true;agentId:string;budgetKrw:number})=>
+      this.request<{id:string;status:RunStatus;costKrw?:number;reused:boolean}>(
+        'POST','/money/candidates/'+encodeURIComponent(id)+'/implement',options),
     cancelInference:()=>this.request<{id:string;status:RunStatus}>(
       'POST','/money/inference/cancel',{}),
   };

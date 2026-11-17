@@ -381,6 +381,15 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
     Ok(Json(json!({"id":run.id,"status":"running","reused":false})))
 }
 
+/// Rust SDK uses the identical approval/claim path as both HTTP routers.
+pub async fn native_implement(engine:&Arc<Engine>,id:&str,agent_id:&str,
+    budget_krw:f64,approved:bool)->Result<Value,String>{
+    implement(State(Arc::clone(engine)),Path(id.to_owned()),
+        Json(json!({"approved":approved,"agentId":agent_id,"budgetKrw":budget_krw})))
+        .await.map(|Json(value)|value)
+        .map_err(|(_,Json(body))|body["error"].as_str()
+            .unwrap_or("Money implementation handoff failed").to_owned())
+}
 pub async fn cancel(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let current=snapshot(&engine).await?;
     let id=current["reasoningRunId"].as_str().ok_or_else(||err("no inference run"))?;

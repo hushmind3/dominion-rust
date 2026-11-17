@@ -258,6 +258,13 @@ impl Dominion {
     pub async fn money_latest(&self)->Result<Value,String>{
         crate::money::api::native_latest(&self.engine).await
     }
+    /// Explicit operator approval for one saved Money candidate. This is a
+    /// normal native Run with the shared journal, not a Money worker.
+    pub async fn money_implement(&self,id:&str,agent_id:&str,budget_krw:f64,
+        approved:bool)->Result<Value,String>{
+        crate::money::api::native_implement(
+            &self.engine,id,agent_id,budget_krw,approved).await
+    }
     pub async fn money_signals(&self,limit:usize)->Result<Vec<Value>,String>{
         let root=self.engine.settings.data_dir.clone();
         tokio::task::spawn_blocking(move||crate::money::signals(&root,limit))
