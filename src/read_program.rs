@@ -73,11 +73,12 @@ fn digest(text:&str)->String{
 fn guard_condition(guard:&Guard,found:&Observation)->bool{
     // Tool failure is never evidence of success. A caller must explicitly
     // request status=error before inspecting its diagnostic text.
-    let status=found.status==guard.status;
+    // A negative substring predicate must not turn a failed read into
+    // positive evidence. The status match is mandatory even under negation.
+    if found.status!=guard.status{return false;}
     let contained=guard.contains.as_ref()
         .map(|needle|found.raw.contains(needle)).unwrap_or(true);
-    let matches=status&&contained;
-    if guard.negate{!matches}else{matches}
+    if guard.negate{!contained}else{contained}
 }
 fn objective_satisfied(objective:&Objective,observed:&HashMap<String,Observation>)->bool{
     let matches=|assertion:&Assertion|{
@@ -518,6 +519,16 @@ mod tests{
             {"id":"a","tool":"list_files","arguments":{"path":""}},
             {"id":"b","tool":"read_listed_files","from":"a","max_files":2}
         ]})).await.is_err());
+    }
+    #[test]
+    fn negated_evidence_guard_never_promotes_failed_io_into_success(){
+        let observation=failed("x","error","ENOENT");
+        let guard=Guard{source:"x".into(),status:"ok".into(),
+            contains:Some("missing-marker".into()),negate:true};
+        assert!(!guard_condition(&guard,&observation),
+            "a failed read cannot satisfy a negative success condition");
+        let error=Guard{status:"error".into(),negate:false,..guard};
+        assert!(guard_condition(&error,&observation)==false);
     }
     #[test]
     fn topological_and_budget_guards_are_checked_before_dispatch(){
