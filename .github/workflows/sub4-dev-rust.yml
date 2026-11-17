@@ -1,0 +1,29 @@
+name: Sub4 targeted Rust development tests
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/sub4-dev-rust.yml'
+  workflow_dispatch:
+concurrency:
+  group: sub4-dev-rust
+  cancel-in-progress: true
+jobs:
+  relevant-rust:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Money domain and implementation approval regressions (dev profile)
+        run: cargo test --lib money::
+      - name: Native SDK inert reservation and recovery regression (dev profile)
+        run: cargo test --lib reserved_unlaunched_run_is_not_auto_resumed_on_restart
+      - name: Common workspace path regression (dev profile)
+        run: cargo test --lib paginates_large_repository_and_searches_beyond_first_200
+# Full macOS / Windows builds, frontend checks, packaging, E2E and soak
+# intentionally stay in manually dispatched release workflows only.
