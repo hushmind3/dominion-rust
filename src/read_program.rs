@@ -137,6 +137,9 @@ fn parse(request:&Value,run:&Run,settings:&Settings)->Result<Program,String>{
             if contains.is_none()&&when.get("status").is_none(){
                 return Err("when must specify status or contains".into());
             }
+            if when.get("not")==Some(&Value::Bool(true))&&contains.is_none(){
+                return Err("negative guard requires a literal contains predicate".into());
+            }
             if !deps.iter().any(|d|d==source){deps.push(source.to_owned());}
             Some(Guard{source:source.to_owned(),status:status.into(),
                 contains:contains.map(str::to_owned),
@@ -246,6 +249,7 @@ async fn read_many(settings:&Settings,run_id:Uuid,list:&str,
         }
     };
     let mut inspected=0usize;
+    let mut errors=0usize;
     let mut results=Vec::new();
     for path in listed.into_iter().filter(|p|p.ends_with(&step.suffix)).take(step.max_files){
         inspected+=1;
@@ -259,10 +263,25 @@ async fn read_many(settings:&Settings,run_id:Uuid,list:&str,
                         "sha256":digest(&body),"full_chars":body.chars().count()}));
                 }
             }
-            Ok(Err(error))=>results.push(json!({"path":path,
-                "error":error.chars().take(450).collect::<String>()})),
-            Err(_)=>results.push(json!({"path":path,"error":"read timed out"})),
+            Ok(Err(error))=>{
+                errors+=1;
+                results.push(json!({"path":path,
+                    "error":error.chars().take(450).collect::<String>()}));
+            },
+            Err(_)=>{
+                errors+=1;
+                results.push(json!({"path":path,"error":"read timed out"}));
+            },
         }
+    }
+    // A program cannot declare an entire multi-file read successful after
+    // one nested source has failed. Return typed partial failure instead.
+    if errors>0{
+        let failed=results.iter().filter(|r|r.get("error").is_some())
+            .filter_map(|r|r.get("path").and_then(Value::as_str))
+            .take(6).collect::<Vec<_>>();
+        return (Err(format!("{errors} of {inspected} file inspections failed: {}",
+            failed.join(", "))),inspected);
     }
     (Ok(json!({"inspected":inspected,"matches":results}).to_string()),inspected)
 }
