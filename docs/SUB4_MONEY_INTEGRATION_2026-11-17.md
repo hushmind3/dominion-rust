@@ -45,3 +45,7 @@ The Windows/macOS platform workflow and manual smoke workflow are `workflow_disp
 ### Crash-safe cross-store implementation approval
 
 The owner-approved implementation flow now reserves a paused native Run, updates the existing candidate's Run ID (requiring an actual affected SQLite row), and only then launches the common harness. A crash before the candidate write never auto-starts the orphaned Run; a crash after that write allows re-entry through the same approved ID. The candidate's native execution Run remains retrievable independently through the standard SDK and HTTP API. The UI shows original native run status, cost and a resume action, not a separate Money worker or billing loop. This is source code behavior awaiting relevant development-profile test observation.
+
+### Idle-path and concurrent-approval isolation
+
+Unopened Money installations no longer create their SQLite file on every Dominion SDK startup; the scheduler first checks for an existing Money data file. The first user scan/collection or explicit enable action creates the file as before. The cross-store implementation claim now uses a single SQLite IMMEDIATE transaction to enforce an unchanged, non-rejected candidate with no previous implementation receipt. An in-process lock is still used for the user-facing selection path, while SQLite enforces the candidate reference against concurrent claims across DB connections. The corresponding Rust unit tests cover a missing candidate, duplicate claim and untouched idle initialization.

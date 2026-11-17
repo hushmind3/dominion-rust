@@ -504,6 +504,9 @@ static MONEY_SCHEDULERS:std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 pub fn start_scheduler(engine:&Arc<Engine>){
     let root=engine.settings.data_dir.clone();
+    // No Money DB is created merely because the optional tool is registered.
+    // A first explicit scan or enable action creates its domain data file.
+    if !root.join("money.sqlite").is_file(){return;}
     // One synchronous preference read at startup; no background timer if off.
     if !super::state(&root,"automation").ok().flatten()
         .is_some_and(|v|v["enabled"]==true){return;}
@@ -541,6 +544,18 @@ pub fn start_scheduler(engine:&Arc<Engine>){
 #[cfg(test)]
 mod tests{
  use super::*;
+ #[tokio::test]
+ async fn unused_money_tool_does_not_create_database_on_sdk_start(){
+    let root=std::env::temp_dir().join(format!("dominion-money-no-idle-db-{}",Uuid::new_v4()));
+    let mut settings=crate::config::Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    assert!(!settings.data_dir.join("money.sqlite").exists());
+    let sdk=Dominion::open(settings.clone()).await.unwrap();
+    assert!(!settings.data_dir.join("money.sqlite").exists());
+    drop(sdk);
+    let _=tokio::fs::remove_dir_all(root).await;
+ }
  #[tokio::test]
  async fn owner_approval_creates_one_shared_run_with_durable_implementation_receipt(){
     let root=std::env::temp_dir().join(format!("dominion-money-implement-{}",Uuid::new_v4()));
