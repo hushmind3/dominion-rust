@@ -72,13 +72,26 @@ println!("Run ID: {}", run.id);
 
 Public API families: `/api/v1/runs`, `/api/v1/groups`, `/api/v1/memory`, `/api/v1/strategies`; the React UI uses compatible `/api/*` routes backed by the same Rust Store. The retired `/api/v1/videos` and `/api/v1/improvements` return JSON 404; removed studio/RSI routes return JSON errors, never a fake success or the app's HTML.
 
-## November 18, 2026 — evidence-driven task path comparison (Sub4)
+## November 18, 2026 — isolated strategy experiments (Sub4)
 
-When an attached repository begins a root agent Run, the Rust kernel can queue up to two small, read-only diagnostics (bounded `list_files` and `git_status`) **inside the existing durable tool-call journal**. The probes use normal operator-tool denial, cancellation, read-batch receipt, restart replay and transcript contracts; they do not run shell commands, mutate files, delegate, call a model or start a second scheduler.
+**Removed** the earlier hand-weighted `direct/diagnose/decompose/verify` scorer and automatic file-list probes. Scoring labels against tool error counts did not measure competing approaches.
 
-Before subsequent model turns the same kernel compares **direct edit, diagnosis, decomposition and verification** candidates against current real tool receipts and independent verifier-rejection events, records candidate scores and source event sequence IDs, and supplies one bounded advisory next-action choice. Failure, dirty-worktree and verifier evidence can change that choice. After an observed missing-path error in an attached repository, a second path-specific read-only `list_files` probe may be queued before the next model request; it is deduplicated by receipt and limited to two such probes per Run, so it cannot become an autonomous retry loop. No proactive probe runs once the model-step limit is reached. The existing `repair-observations` SDK/API report also exposes up to 32 persisted path-comparison decisions. A generated path suggestion is **not permission** to use a tool or claim an alternative worked; the original approval, budgets, system directives and verification remain authoritative. No speculative model branch, automated cross-run promotion, or new research database is added.
+A root agent attached to a Git repository can request the native `compare_strategies` tool with **two distinct approaches**, an explicit per-worker KRW budget and a model-step cap. An **owner approval** is required before any candidate starts. This is an on-demand tool, not a mandatory extra inference step.
 
-This is a limited active read-only probe plus evidence-guided routing, **not** a complete reproduction of Google Research Harness²'s task-level adaptation or PRISM's held-out search, and not DeepSeek's TypeScript program sandbox. Frontier task-completion, cost and throughput gains require same-task/same-model/same-budget comparisons. Related Rust tests are development-profile scoped; full release validation is deferred.
+- Both candidates share the original task, model/provider and base Git commit, but run in separate worktrees with separate durable Run/tool receipts and reserved budgets.
+- The `strategy_candidate` capability restricts workers to private workspace reads/edits and Git inspection, plus individually approved shell actions; no nested agents, external-account mutations, MCP calls, project-memory writes or patch adoption.
+- Parent cancellation reaches both workers, preserving uncertain in-flight effects for reconciliation. Parent comparison waits until both workers have stopped **and child bills have settled**.
+- A candidate needs a real file-edit receipt **before its last independent verifier PASS**, with matching model/provider, repository and base commit.
+- Candidate selection uses **Pareto dominance** on actual KRW charges, model steps and tool errors, rather than invented static weights. Cost/speed/error tradeoffs yield **no winner**. Automatic patch adoption remains disabled; `merge_subagent` still needs human approval.
+- The existing `repair-observations` SDK/API surface includes durable launch, partial-dispatch and comparison evidence with child IDs.
+
+**Limit:** Model-verifier PASS and an observed edit are not an independent held-out acceptance test. Results are provisional operational comparisons. No real-world completion-rate, quality, time or token improvement is claimed until controlled same-task, same-model, same-tools, same-budget tests are performed. Development-profile Rust tests cover the changed paths; release builds are deferred.
+
+External source code examined, not merely README descriptions:
+
+- Google Research Harness²: `harness2/core/recursion.py` and `harness2/core/selection.py` (probe stages, execution contrasts, selection).
+- Airbnb Agent Harness Optimizer: `optimizers/prism/loop.py` and `framework/acceptance.py` (train/holdout evaluation, reliability and Pareto).
+- DeepSeek Harness: `packages/core/tool-executor-ptc/src/ptc.ts` and `ptc-calls.ts` (nested tool execution and cancellation settlement).
 
 ## November 17, 2026 sub4 maintenance
 
