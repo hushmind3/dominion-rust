@@ -361,7 +361,9 @@ mod tests{
     assert_eq!(lineage["relatedSameTitle"].as_array().unwrap().len(),1);
     let index=retrieval::search(&root,"Revised statement",10).unwrap();
     assert!(index.iter().any(|r|r["id"]=="url-a"));
-    assert!(retrieval::search(&root,"First statement",10).unwrap()
+    // OR-token retrieval can match shared "statement"; the obsolete
+    // revision-only term must be absent from the current search index.
+    assert!(retrieval::search(&root,"First",10).unwrap()
         .iter().all(|r|r["id"]!="url-a"));
     std::fs::remove_dir_all(root).unwrap();
  }

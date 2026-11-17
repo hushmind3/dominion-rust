@@ -184,7 +184,9 @@ async fn snapshot(engine:&Arc<Engine>)->Result<Value,Fault>{
                             Ok(items) if !items.is_empty()=>{
                                 updated["candidateIds"]=json!(items.iter()
                                     .filter_map(|v|v["id"].as_str()).collect::<Vec<_>>());
-                                updated["message"]=json!("AI 추론 후보입니다. 수익·구매 의사는 별도 검증이 필요합니다.");
+                                updated["message"]=json!(if items.iter().any(|v|v["status"]=="draft"){
+                                    "AI 추론 후보입니다. 수익·구매 의사는 별도 검증이 필요합니다."
+                                }else{"AI의 출처 인용이 저장 자료와 일치하지 않아 보류했습니다. 보관 후보에서 재검토할 수 있습니다."});
                                 model_ideas=items;
                             },
                             Ok(_)=>updated["inferenceError"]=json!("근거를 충족한 AI 후보가 없습니다."),
@@ -215,9 +217,15 @@ fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
         ).collect::<HashMap<_,_>>();
     let mut out=Vec::new();
     for (i,row) in ideas.iter().take(3).enumerate(){
-        let ids=row["sourceIds"].as_array().into_iter().flatten().filter_map(Value::as_str)
+        let claimed_ids=row["sourceIds"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).take(12).collect::<Vec<_>>();
+        let ids=claimed_ids.iter().copied()
             .filter(|id|allowed.contains_key(*id)).collect::<Vec<_>>();
-        if ids.is_empty(){continue;}
+        // Unknown model source IDs are NOT copied into evidence or treated as
+        // verified, but the business hypothesis is kept as a held research
+        // record with an explicit mismatch reason for later review.
+        let unmatched=claimed_ids.iter().copied().filter(|id|!allowed.contains_key(*id))
+            .map(|id|id.chars().take(140).collect::<String>()).collect::<Vec<_>>();
         let title=short(row,"title",180);
         let why=short(row,"whyPay",650);
         let plan=short(row,"implementationPlan",1000);
@@ -244,7 +252,9 @@ fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
                     "status":if matched{"exact_saved_evidence_field"}else{"mismatch_with_saved_evidence"},
                     "revisionId":source["revisionId"]}))
             }).collect::<Vec<_>>();
-        let citation_check=if source_quotes.is_empty(){"source_ids_only_no_quote"}
+        let citation_check=if ids.is_empty(){"source_id_unmatched_requires_review"}
+            else if !unmatched.is_empty(){"partial_source_id_mismatch_requires_review"}
+            else if source_quotes.is_empty(){"source_ids_only_no_quote"}
             else if source_quotes.iter().any(|q|q["status"]=="mismatch_with_saved_evidence"){
                 "quote_mismatch_requires_review"
             }else{"quotes_match_saved_fields_not_purchase_verified"};
@@ -253,7 +263,9 @@ fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
                 .map(|(_,rest)|rest.split('/').next().unwrap_or("")
                     .trim_start_matches("www.").to_lowercase()))
             .filter(|host|!host.is_empty()).collect::<HashSet<_>>();
-        let evidence_status=if potentially_syndicated{
+        let evidence_status=if ids.is_empty(){
+            "unverified_model_hypothesis_unmatched_source_ids"
+        }else if potentially_syndicated{
             "unverified_model_hypothesis_syndicated_story"
         }else if independent_hosts.len()>=2{
             "unverified_model_hypothesis_two_independent_sources"
@@ -266,9 +278,11 @@ fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
             "causalChain":short(row,"causalChain",750),
             "existingAlternatives":short(row,"existingAlternatives",500),
             "firstBuyerAccess":short(row,"firstBuyerAccess",500),
-            "evidence":originals,"sourceIds":ids,"origin":"model_hypothesis",
+            "evidence":originals,"sourceIds":ids,"claimedSourceIds":claimed_ids,
+            "unmatchedSourceIds":unmatched,"origin":"model_hypothesis",
             "evidenceStatus":evidence_status,"citationStatus":citation_check,
-            "sourceQuoteChecks":source_quotes,"status":"draft",
+            "sourceQuoteChecks":source_quotes,
+            "status":if ids.is_empty(){"held"}else{"draft"},
             "modelRunId":run,"moneyMechanism":short(row,"moneyMechanism",100)
         }));
     }
@@ -854,6 +868,11 @@ mod tests{
     // Even two sources cannot establish a paying customer.
     assert_ne!(corroborated[0]["evidenceStatus"],"paid_customer_verified");
     let invalid=plausible.replace("observed-a","imaginary-source");
-    assert!(parse_ideas(&invalid,&report,run).unwrap().is_empty());
+    let held=parse_ideas(&invalid,&report,run).unwrap();
+    assert_eq!(held.len(),1);
+    assert_eq!(held[0]["status"],"held");
+    assert_eq!(held[0]["evidenceStatus"],"unverified_model_hypothesis_unmatched_source_ids");
+    assert!(held[0]["evidence"].as_array().unwrap().is_empty());
+    assert_eq!(held[0]["unmatchedSourceIds"][0],"imaginary-source");
  }
 }

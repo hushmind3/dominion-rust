@@ -16,6 +16,9 @@ type Lead={
  counterfactual?:string;firstTest?:string;evidenceStatus?:string;
  causalChain?:string;existingAlternatives?:string;firstBuyerAccess?:string;
  evidence?:Evidence[];origin?:string;status?:string;implementationRunId?:string
+ citationStatus?:string;unmatchedSourceIds?:string[];sourceQuoteChecks?:Array<{
+   sourceId:string;quote:string;status:string;revisionId?:string
+ }>;
  decisionHistory?:Array<{action:string;reason?:string;from:string;to:string;at:string}>
 }
 type Report={
@@ -465,6 +468,20 @@ export function MoneyPage(){
     {lead.firstBuyerAccess&&<p className="mt-2 text-[12px] leading-5 text-[#64584A]">
      <strong className="text-[#9D735C]">첫 구매자 접근: </strong>{lead.firstBuyerAccess}
     </p>}
+    {lead.citationStatus&&<details className="mt-3 rounded-lg bg-[#F8F5EE] px-3 py-2 text-[11px] leading-5 text-[#776B5E]">
+     <summary className="cursor-pointer font-semibold">인용·리비전 검증: {lead.citationStatus}</summary>
+     {(lead.sourceQuoteChecks||[]).map((q,i)=><p key={i} className="mt-1">
+      {q.sourceId} · {q.status} · {q.quote} {q.revisionId?'(버전 '+q.revisionId.slice(0,10)+')':''}
+     </p>)}
+     {!!lead.unmatchedSourceIds?.length&&<p className="mt-1 text-rose-700">
+      저장 자료에 없는 출처: {lead.unmatchedSourceIds.join(', ')}
+     </p>}
+     {(lead.evidence||[]).map((e,i)=><p key={e.sourceId||i} className="mt-1">
+      {e.sourceName||'근거 '+(i+1)} · {e.quoteStatus||'인용 미검증'} ·
+      {e.revisionId?.slice(0,10)||'버전 정보 없음'}
+      {e.quote?' · '+e.quote:''}
+     </p>)}
+    </details>}
     {lead.counterfactual&&<p className="mt-3 rounded-lg bg-[#F8F5EE] px-3 py-2 text-[11px] leading-5 text-[#776B5E]">
      실패 조건: {lead.counterfactual}
     </p>}

@@ -118,10 +118,6 @@ fn parse(feed:&str,source:&str)->Vec<Value>{
     }).collect()
 }
 
-fn normalized_title(title:&str)->String{
-    title.to_lowercase().chars().filter(|c|c.is_alphanumeric()).collect()
-}
-
 /// Keep distinct URLs even when they repeat a syndicated headline: they
 /// have separate publishers/revisions. SQL source-story links record the
 /// overlap instead of irreversibly throwing away origin observations.
