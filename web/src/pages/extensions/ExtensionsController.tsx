@@ -1,12 +1,12 @@
-import { DialogBackdrop, DialogPanel } from "../components/Dialog";
-import { SkillsPanel } from "./extensions/SkillsPanel";
-import { t, useLocale } from "../i18n";
+import { DialogBackdrop, DialogPanel } from "../../components/Dialog";
+import { SkillsPanel } from "./SkillsPanel";
+import { t, useLocale } from "../../i18n";
 import {
   Button,
   TextInput,
   TextArea,
   SelectInput,
-} from "../components/Primitives";
+} from "../../components/Primitives";
 import { useEffect, useRef, useState } from "react";
 import {
   Activity,
@@ -36,7 +36,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { del, get, post } from "../api";
+import { del, get, post } from "../../api";
 import {
   Action,
   Empty,
@@ -48,7 +48,7 @@ import {
   Subheading,
   refresh,
   useRemote,
-} from "../components/UI";
+} from "../../components/UI";
 type Mcp = {
   id: string;
   name: string;
