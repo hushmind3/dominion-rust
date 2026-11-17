@@ -69,6 +69,9 @@ pub struct Snapshot{
 pub struct FrontendStore{
     file:PathBuf,
     state:Mutex<Snapshot>,
+    // A separate transaction gate preserves serialized writes while
+    // allowing reads during serialization, fsync and atomic rename.
+    writer:Mutex<()>,
 }
 pub fn timestamp(ms:u64)->String{
     let seconds=ms/1000;
@@ -108,11 +111,9 @@ impl FrontendStore {
             default.provider_id="dominion-native".into();
             default.model=model.into();
         }
-        Ok(Self{file,state:Mutex::new(state)})
+        Ok(Self{file,state:Mutex::new(state),writer:Mutex::new(())})
     }
-    async fn persist(&self,new:&Snapshot)->Result<(),String>{
-        let bytes=serde_json::to_vec(new).map_err(|e|e.to_string())?;
-        if bytes.len()>8*1024*1024{return Err("frontend state exceeds 8 MiB limit".into());}
+    async fn persist(&self,bytes:&[u8])->Result<(),String>{
         let parent=self.file.parent().ok_or("invalid frontend data directory")?;
         let stage=parent.join(format!(".frontend-{}.tmp",Uuid::new_v4()));
         let result=async{
@@ -136,11 +137,22 @@ impl FrontendStore {
     pub async fn snapshot(&self)->Snapshot{self.state.lock().await.clone()}
     pub async fn mutate<T,F>(&self,change:F)->Result<T,String>
     where F:FnOnce(&mut Snapshot)->Result<T,String>{
-        let mut guard=self.state.lock().await;
-        let mut candidate=guard.clone();
+        // Writes remain serializable; user-visible reads keep seeing the last
+        // durable snapshot while this transaction is being fsynced.
+        let _write=self.writer.lock().await;
+        let mut candidate=self.state.lock().await.clone();
         let result=change(&mut candidate)?;
-        self.persist(&candidate).await?;
-        *guard=candidate;
+        // JSON encoding is CPU-bound and may approach 8 MiB. Move it off
+        // Tokio's async executor rather than blocking chat/event processing.
+        let (candidate,bytes)=tokio::task::spawn_blocking(move||{
+            let bytes=serde_json::to_vec(&candidate).map_err(|e|e.to_string())?;
+            if bytes.len()>8*1024*1024{
+                return Err("frontend state exceeds 8 MiB limit".to_owned());
+            }
+            Ok::<_,String>((candidate,bytes))
+        }).await.map_err(|e|e.to_string())??;
+        self.persist(&bytes).await?;
+        *self.state.lock().await=candidate;
         Ok(result)
     }
     pub async fn agents(&self)->Vec<UiAgent>{
@@ -178,5 +190,52 @@ impl FrontendStore {
             session.updated_at=timestamp(now_ms());
             Ok(reply)
         }).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::time::{timeout,Duration};
+
+    #[tokio::test]
+    async fn reading_sessions_is_not_blocked_by_a_pending_durable_write(){
+        let root=std::env::temp_dir().join(format!("dominion-frontend-{}",Uuid::new_v4()));
+        let store=Arc::new(FrontendStore::open(root.clone(),"test-model").unwrap());
+        let held=store.writer.lock().await;
+        let writer=Arc::clone(&store);
+        let task=tokio::spawn(async move{
+            writer.mutate(|snapshot|{
+                snapshot.agents.get_mut("general").unwrap().name="Updated".into();
+                Ok(())
+            }).await.unwrap()
+        });
+        tokio::task::yield_now().await;
+        let before=timeout(Duration::from_secs(2),store.snapshot()).await
+            .expect("reading UI data waited for the writer gate");
+        assert_ne!(before.agents["general"].name,"Updated");
+        assert!(!task.is_finished());
+        drop(held);
+        timeout(Duration::from_secs(3),task).await.unwrap().unwrap();
+        let after=store.snapshot().await;
+        assert_eq!(after.agents["general"].name,"Updated");
+        let reopened=FrontendStore::open(root.clone(),"test-model").unwrap();
+        assert_eq!(reopened.snapshot().await.agents["general"].name,"Updated");
+        drop(reopened);drop(store);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_snapshot_change_does_not_publish_partial_state(){
+        let root=std::env::temp_dir().join(format!("dominion-frontend-reject-{}",Uuid::new_v4()));
+        let store=FrontendStore::open(root.clone(),"test-model").unwrap();
+        let result=store.mutate(|snapshot|{
+            snapshot.agents.get_mut("general").unwrap().name="Never visible".into();
+            Err::<(),String>("rejected".into())
+        }).await;
+        assert!(result.is_err());
+        assert_ne!(store.snapshot().await.agents["general"].name,"Never visible");
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }
