@@ -269,6 +269,74 @@ mod tests {
     use super::*;
 
 
+
+    #[tokio::test]
+    async fn configured_sdk_preparation_freezes_model_budget_and_tool_policy(){
+        let root=std::env::temp_dir().join(format!("dominion-sdk-configured-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let model=settings.main.name.clone();
+        let sdk=Dominion::open(settings.clone()).await.unwrap();
+        let run=sdk.prepare_run(CreateRun{
+            instruction:"Return a concise source summary".into(),
+            budget_krw:Some(37.5),max_steps:Some(3)
+        },RunOptions{
+            provider_id:"dominion-native".into(),model:model.clone(),
+            strategy_learning:true,model_only:true
+        }).await.unwrap();
+        assert_eq!(run.status,RunStatus::Queued);
+        assert_eq!(run.provider_id,"dominion-native");
+        assert_eq!(run.model_name,model);
+        assert_eq!(run.budget_krw,37.5);
+        assert_eq!(run.max_steps,3);
+        assert!(run.strategy_learning);
+        assert!(run.model_only);
+        // A prepared model-only chat may never be executed as an agent.
+        assert!(sdk.resume(run.id).await.is_err());
+        let reopened=Dominion::open(settings).await.unwrap();
+        let restored=reopened.get(run.id).await.unwrap();
+        assert!(restored.model_only);
+        assert!(restored.strategy_learning);
+        assert_eq!(restored.model_name,run.model_name);
+        assert_eq!(restored.status,RunStatus::Queued);
+        drop(reopened);drop(sdk);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sdk_wait_returns_on_durable_approval_event_without_polling(){
+        let root=std::env::temp_dir().join(format!("dominion-sdk-wait-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let sdk=Dominion::open(settings).await.unwrap();
+        let run=sdk.prepare_run(CreateRun{
+            instruction:"Wait for human approval".into(),budget_krw:None,max_steps:Some(2)
+        },RunOptions::default()).await.unwrap();
+        let id=run.id;
+        let waiter=sdk.clone();
+        let task=tokio::spawn(async move{
+            waiter.wait(id,Duration::from_secs(3)).await.unwrap()
+        });
+        tokio::task::yield_now().await;
+        sdk.engine.store.mutate(id,|state|{
+            state.status=RunStatus::AwaitingApproval;
+            state.pending_approval=Some(ToolCall{
+                id:"approval-1".into(),name:"write_file".into(),
+                arguments:json!({"path":"demo","content":"example"})
+            });
+            state.event("approval_required","Human consent required",None);
+            Ok(())
+        }).await.unwrap();
+        let result=tokio::time::timeout(Duration::from_secs(3),task)
+            .await.unwrap().unwrap();
+        assert_eq!(result.status,RunStatus::AwaitingApproval);
+        assert_eq!(result.pending_approval.unwrap().id,"approval-1");
+        drop(sdk);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn sdk_catalog_does_not_advertise_operator_denied_tools(){
         let root=std::env::temp_dir().join(format!("dominion-sdk-mask-{}",Uuid::new_v4()));

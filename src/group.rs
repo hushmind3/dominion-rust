@@ -312,6 +312,49 @@ impl Groups {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn independent_rooms_remain_readable_and_writable_with_another_room_gate_busy(){
+        let root=std::env::temp_dir().join(format!("dominion-group-parallel-{}",Uuid::new_v4()));
+        let groups=Arc::new(Groups::open(root.clone()).await.unwrap());
+        let participant=Participant{name:"reviewer".into(),role:"review".into(),economy:false};
+        let first=groups.create(NewRoom{
+            topic:"room one".into(),participants:vec![participant.clone()],
+            max_rounds:Some(3),budget_krw:Some(10.0)
+        }).await.unwrap();
+        let second=groups.create(NewRoom{
+            topic:"room two".into(),participants:vec![participant],
+            max_rounds:Some(3),budget_krw:Some(10.0)
+        }).await.unwrap();
+        // Holding a room's write gate models a slow pending fsync for that ID.
+        let gate=groups.write_gate(first.id).await;
+        let held=gate.lock().await;
+        let writer=Arc::clone(&groups);
+        let first_id=first.id;
+        let task=tokio::spawn(async move{writer.say(first_id,"first update".into()).await.unwrap()});
+        tokio::task::yield_now().await;
+        let update=tokio::time::timeout(std::time::Duration::from_secs(3),
+            groups.say(second.id,"independent update".into())).await
+                .expect("second room blocked on first room's durable lock").unwrap();
+        assert_eq!(update.messages.len(),1);
+        let before=tokio::time::timeout(std::time::Duration::from_secs(1),
+            groups.get(first.id)).await.unwrap().unwrap();
+        assert_eq!(before.messages.len(),0);
+        drop(held);
+        let saved=tokio::time::timeout(std::time::Duration::from_secs(3),task)
+            .await.unwrap().unwrap();
+        assert_eq!(saved.messages.len(),1);
+        let mut stale=first.clone();
+        stale.topic="old snapshot cannot win".into();
+        assert!(groups.save(stale).await.is_err());
+        drop(groups);
+        let restored=Groups::open(root.clone()).await.unwrap();
+        assert_eq!(restored.get(first.id).await.unwrap().messages.len(),1);
+        assert_eq!(restored.get(second.id).await.unwrap().messages.len(),1);
+        drop(restored);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn mention_selects_correct_participant() {
         let root=std::env::temp_dir().join(format!("dominion-room-{}",Uuid::new_v4()));
