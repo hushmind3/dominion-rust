@@ -299,7 +299,11 @@ mod tests {
         assert!(restored.model_only);
         assert!(restored.strategy_learning);
         assert_eq!(restored.model_name,run.model_name);
-        assert_eq!(restored.status,RunStatus::Queued);
+        // Fail-closed restart: even an unlaunched model-only turn cannot be
+        // silently replayed, as the durable record cannot prove no provider
+        // request escaped before process termination.
+        assert_eq!(restored.status,RunStatus::Failed);
+        assert!(restored.events.iter().any(|e|e.kind=="model_only_interrupted"));
         drop(reopened);drop(sdk);
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
