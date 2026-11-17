@@ -72,6 +72,45 @@ mod tests{
         assert!(admitted_tool(&run,"read_file",&[]));
     }
     #[test]
+    fn recovered_queue_and_approved_tool_receive_durable_deny_receipts(){
+        use crate::domain::RunStatus;
+        let forbidden=vec!["write_file".to_owned(),"shell".to_owned()];
+        let call=ToolCall{id:"old-call".into(),name:"write_file".into(),
+            arguments:json!({"path":"important.txt","content":"overwrite"})};
+        let mut original=Run::new(CreateRun{instruction:"work".into(),
+            budget_krw:Some(100.0),max_steps:Some(8)},8).unwrap();
+        original.status=RunStatus::Running;
+        original.messages.push(json!({"role":"assistant","tool_calls":[{
+            "id":call.id,"type":"function","function":{"name":call.name,
+                "arguments":call.arguments.to_string()}}]}));
+        original.queued_calls.push(call.clone());
+        let mut restored:Run=serde_json::from_value(
+            serde_json::to_value(original).unwrap()).unwrap();
+        assert!(!admitted_tool(&restored,&call.name,&forbidden));
+        crate::journal::reject_admission(&mut restored,&call,
+            "OPERATOR_TOOL_DENIED","Tool disabled after restart").unwrap();
+        assert!(restored.queued_calls.is_empty());
+        assert!(restored.in_flight.is_none());
+        assert!(restored.messages.last().unwrap()["content"].as_str().unwrap()
+            .contains("OPERATOR_TOOL_DENIED"));
+
+        let pending=ToolCall{id:"approved-old".into(),name:"shell".into(),
+            arguments:json!({"command":"echo must-not-run"})};
+        let mut resumed=Run::new(CreateRun{instruction:"work".into(),
+            budget_krw:Some(100.0),max_steps:Some(8)},8).unwrap();
+        resumed.status=RunStatus::Running;
+        resumed.pending_approval=Some(pending.clone());
+        resumed.approval_decision=Some(true);
+        assert!(!admitted_tool(&resumed,&pending.name,&forbidden));
+        crate::journal::reject_approved_hook(&mut resumed,&pending,
+            "OPERATOR_TOOL_DENIED","Tool disabled after approval").unwrap();
+        assert!(resumed.pending_approval.is_none());
+        assert!(resumed.approval_decision.is_none());
+        assert!(resumed.in_flight.is_none());
+        assert!(resumed.messages.last().unwrap()["content"].as_str().unwrap()
+            .contains("OPERATOR_TOOL_DENIED"));
+    }
+    #[test]
     fn operator_denied_tools_are_absent_from_model_prompt_and_schema_budget(){
         let run=Run::new(CreateRun{instruction:"test".into(),budget_krw:None,max_steps:None},5).unwrap();
         let denied=vec!["write_file".to_string(),"shell".to_string()];
