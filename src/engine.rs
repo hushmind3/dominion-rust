@@ -882,6 +882,10 @@ impl Engine {
     }
 
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
+        // Serialize with child creation. If a comparison is cancelled during
+        // the first candidate's startup, the next candidate cannot start and
+        // no just-created worker escapes the cancellation scan.
+        let _delegation=self.delegate_lock.lock().await;
         // Publish durable cancellation BEFORE signalling running futures.
         // This prevents an abort signal from racing ahead of the persisted
         // state transition. Write/MCP tools never get dropped speculatively.
@@ -900,6 +904,28 @@ impl Engine {
         }).await?;
         if let Some(sender)=self.cancellation.lock().await.get(&id){
             sender.send_replace(true);
+        }
+        // A paid strategy experiment is one parent-owned unit: cancellation
+        // must not leave isolated candidate model calls running unseen.
+        let children=self.store.children_of(id).await;
+        for child in children.into_iter().filter(|c|c.strategy_candidate&&!c.terminal()){
+            let candidate_id=child.id;
+            self.store.mutate(candidate_id,|run|{
+                if run.terminal(){return Ok(());}
+                if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty(){
+                    run.status=RunStatus::Paused;
+                    run.cancel_after_tool=true;
+                    run.event("cancel_pending_reconciliation",
+                        "Parent strategy trial cancelled; started tool still needs its receipt",None);
+                }else{
+                    run.status=RunStatus::Cancelled;
+                    run.event("cancelled","Parent strategy trial cancelled",None);
+                }
+                Ok(())
+            }).await?;
+            if let Some(sender)=self.cancellation.lock().await.get(&candidate_id){
+                sender.send_replace(true);
+            }
         }
         Ok(snapshot)
     }
