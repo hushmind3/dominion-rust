@@ -24,6 +24,13 @@ pub fn resolve_inputs(inputs:&Value,observed:&Value)->Result<Value,String>{
             }
             let base=observed.get(from).ok_or_else(||
                 format!("input {key} references unavailable observation {from}"))?;
+            // A failed, rejected or skipped tool cannot become a trusted
+            // source for another operation's arguments. A recovery branch
+            // can still use a literal input and a typed status predicate.
+            if base.get("status").and_then(Value::as_str)
+                .is_some_and(|status|status!="ok"){
+                return Err(format!("input {key} references non-successful observation {from}"));
+            }
             let selected=if let Some(pointer)=value.get("path").and_then(Value::as_str){
                 base.pointer(pointer).ok_or_else(||
                     format!("input {key} references missing observation pointer {from}{pointer}"))?
@@ -112,6 +119,18 @@ mod tests{
         let map=json!({});
         assert_eq!(predicate_verdict(&json!({"type":"equals","from":"x","value":5}),&map).unwrap(),Verdict::Unknown);
         assert_eq!(predicate_verdict(&json!({"type":"not","predicate":{"type":"equals","from":"x","value":5}}),&map).unwrap(),Verdict::Unknown);
+    }
+    #[test]
+    fn tainted_error_or_skipped_observations_cannot_supply_write_arguments(){
+        for status in ["error","skipped"] {
+            let evidence=json!({"probe":{"status":status,"value":"unsafe/path.rs"}});
+            let input=json!({"path":{"from":"probe","path":"/value"}});
+            assert!(resolve_inputs(&input,&evidence).is_err(),
+                "{status} must not be promoted to an executable path");
+        }
+        let good=json!({"probe":{"status":"ok","value":"checked.rs"}});
+        assert_eq!(resolve_inputs(&json!({"path":{"from":"probe","path":"/value"}}),
+            &good).unwrap(),json!({"path":"checked.rs"}));
     }
     #[test]
     fn nested_observation_pointer_and_comparison(){
