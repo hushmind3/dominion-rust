@@ -2,7 +2,7 @@
 //! Explicitly stored notes are searchable without an embedding model or API.
 use crate::domain::now_ms;
 use serde::{Serialize,Deserialize};
-use std::{path::PathBuf,collections::HashSet};
+use std::{path::PathBuf,collections::HashSet,sync::atomic::{AtomicU64,Ordering}};
 use tokio::{fs,io::AsyncWriteExt,sync::Mutex};
 use uuid::Uuid;
 
@@ -18,6 +18,9 @@ pub struct MemoryEntry{
 pub struct Knowledge{
     file:PathBuf,
     entries:Mutex<Vec<MemoryEntry>>,
+    // Process-local generation changes only after a successful durable
+    // mutation, so a running agent can avoid repeated full-scope scans.
+    revision:AtomicU64,
 }
 fn valid(scope:&str,title:&str,content:&str)->Result<(),String>{
     if scope.is_empty()||scope.len()>512||scope.bytes().any(|b|b==0||b==b'\n'){
@@ -52,6 +55,9 @@ async fn persist(file:&std::path::Path,entries:&[MemoryEntry])->Result<(),String
     write
 }
 impl Knowledge{
+    /// Used by the native Run's bounded memory-recall cache. Not a persisted
+    /// schema field; opening another process invalidates its own empty cache.
+    pub fn revision(&self)->u64{self.revision.load(Ordering::Acquire)}
     pub fn open(data_dir:PathBuf)->Result<Self,String>{
         std::fs::create_dir_all(&data_dir).map_err(|e|e.to_string())?;
         let file=data_dir.join("knowledge.json");
@@ -59,7 +65,7 @@ impl Knowledge{
             serde_json::from_slice::<Vec<MemoryEntry>>(&std::fs::read(&file).map_err(|e|e.to_string())?)
                 .map_err(|e|format!("corrupt durable knowledge file: {e}"))?
         }else{Vec::new()};
-        Ok(Self{file,entries:Mutex::new(entries)})
+        Ok(Self{file,entries:Mutex::new(entries),revision:AtomicU64::new(0)})
     }
     pub async fn remember(&self,scope:&str,title:&str,content:&str)->Result<MemoryEntry,String>{
         valid(scope,title,content)?;
@@ -77,6 +83,7 @@ impl Knowledge{
         };
         persist(&self.file,&entries).await?;
         *locked=entries;
+        self.revision.fetch_add(1,Ordering::Release);
         Ok(updated)
     }
     /// Exact-scope inventory: unlike search this never includes inherited
@@ -113,6 +120,7 @@ impl Knowledge{
         let result=entry.clone();
         persist(&self.file,&next).await?;
         *locked=next;
+        self.revision.fetch_add(1,Ordering::Release);
         Ok(result)
     }
     pub async fn forget(&self,scope:&str,id:Uuid)->Result<(),String>{
@@ -124,6 +132,7 @@ impl Knowledge{
         if next.len()==before{return Err("memory not found in selected scope".into());}
         persist(&self.file,&next).await?;
         *locked=next;
+        self.revision.fetch_add(1,Ordering::Release);
         Ok(())
     }
     pub async fn search(&self,scope:&str,query:&str,max:usize)->Vec<MemoryEntry>{
@@ -155,6 +164,7 @@ mod tests{
         // Force a rename failure by placing a directory at the destination.
         fs::create_dir(dir.join("knowledge.json")).await.unwrap();
         assert!(knowledge.remember("global","important","must persist").await.is_err());
+        assert_eq!(knowledge.revision(),0,"failed persistence cannot invalidate or publish memory");
         assert!(knowledge.search("global","important",5).await.is_empty());
         fs::remove_dir_all(dir).await.unwrap();
     }
@@ -162,8 +172,11 @@ mod tests{
     async fn memory_persists_with_scope_and_idempotent_revisions(){
         let root=std::env::temp_dir().join(format!("dominion-memory-{}",Uuid::new_v4()));
         let k=Knowledge::open(root.clone()).unwrap();
+        assert_eq!(k.revision(),0);
         let first=k.remember("repo-a","build command","cargo test").await.unwrap();
+        assert_eq!(k.revision(),1);
         let revised=k.remember("repo-a","build command","cargo test --lib").await.unwrap();
+        assert_eq!(k.revision(),2);
         assert_eq!(first.id,revised.id);
         k.remember("repo-b","secret note","other project only").await.unwrap();
         k.remember("global","user preference","Korean interface").await.unwrap();

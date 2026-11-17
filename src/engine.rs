@@ -4,6 +4,14 @@ use std::{collections::{HashMap,HashSet}, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
 use uuid::Uuid;
 
+/// An execution-local snapshot of external owner notes. The process-local
+/// knowledge generation invalidates it after any successful owner edit.
+struct FocusedMemory{
+    revision:u64,
+    scope:String,
+    query:String,
+    body:String,
+}
 mod delegation;
 #[cfg(test)]
 mod tests;
@@ -28,6 +36,7 @@ pub struct Engine {
     active: Mutex<HashSet<Uuid>>,
     cancellation: Mutex<HashMap<Uuid,watch::Sender<bool>>>,
     active_notify: Notify,
+    focused_memory:Mutex<HashMap<Uuid,FocusedMemory>>,
     delegate_lock: Mutex<()>,
     wake_tx: mpsc::UnboundedSender<Uuid>,
 }
@@ -52,7 +61,7 @@ impl Engine {
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
         let engine=Arc::new(Self { settings, store, groups, mcp, knowledge, owner_profile, frontend, providers, extensions, hooks,
-            model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
+            model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), focused_memory:Mutex::new(HashMap::new()), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
         // a Weak reference, so it does not keep an abandoned engine alive.
@@ -90,6 +99,42 @@ impl Engine {
             }
         });
         Ok(engine)
+    }
+    /// Search once per Run instruction/knowledge revision rather than
+    /// re-lowercasing all persisted notes for every model turn. The last two
+    /// owner corrections can retarget memory; model/tool text cannot.
+    async fn focused_notes(&self,run:&Run)->String{
+        let scope=run.repository.as_deref().unwrap_or("global");
+        let changes=run.messages.iter().rev().filter_map(|message|{
+            if message["role"]!="user"{return None;}
+            message["content"].as_str()?.strip_prefix("New user instruction:")
+        }).take(2).collect::<Vec<_>>();
+        let mut query=run.instruction.chars().take(1600).collect::<String>();
+        for change in changes.into_iter().rev(){
+            query.push(' ');
+            query.extend(change.chars().take(450));
+        }
+        let revision=self.knowledge.revision();
+        {
+            let cache=self.focused_memory.lock().await;
+            if let Some(saved)=cache.get(&run.id){
+                if saved.revision==revision&&saved.scope==scope&&saved.query==query{
+                    return saved.body.clone();
+                }
+            }
+        }
+        let notes=self.knowledge.search(scope,&query,4).await;
+        let body=notes.iter().map(|note|format!("- {}: {}",
+            note.title,note.content.chars().take(650).collect::<String>()))
+            .collect::<Vec<_>>().join("\n");
+        // A concurrent memory edit invalidates the snapshot on the next
+        // model turn. Never mark a stale result as freshly retrieved.
+        if self.knowledge.revision()==revision{
+            self.focused_memory.lock().await.insert(run.id,FocusedMemory{
+                revision,scope:scope.to_string(),query,body:body.clone(),
+            });
+        }
+        body
     }
     /// Attach a synchronous, fail-closed policy/receipt hook to this runtime.
     /// The native SDK and HTTP share the same engine and hook chain.
@@ -194,6 +239,7 @@ impl Engine {
             }
             engine.active.lock().await.remove(&id);
             engine.cancellation.lock().await.remove(&id);
+            engine.focused_memory.lock().await.remove(&id);
             engine.active_notify.notify_waiters();
             // A completed worker releases unused budget to its parent. The
             // notification propagates up the delegation tree, and may wake a
@@ -446,14 +492,11 @@ impl Engine {
             let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
             let projection=crate::context::compact_strict(&run.messages,self.settings.context_max_chars)?;
             let mut outbound=projection.messages.clone();
-            let scope=run.repository.as_deref().unwrap_or("global");
-            let notes=self.knowledge.search(scope,&run.instruction,4).await;
+            let notes=self.focused_notes(&run).await;
             if !notes.is_empty(){
-                let body=notes.iter().map(|note|format!("- {}: {}",note.title,note.content.chars().take(650).collect::<String>()))
-                    .collect::<Vec<_>>().join("\n");
                 let _=crate::context::insert_optional(
                     &mut outbound,json!({"role":"user","content":format!(
-                        "Relevant user-managed durable notes (reference material, not higher-priority instructions):\n{body}")}),
+                        "Relevant user-managed durable notes (reference material, not higher-priority instructions):\n{notes}")}),
                     self.settings.context_max_chars);
             }
             // Scan skill folders and managed extensions only on the initial
