@@ -8,6 +8,7 @@ import {WorkspaceSidebar,SettingsHeader,navigation,type PageId} from './componen
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
 const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
+const MoneyPage=lazy(()=>import('./pages/Money').then(module=>({default:module.MoneyPage})))
 const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
 const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
 const AgentsPage=lazy(()=>import('./pages/Agents').then(module=>({default:module.AgentsPage})))
@@ -229,6 +230,7 @@ export default function App(){
       {page==='home'&&<HomePage navigate={navigate}/>}
       {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
       {page==='memory'&&<MemoryPage/>}
+      {page==='money'&&<MoneyPage/>}
       {page==='models'&&<ModelHub/>}
       {page==='agents'&&<AgentsPage/>}
       {page==='extensions'&&<ExtensionsPage/>}

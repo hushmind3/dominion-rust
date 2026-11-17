@@ -82,6 +82,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/memory/scopes",get(memory_scopes))
         .route("/memory/{id}",post(revise_memory).delete(forget_memory))
         .route("/strategies",get(list_strategies))
+        .merge(crate::money::api::routes())
         .route("/runs",get(list_runs).post(create_run))
         .route("/runs/from-repository",post(create_repository_run))
         .route("/runs/{id}",get(get_run))

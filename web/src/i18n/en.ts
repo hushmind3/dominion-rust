@@ -12,6 +12,7 @@ const en: Record<LocaleKey, string> = {
   'nav.agents': 'Agents',
   'nav.connections': 'Connections',
   'nav.memory': 'Memory',
+  'nav.money': 'Money discovery',
   'nav.activity': 'Activity',
   'nav.settings': 'Settings',
   'shell.newChat': 'New chat',

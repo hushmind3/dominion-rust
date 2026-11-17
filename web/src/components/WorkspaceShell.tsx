@@ -1,14 +1,14 @@
 import {useEffect,useState} from 'react'
 import {OwnerProfileEditor} from './OwnerProfile'
-import {Activity,BookOpenText,Bot,ChevronDown,Cpu,House,MessageSquare,RadioTower,Settings2,UsersRound,Plus,X,Settings,Menu} from 'lucide-react'
+import {Activity,BookOpenText,Bot,ChevronDown,Cpu,House,MessageSquare,RadioTower,Settings2,UsersRound,Plus,X,Settings,Menu,Wallet} from 'lucide-react'
 import {Button} from './Primitives'
 import {t,type LocaleKey,useLocale} from '../i18n'
 
-export type PageId='home'|'chat'|'models'|'agents'|'rooms'|'memory'|'capabilities'|'extensions'|'connections'|'activity'|'settings'
+export type PageId='home'|'chat'|'models'|'agents'|'rooms'|'memory'|'money'|'capabilities'|'extensions'|'connections'|'activity'|'settings'
 type NavItem={id:PageId;label:LocaleKey;icon:typeof House}
 export const navigation:{title:LocaleKey;items:NavItem[];collapsible?:boolean}[]=[
  {title:'nav.group.workspace',items:[{id:'home',label:'nav.home',icon:House},{id:'chat',label:'nav.chat',icon:MessageSquare},{id:'rooms',label:'nav.rooms',icon:UsersRound},{id:'models',label:'nav.models',icon:Cpu},{id:'agents',label:'nav.agents',icon:Bot}]},
- {title:'nav.group.extensions',items:[{id:'connections',label:'nav.connections',icon:RadioTower},{id:'memory',label:'nav.memory',icon:BookOpenText}]},
+ {title:'nav.group.extensions',items:[{id:'connections',label:'nav.connections',icon:RadioTower},{id:'memory',label:'nav.memory',icon:BookOpenText},{id:'money',label:'nav.money',icon:Wallet}]},
  {title:'nav.group.operations',items:[{id:'activity',label:'nav.activity',icon:Activity},{id:'settings',label:'nav.settings',icon:Settings2}]}
 ]
 const items=navigation.flatMap(g=>g.items)

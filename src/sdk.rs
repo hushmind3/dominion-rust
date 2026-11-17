@@ -26,6 +26,7 @@ impl Dominion {
         let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
         // Legacy media/RSI archive files are left untouched on disk.
         let engine=Engine::new(settings,store,groups)?;
+        crate::money::api::start_scheduler(&engine);
         // Reconcile durable parent/child settlement after a previous process
         // died between a child completion and the parent wake notification.
         let (suspended,safe_to_resume)=engine.store.recovery_candidates().await;

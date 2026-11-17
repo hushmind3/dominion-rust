@@ -11,6 +11,7 @@ const ko = {
   'nav.agents': '에이전트',
   'nav.connections': '연결 · 채널',
   'nav.memory': '메모리',
+  'nav.money': '돈벌이 찾기',
   'nav.activity': '실행 기록',
   'nav.settings': '설정',
   'shell.newChat': '새 대화',
