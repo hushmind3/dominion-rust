@@ -406,4 +406,25 @@ mod tests{
     assert!(!items.is_empty());
     assert!(items.iter().all(|r|r["evidenceStatus"]!="paid_customer_verified"));
  }
+ #[test] fn model_ideas_cannot_fabricate_citations_or_payment_proof(){
+    let report=json!({"drafts":[{
+        "id":"db-1","evidence":[{"sourceId":"observed-a",
+        "url":"https://records.example/real","claim":"Original buyer announcement"}]
+    }]});
+    let run=Uuid::nil();
+    let plausible=r#"{"ideas":[{
+        "title":"Reconciliation subscription","customer":"Buyer operations",
+        "offer":"Invoices review","whyPay":"Manual effort",
+        "implementationPlan":"Extract fields, reconcile and export report",
+        "firstPaymentStep":"Request a paid pilot",
+        "sourceIds":["observed-a"],
+        "evidence":[{"url":"https://forged.example/fake"}]
+    }]}"#;
+    let parsed=parse_ideas(plausible,&report,run).unwrap();
+    assert_eq!(parsed.len(),1);
+    assert_eq!(parsed[0]["evidence"][0]["url"],"https://records.example/real");
+    assert_eq!(parsed[0]["evidenceStatus"],"unverified_model_hypothesis");
+    let invalid=plausible.replace("observed-a","imaginary-source");
+    assert!(parse_ideas(&invalid,&report,run).unwrap().is_empty());
+ }
 }
