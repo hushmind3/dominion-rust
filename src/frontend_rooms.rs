@@ -573,9 +573,28 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
 /// and the original clientMessageId can resume remaining speakers.
 async fn send_background(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   Json(input):Json<SayInput>)->Result<(StatusCode,Json<Value>),Fault>{
-  let lease=engine.groups.try_frontend_turn(id).ok_or_else(||(
-    StatusCode::CONFLICT,Json(json!({"error":
-      "room turn already running; inspect /state before resending"}))))?;
+  // Repeating the same durable clientMessageId while work is active is
+  // an idempotent status read, not another nine-model fan-out.
+  let lease=if let Some(lease)=engine.groups.try_frontend_turn(id){lease}else{
+    let room=engine.groups.get(id).await.ok_or_else(missing)?;
+    let index=room.client_messages.get(&input.client_message_id).copied();
+    let same=index.and_then(|index|room.messages.get(index).map(|message|
+      (index,message.content.as_str()==input.input.trim())));
+    if let Some((index,true))=same{
+      let message=message_rows(&room).get(index).cloned()
+        .ok_or_else(||failed("stored message disappeared".into()))?;
+      let (wanted,actual)=owner_turn_progress(&room,index,&room.recipients);
+      return Ok((StatusCode::ACCEPTED,Json(json!({
+        "room":room_view(&room),"message":message,
+        "job":{"id":input.client_message_id,"kind":"room_turn",
+            "status":"running","stepIndex":actual,"stepTotal":wanted},
+        "sessionId":room_session(id)
+      }))));
+    }
+    return Err((StatusCode::CONFLICT,Json(json!({
+      "error":"another room owner turn is running; inspect /state before resending"
+    }))));
+  };
   if input.input.trim().is_empty(){return Err(bad("room message cannot be empty"));}
   if input.reasoning_language.as_deref().is_some_and(|v|
     !matches!(v,"ko"|"default"|"original")){
