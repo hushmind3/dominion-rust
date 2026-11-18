@@ -41,9 +41,16 @@ fn classified_provider_failure(error:&str)->(Option<u16>,Option<i64>,String){
         else{"upstream_protocol_or_runtime"};
     (http,code,category.into())
 }
+fn default_receipt_accepted()->bool{true}
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct RoomUsageReceipt {
     pub message_index:usize,
+    /// Whether the upstream reply became a visible agent utterance.
+    /// A completed billed call may be rejected by a room budget AFTER
+    /// inference; its receipt must survive without becoming a fake answer.
+    /// Old journals contain only accepted answers.
+    #[serde(default="default_receipt_accepted")]
+    pub accepted:bool,
     pub participant:String,
     pub model:String,
     pub input_tokens:u64,
@@ -80,7 +87,8 @@ pub struct Room {
     pub created_at_ms: u64, pub updated_at_ms: u64,
     #[serde(default)] pub revision:u64,
     #[serde(default)] pub used_tokens:u64,
-    /// One durable observed provider usage receipt per generated agent message.
+    /// One durable observed provider usage receipt per completed provider call;
+    /// over-budget completed calls can be billed without a generated message.
     #[serde(default,skip_serializing_if="Vec::is_empty")]
     pub usage_receipts:Vec<RoomUsageReceipt>,
     /// Exceeding a limit or stopping is not successful completion.
@@ -644,17 +652,13 @@ impl Groups {
             v.token_budget>0 && room.used_tokens.saturating_add(tokens)>v.token_budget);
         room.cost_krw+=reply.cost_krw;
         room.used_tokens=room.used_tokens.saturating_add(tokens);
-        if exceeded_cost||exceeded_tokens{
-            room.status=RoomStatus::Finished;
-            room.finish_reason=if exceeded_cost{"cost_budget_exceeded"}else{"token_budget_exceeded"}.into();
-            room.updated_at_ms=now_ms();
-            self.save(room).await?;
-            return Err(if exceeded_cost{"group budget exhausted after billed model request"}
-                else{"group token budget exhausted after billed model request"}.into());
-        }
+        // Persist the *actual* provider receipt before enforcing the post-call
+        // budget. We cannot unbill a model request after the provider replies.
+        // A denied reply is never counted as a delivered agent utterance.
         let message_index=room.messages.len();
         room.usage_receipts.push(RoomUsageReceipt{
-            message_index,participant:participant.name.clone(),model:reply.model.clone(),
+            message_index,accepted:!exceeded_cost&&!exceeded_tokens,
+            participant:participant.name.clone(),model:reply.model.clone(),
             input_tokens:reply.input_tokens,
             cached_input_tokens:reply.cached_input_tokens,
             cache_write_tokens:reply.cache_write_tokens,
@@ -671,6 +675,16 @@ impl Groups {
             self_recall_chars:projected.self_recall_chars,
             mutable_memory_chars:projected.mutable_memory_chars
         });
+        if exceeded_cost||exceeded_tokens{
+            room.status=RoomStatus::Finished;
+            room.finish_reason=if exceeded_cost{"cost_budget_exceeded"}
+                else{"token_budget_exceeded"}.into();
+            room.updated_at_ms=now_ms();
+            self.save(room).await?;
+            return Err(if exceeded_cost{
+                "group budget exhausted after billed model request"
+            }else{"group token budget exhausted after billed model request"}.into());
+        }
         room.rounds+=1;
         // Forced frontend fan-out retains the original owner-selected
         // recipients until the NEXT owner message. This makes retrying an

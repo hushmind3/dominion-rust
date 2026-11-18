@@ -115,6 +115,7 @@ pub(crate) fn room_usage(room:&Room)->Value{
     let writes=room.usage_receipts.iter().map(|m|m.cache_write_tokens).sum::<u64>();
     let unmetered=room.usage_receipts.iter().filter(|m|
         m.provider_usage_reported!=Some(true)).count();
+    let delivered=room.usage_receipts.iter().filter(|m|m.accepted).count();
     let by_agent=room.participants.iter().map(|p|{
         let receipts=room.usage_receipts.iter().filter(|m|m.participant==p.name)
             .collect::<Vec<_>>();
@@ -122,6 +123,8 @@ pub(crate) fn room_usage(room:&Room)->Value{
             r.provider_usage_reported!=Some(true)).count();
         json!({"agentId":p.name,"calls":receipts.len(),
             "unmeteredCalls":not_reported,
+            "deliveredCalls":receipts.iter().filter(|r|r.accepted).count(),
+            "billedUndeliveredCalls":receipts.iter().filter(|r|!r.accepted).count(),
             "providerUsageReported":!receipts.is_empty() && not_reported==0,
             "promptTokens":receipts.iter().map(|r|r.input_tokens).sum::<u64>(),
             "completionTokens":receipts.iter().map(|r|r.output_tokens).sum::<u64>(),
@@ -140,6 +143,8 @@ pub(crate) fn room_usage(room:&Room)->Value{
         "uncachedPromptTokens":prompt.saturating_sub(cached),
         "cacheHitRate":if prompt>0{cached as f64/prompt as f64}else{0.0},
         "calls":room.usage_receipts.len(),"estimatedCalls":0,
+        "deliveredCalls":delivered,
+        "billedUndeliveredCalls":room.usage_receipts.len().saturating_sub(delivered),
         "unmeteredCalls":unmetered,
         "providerUsageReported":!room.usage_receipts.is_empty()&&unmetered==0,
         "usageStatus":if room.usage_receipts.is_empty(){"not_started"}
@@ -174,7 +179,7 @@ pub fn room_view(room:&Room)->Value{
 }
 pub fn message_rows(room:&Room)->Vec<UiMessage>{
   let session_id=room_session(room.id);
-  let receipts=room.usage_receipts.iter()
+  let receipts=room.usage_receipts.iter().filter(|r|r.accepted)
     .map(|r|(r.message_index,r)).collect::<std::collections::HashMap<_,_>>();
   room.messages.iter().enumerate().map(|(i,m)|{
     let user=m.speaker=="user";

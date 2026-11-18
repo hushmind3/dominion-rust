@@ -210,6 +210,48 @@ async fn per_owner_limit_of_four_allows_the_next_owner_to_use_a_fresh_four(){
 }
 
 #[tokio::test]
+async fn after_call_token_budget_rejection_is_metered_but_never_fabricates_an_answer(){
+    let (engine,id,requests,server,root)=setup(10,"discussion").await;
+    let existing=engine.groups.get(id).await.unwrap();
+    let mut config=existing.frontend.unwrap();
+    config.token_budget=95; // observed fake provider emits 90+10=100
+    engine.groups.configure(id,config,existing.participants).await.unwrap();
+    let failed=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Make the expensive call but do not pretend it was delivered".into(),
+        agent_ids:vec![],client_message_id:"budget-overflow".into(),
+        reasoning_language:None
+    })).await.err().expect("post-inference budget breach must interrupt");
+    assert_eq!(failed.0,StatusCode::BAD_REQUEST);
+    assert_eq!(requests.load(Ordering::SeqCst),1);
+    let room=engine.groups.get(id).await.unwrap();
+    assert_eq!(room.messages.len(),1,"no accepted agent answer");
+    assert_eq!(room.rounds,0,"the model did not deliver an agent response");
+    assert_eq!(room.status,RoomStatus::Finished);
+    assert_eq!(room.finish_reason,"token_budget_exceeded");
+    assert_eq!(room.used_tokens,100,"upstream model already consumed tokens");
+    assert_eq!(room.usage_receipts.len(),1,
+        "every billed provider completion must have a durable receipt");
+    assert!(!room.usage_receipts[0].accepted);
+    assert_eq!(room.usage_receipts[0].input_tokens,90);
+    assert_eq!(room.usage_receipts[0].output_tokens,10);
+    let visible=message_rows(&room);
+    assert_eq!(visible.len(),1);
+    assert_eq!(visible[0].role,"user");
+    assert!(visible[0].metadata.as_ref().is_none_or(|m|m["usage"].is_null()),
+        "denied agent tokens must never be attributed to the owner");
+    let report=room_usage(&room);
+    assert_eq!(report["totalTokens"],100);
+    assert_eq!(report["promptTokens"],90);
+    assert_eq!(report["completionTokens"],10);
+    assert_eq!(report["calls"],1);
+    assert_eq!(report["deliveredCalls"],0);
+    assert_eq!(report["billedUndeliveredCalls"],1);
+    assert_eq!(report["byAgent"][0]["billedUndeliveredCalls"],1);
+    assert_eq!(serde_json::from_value::<Room>(serde_json::to_value(&room).unwrap())
+        .unwrap().usage_receipts[0].accepted,false);
+    server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
+}
+#[tokio::test]
 async fn room_lifetime_cap_is_independent_from_per_owner_speaker_limit(){
     let (engine,id,requests,server,root)=setup(10,"discussion").await;
     let current=engine.groups.get(id).await.unwrap();
