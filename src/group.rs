@@ -965,7 +965,7 @@ mod tests {
                 content:format!("Owner request {turn}: preserve decisions"),
                 at_ms:turn,model:None
             });
-            for (speaker,index) in members.iter().enumerate(){
+            for (index,speaker) in members.iter().enumerate(){
                 room.messages.push(Utterance{
                     speaker:speaker.name.clone(),
                     content:format!("Observation {index} for owner turn {turn}"),
