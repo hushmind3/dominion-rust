@@ -28,6 +28,10 @@ jobs:
         run: cargo test --lib program_view_tests
       - name: Nine-agent three-turn fanout, per-speaker metering and incomplete round status
         run: cargo test --lib frontend_rooms::fanout_tests
+      - name: Shared prefix, relevance-selected group context and restored provenance accounting
+        run: 'cargo test --lib group::tests'
+      - name: Scoped Cloudflare session affinity and honest cached-token pricing
+        run: 'cargo test --lib cloudflare_room_affinity_is_explicit_scoped_and_not_sent_to_other_providers'
       - name: Model-authored program cursor, typed receipts, policy and crash recovery (dev profile)
         run: cargo test --lib program_session::tests
       - name: Programmatic native shell remains approval-gated (dev profile)

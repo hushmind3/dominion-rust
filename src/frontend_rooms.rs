@@ -117,13 +117,24 @@ fn room_usage(room:&Room)->Value{
             "promptTokens":receipts.iter().map(|r|r.input_tokens).sum::<u64>(),
             "completionTokens":receipts.iter().map(|r|r.output_tokens).sum::<u64>(),
             "cachedPromptTokens":receipts.iter().map(|r|r.cached_input_tokens).sum::<u64>(),
-            "costKrw":receipts.iter().map(|r|r.cost_krw).sum::<f64>()})
+            "costKrw":receipts.iter().map(|r|r.cost_krw).sum::<f64>(),
+            "contextSourceChars":receipts.iter().map(|r|r.source_context_chars).sum::<usize>(),
+            "contextSelectedChars":receipts.iter().map(|r|r.projected_context_chars).sum::<usize>(),
+            "omittedContextMessages":receipts.iter().map(|r|r.omitted_context_messages).sum::<usize>()})
     }).collect::<Vec<_>>();
     json!({"totalTokens":room.used_tokens,
         "promptTokens":prompt,"completionTokens":output,
         "cachedPromptTokens":cached,"cacheWriteTokens":writes,
         "calls":room.usage_receipts.len(),"estimatedCalls":0,
-        "costKrw":room.cost_krw,"byAgent":by_agent})
+        "costKrw":room.cost_krw,
+        "contextSourceChars":room.usage_receipts.iter()
+            .map(|r|r.source_context_chars).sum::<usize>(),
+        "contextSelectedChars":room.usage_receipts.iter()
+            .map(|r|r.projected_context_chars).sum::<usize>(),
+        "omittedContextMessages":room.usage_receipts.iter()
+            .map(|r|r.omitted_context_messages).sum::<usize>(),
+        "contextUnits":"characters_not_provider_tokens",
+        "byAgent":by_agent})
 }
 pub fn room_view(room:&Room)->Value{
   let conf=config_of(room);
@@ -152,7 +163,14 @@ pub fn message_rows(room:&Room)->Vec<UiMessage>{
         "cachedPromptTokens":receipt.cached_input_tokens,
         "cacheWriteTokens":receipt.cache_write_tokens,
         "totalTokens":receipt.input_tokens.saturating_add(receipt.output_tokens),
-        "costKrw":receipt.cost_krw
+        "costKrw":receipt.cost_krw,
+        "contextComposition":{
+            "sourceChars":receipt.source_context_chars,
+            "selectedChars":receipt.projected_context_chars,
+            "omittedMessages":receipt.omitted_context_messages,
+            "commonPrefixChars":receipt.common_prefix_chars,
+            "personaChars":receipt.persona_chars
+        }
     }));
     UiMessage{
       id:format!("{}:{i}",room.id),
@@ -373,7 +391,8 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
             .ok_or_else(||bad("selected room agent was deleted"))?;
         (agent.provider_id,agent.model)
     };
-    let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?;
+    let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?
+        .with_session_affinity(&format!("dominion-room-{id}"));
     engine.providers.throttle(&provider).await;
     room=engine.groups.next_for(&selected_model,id,Some(&agent_id)).await.map_err(bad)?;
     turns+=1;
