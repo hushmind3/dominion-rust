@@ -83,6 +83,8 @@ fn from_pair(pair:&Value,by_id:&HashMap<String,Value>)->Option<Value>{
         "firstTest":pair["nextProof"],"counterfactual":"두 자료의 시장·제품·시점이 다르거나 실제 유료 구매자가 없으면 이 가설은 폐기합니다.",
         "origin":"source_pair_draft","evidenceStatus":"two_independent_source_mentions_not_causality",
         "researchPriority":pair["researchPriority"],"status":"draft",
+        "sourceTimeRelation":pair["sourceTimeRelation"],
+        "sourceIndependence":pair["sourceIndependence"],
         "evidence":[evidence(a),evidence(b)],
         "sourceIds":[a["id"],b["id"]],
         "moneyMechanism":kind

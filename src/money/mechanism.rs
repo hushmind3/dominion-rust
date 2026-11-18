@@ -57,6 +57,37 @@ fn source_host(v:&Value)->String{
 fn bounded(v:&Value,key:&str,max:usize)->String{
     v[key].as_str().unwrap_or("").chars().take(max).collect()
 }
+/// Independent publisher names and domains alone do not imply independent
+/// economic observations: syndicated news is frequently mirrored across
+/// feeds. Reuse saved source fingerprints instead of another inference call.
+fn duplicated_observation(a:&Value,b:&Value)->bool{
+    for field in ["storyKey","feedOriginalSha256"]{
+        let x=a[field].as_str().unwrap_or("");
+        let y=b[field].as_str().unwrap_or("");
+        if !x.is_empty()&&x==y{return true;}
+    }
+    let normalize=|value:&Value|value["title"].as_str().unwrap_or("")
+        .to_lowercase().chars().filter(|ch|ch.is_alphanumeric())
+        .take(220).collect::<String>();
+    let title_a=normalize(a);
+    let title_b=normalize(b);
+    title_a.chars().count()>=12 && title_a==title_b
+}
+fn observation_time(row:&Value)->Option<i64>{
+    let raw=row["publishedAt"].as_str()?;
+    let parsed=chrono::DateTime::parse_from_rfc3339(raw)
+        .or_else(|_|chrono::DateTime::parse_from_rfc2822(raw)).ok()?;
+    Some(parsed.timestamp())
+}
+/// Time proximity is an observation, not a purchase or a price match.
+fn temporal_relation(a:&Value,b:&Value)->&'static str{
+    match (observation_time(a),observation_time(b)){
+        (Some(x),Some(y)) if x.abs_diff(y)>180*24*60*60=>
+            "different_periods_check_current_market",
+        (Some(_),Some(_))=>"same_reporting_period_not_same_contract",
+        _=>"publication_times_unverified",
+    }
+}
 fn pair_score(supply:&Value,buyer:&Value,pattern:Mechanism)->Option<f64>{
     let a=tags(supply,"topics");
     let b=tags(buyer,"topics");
@@ -70,7 +101,8 @@ fn pair_score(supply:&Value,buyer:&Value,pattern:Mechanism)->Option<f64>{
         ||source_name(supply)==source_name(buyer){return None;}
     let supply_host=source_host(supply);
     let buyer_host=source_host(buyer);
-    if supply_host.is_empty()||buyer_host.is_empty()||supply_host==buyer_host{
+    if supply_host.is_empty()||buyer_host.is_empty()||supply_host==buyer_host
+        ||duplicated_observation(supply,buyer){
         return None;
     }
     let differences=a.iter().filter(|t|!b.contains(t)).count()
@@ -81,7 +113,11 @@ fn pair_score(supply:&Value,buyer:&Value,pattern:Mechanism)->Option<f64>{
         +(buyer["contentStatus"]=="page_fetched") as u8;
     let score=45.0+(differences.min(4) as f64)*7.0
         +(common.min(2) as f64)*3.0+direct_page_reads as f64*4.0;
-    Some(score.min(90.0))
+    // Do not treat observations from different market periods as one
+    // contemporary opportunity, while retaining the archival hypothesis.
+    let time_penalty=if temporal_relation(supply,buyer)
+        =="different_periods_check_current_market"{15.0}else{0.0};
+    Some((score-time_penalty).max(0.0).min(90.0))
 }
 fn make_id(kind:&str,supply_id:&str,buyer_id:&str)->String{
     format!("tension:{:x}",Sha256::digest(format!("{kind}:{supply_id}:{buyer_id}").as_bytes()))
@@ -109,6 +145,10 @@ pub fn discover(signals:&[Value],max:usize)->Vec<Value>{
                     "supplySource":source_name(a),"buyerSource":source_name(b),
                     "supplyTopics":a_topics,"buyerTopics":b_topics,
                     "supplyChange":pattern.supply,"buyerChange":pattern.buyer,
+                    "sourceTimeRelation":temporal_relation(a,b),
+                    "supplyPublishedAt":a["publishedAt"],
+                    "buyerPublishedAt":b["publishedAt"],
+                    "sourceIndependence":"distinct_origins_not_same_saved_story",
                     "researchPriority":score.round() as u64,
                     "evidenceStatus":"two_independent_source_mentions_not_causality",
                     "purchaseEvidence":false,
@@ -192,6 +232,39 @@ mod tests{
         assert_eq!(found.len(),2);
         assert!(found.iter().all(|item|item["evidenceStatus"]
             =="two_independent_source_mentions_not_causality"));
+    }
+    #[test] fn mirrored_article_across_distinct_hosts_is_not_independent_demand(){
+        let mut supplier=article("a","source A",&["hardware"],"cost_drop");
+        let mut buyer=article("b","source B",&["construction"],"buyer_request");
+        supplier["storyKey"]=json!("sha256:one-syndicated-article");
+        buyer["storyKey"]=json!("sha256:one-syndicated-article");
+        assert!(discover(&[supplier.clone(),buyer.clone()],10).is_empty());
+        supplier["storyKey"]=json!("distinct-supplier-story");
+        buyer["storyKey"]=json!("distinct-buyer-story");
+        let found=discover(&[supplier.clone(),buyer.clone()],10);
+        assert_eq!(found.len(),1);
+        assert_eq!(found[0]["sourceIndependence"],
+            "distinct_origins_not_same_saved_story");
+        supplier["feedOriginalSha256"]=json!("identical-feed-content");
+        buyer["feedOriginalSha256"]=json!("identical-feed-content");
+        assert!(discover(&[supplier,buyer],10).is_empty());
+    }
+    #[test] fn cross_year_archival_pairs_are_not_ranked_as_current_market_evidence(){
+        let mut supplier=article("a","source A",&["hardware"],"cost_drop");
+        let mut buyer=article("b","source B",&["construction"],"buyer_request");
+        supplier["publishedAt"]=json!("2023-01-02T03:00:00Z");
+        buyer["publishedAt"]=json!("2026-10-12T03:00:00Z");
+        let archival=discover(&[supplier.clone(),buyer.clone()],10);
+        assert_eq!(archival.len(),1);
+        assert_eq!(archival[0]["sourceTimeRelation"],
+            "different_periods_check_current_market");
+        buyer["publishedAt"]=json!("2023-02-01T03:00:00Z");
+        let aligned=discover(&[supplier,buyer],10);
+        assert_eq!(aligned.len(),1);
+        assert_eq!(aligned[0]["sourceTimeRelation"],
+            "same_reporting_period_not_same_contract");
+        assert!(aligned[0]["researchPriority"].as_u64().unwrap()
+            >archival[0]["researchPriority"].as_u64().unwrap());
     }
     #[test] fn buyer_signal_joins_supplier_change_but_is_not_a_paid_order(){
         let data=vec![article("s","tech source",&["hardware"],"cost_drop"),

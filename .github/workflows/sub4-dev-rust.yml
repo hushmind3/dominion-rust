@@ -55,6 +55,8 @@ jobs:
         run: cargo test --lib committed_domain_receipt_survives_restart_without_extra_worker
       - name: Focused per-run memory cache regression (dev profile)
         run: cargo test --lib repeated_model_turns_reuse_scoped_memory_until_owner_edit
+      - name: Failure-conditioned memory retrieval via actual Engine path
+        run: cargo test --lib fresh_failure_class_retargets_existing_run_memory_without_extra_model_calls
       - name: Durable memory revision persistence (dev profile)
         run: 'cargo test --lib knowledge::'
       - name: Agent context retention and repair regression (dev profile)
