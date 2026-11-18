@@ -87,6 +87,9 @@ impl Engine {
         if root.terminal() || root.status!=RunStatus::Running || root.cancel_after_tool {
             return Err("parent is not actively running or has pending cancellation".into());
         }
+        if root.read_only && matches!(profile,"implementation"|"verification"){
+            return Err("read-only parent cannot delegate edit or shell-capable roles".into());
+        }
         let children=self.store.children_of(parent).await;
         if children.len()>=4{return Err("maximum of four direct subagents per run".into());}
         let remaining=(policy::effective_budget_krw(&root)-root.cost_krw).max(0.0);
@@ -178,6 +181,10 @@ impl Engine {
             "answer":run.answer,
             "steps":run.steps,
             "cost_krw":run.cost_krw,
+            "delegation_profile":if run.delegation_profile.is_empty(){
+                "general"
+            }else{run.delegation_profile.as_str()},
+            "read_only":run.read_only,
             "base_commit":run.base_commit,
             "repository":run.repository,
             "error":run.events.iter().rev().find(|e|e.kind=="error"||e.kind=="paused_error").map(|e|&e.message)
