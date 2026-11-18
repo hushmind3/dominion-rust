@@ -298,15 +298,16 @@ fn project_room_context(room:&Room,participant:&Participant,cap:usize)->RoomCont
     for (index,entry) in room.messages.iter().enumerate(){
         let line=room_line(index,entry,cap);
         let cost=line.chars().count()+1;
-        // Both thresholds are stable for the entire currently selected
-        // segment. A new message may never cause retroactive reordering of
-        // an already-sent prefix unless this segment actually rolls over.
-        let (segment_cap,max_messages)=if checkpoint_end==0{
-            (initial_tail_budget,48)
-        }else{(compact_tail_budget,20)};
-        if !rolling.is_empty() &&
-            (rolling.len()>=max_messages||
-                rolling_chars.saturating_add(cost)>segment_cap){
+        // Hermes Agent (2026) amortizes cache-busting rewrites behind real
+        // reclamation pressure. Do NOT rebase just because 20 or 48 tiny
+        // messages passed: the bounded character envelope already imposes
+        // a hard limit and preserves cacheable append-only prefixes longer.
+        // An unchanged prefix remains byte-exact across all short appends.
+        let segment_cap=if checkpoint_end==0{
+            initial_tail_budget
+        }else{compact_tail_budget};
+        if !rolling.is_empty()
+            &&rolling_chars.saturating_add(cost)>segment_cap{
             rolling.clear();
             rolling_chars=0;
             checkpoint_end=index;
@@ -1070,6 +1071,46 @@ mod tests {
         assert!(room_line(0,&decision,1800).contains("durable cancellation journal"));
         assert!(room_line(1,&failure,1800).contains("failure diagnosis"));
         assert!(room_line(2,&irrelevant,1800).chars().count()<=60);
+    }
+    #[test]
+    fn cache_hysteresis_does_not_rebase_seventy_short_group_messages(){
+        let participants=(0..9).map(|i|Participant{
+            name:format!("agent-{i}"),role:"reviewer".into(),economy:false
+        }).collect::<Vec<_>>();
+        let mut room=Room{
+            id:Uuid::new_v4(),topic:"long append-only group".into(),
+            participants:participants.clone(),messages:vec![],
+            status:RoomStatus::Open,rounds:0,max_rounds:1000,
+            cost_krw:0.0,budget_krw:1000.0,
+            created_at_ms:0,updated_at_ms:0,revision:0,
+            used_tokens:0,usage_receipts:vec![],
+            remote_continuations:HashMap::new(),finish_reason:String::new(),
+            last_provider_failure:None,frontend:None,
+            client_messages:HashMap::new(),recipients:vec![]
+        };
+        room.messages.push(Utterance{
+            speaker:"user".into(),content:"Discuss the design".into(),
+            at_ms:1,model:None
+        });
+        let mut baseline:Vec<Value>=vec![];
+        for i in 0..72{
+            let person=&participants[i%9];
+            room.messages.push(Utterance{
+                speaker:person.name.clone(),content:format!("Note {i}"),
+                at_ms:i as u64+2,model:None
+            });
+            let now=project_room_context(&room,&participants[0],6500);
+            assert_eq!(now.checkpoint_end,0,
+                "short turns must not trigger artificial 20/48-message resets");
+            assert_eq!(now.omitted_messages,0);
+            assert!(now.messages.starts_with(&baseline),
+                "new messages must preserve the exact prior cache prefix");
+            assert!(now.projected_chars<=6500);
+            baseline=now.messages;
+        }
+        assert_eq!(room.messages.len(),73);
+        assert_eq!(baseline.len(),74,
+            "indexed evidence plus seventy-three append-only source entries");
     }
     #[test]
     fn thirty_short_room_messages_extend_model_prefix_without_premature_compaction(){
