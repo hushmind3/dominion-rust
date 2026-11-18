@@ -314,7 +314,11 @@ async fn group_say(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(inp
     engine.groups.say(id,input.content).await.map(Json).map_err(bad)
 }
 async fn group_next(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Result<Json<crate::group::Room>,ApiError> {
-    engine.groups.next(&engine.model,id).await.map(Json).map_err(bad)
+    // Native v1 and frontend Rooms must use the SAME stable per-room routing
+    // identity. A process-global OpenCode Go fallback would merge unrelated
+    // rooms into one provider cache session.
+    let selected=engine.model.with_session_affinity(&format!("dominion-room-{id}"));
+    engine.groups.next(&selected,id).await.map(Json).map_err(bad)
 }
 
 #[cfg(test)]

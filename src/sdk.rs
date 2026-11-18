@@ -270,7 +270,11 @@ impl Dominion {
     pub async fn read_subagent_file(&self,parent:Uuid,child:Uuid,path:&str)->Result<String,String>{
         self.engine.read_subagent_file(parent,child,path).await
     }
-    pub async fn group_turn(&self,id:Uuid)->Result<Room,String>{self.engine.groups.next(&self.engine.model,id).await}
+    pub async fn group_turn(&self,id:Uuid)->Result<Room,String>{
+        let selected=self.engine.model.with_session_affinity(
+            &format!("dominion-room-{id}"));
+        self.engine.groups.next(&selected,id).await
+    }
     /// Explicitly retrieve verified procedures from successful user-driven runs.
     /// No recursive self-modification, trial scheduler or background learning.
     pub async fn search_strategies(&self,repository:&str,goal:&str,max:usize)
