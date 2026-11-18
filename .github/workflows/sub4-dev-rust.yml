@@ -22,6 +22,8 @@ jobs:
         run: bash scripts/check-sub4-architecture.sh
       - name: Independent benchmark adapter artifact export and evidence tests
         run: python3 -m unittest discover -s benchmarks/tests -p 'test_*.py'
+      - name: Independent artifact success versus native job completion benchmark selftest
+        run: python3 benchmarks/compare.py --selftest
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Native SDK UI progress and cost view (dev profile)
