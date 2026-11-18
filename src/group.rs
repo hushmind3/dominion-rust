@@ -93,6 +93,9 @@ pub struct FrontendRoom {
     pub routing_mode:String,
     pub rounds:usize,
     pub max_turns:usize,
+    /// Independent cap on total generated responses over the room lifetime.
+    /// 0 uses the native bounded default (10_000); max_turns is per owner.
+    #[serde(default)] pub lifetime_max_responses:usize,
     pub token_budget:u64,
     pub context_budget_tokens:usize,
     pub tools_enabled:bool,
@@ -352,7 +355,8 @@ impl Groups {
         }
         room.topic=if config.topic.trim().is_empty(){config.name.clone()}else{config.topic.clone()};
         room.participants=participants;
-        room.max_rounds=if config.max_turns==0{10000}else{config.max_turns.min(10000)};
+        room.max_rounds=if config.lifetime_max_responses==0{10000}
+            else{config.lifetime_max_responses.min(10000)};
         let mut config=config;
         if config.learned_context.is_empty(){
             config.learned_context=room.frontend.as_ref()
@@ -514,7 +518,22 @@ impl Groups {
         speaker:Option<&str>)->Result<Room,String>{
         let mut room=self.get(id).await.ok_or("room not found")?;
         if !matches!(room.status,RoomStatus::Open){return Err("room is closed".into());}
-        if room.rounds>=room.max_rounds || room.cost_krw>=room.budget_krw{return Err("group turn or budget limit reached".into());}
+        if room.rounds>=room.max_rounds || room.cost_krw>=room.budget_krw{
+            return Err("group lifetime response or budget limit reached".into());
+        }
+        // The frontend maxTurns contract belongs to ONE owner message, never
+        // to room.rounds (which is the lifetime usage/metering counter).
+        if let Some(config)=room.frontend.as_ref(){
+            if config.max_turns>0{
+                if let Some(owner)=room.messages.iter().rposition(|m|m.speaker=="user"){
+                    let responses=room.messages[owner+1..].iter()
+                        .take_while(|m|m.speaker!="user").count();
+                    if responses>=config.max_turns{
+                        return Err("current owner message reached its per-turn response limit".into());
+                    }
+                }
+            }
+        }
         let index=if let Some(speaker)=speaker{
             room.participants.iter().position(|p|p.name==speaker)
                 .ok_or("requested room speaker is not a configured participant")?
@@ -592,7 +611,7 @@ impl Groups {
         room.messages.push(Utterance{speaker:participant.name.clone(),content:reply.text,at_ms:now_ms(),model:Some(reply.model)});
         if done {
             room.status=RoomStatus::Finished;
-            room.finish_reason=if room.rounds>=room.max_rounds{"max_turns_reached"}
+            room.finish_reason=if room.rounds>=room.max_rounds{"room_lifetime_limit_reached"}
                 else{"participant_suggested_end"}.into();
         }
         room.updated_at_ms=now_ms();

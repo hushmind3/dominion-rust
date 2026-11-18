@@ -42,7 +42,8 @@ fn config_of(room:&Room)->FrontendRoom{
   room.frontend.clone().unwrap_or_else(||FrontendRoom{
     name:room.topic.clone(),topic:room.topic.clone(),owner_name:"나".into(),
     agent_ids:room.participants.iter().map(|p|p.name.clone()).collect(),
-    routing_mode:"discussion".into(),rounds:1,max_turns:room.max_rounds,
+    routing_mode:"discussion".into(),rounds:1,max_turns:0,
+    lifetime_max_responses:room.max_rounds,
     token_budget:0,context_budget_tokens:2000,tools_enabled:false,
     auto_learning:false,auto_models:true,models:vec![],
     reasoning_effort:String::new(),learned_context:String::new(),
@@ -54,7 +55,7 @@ fn room_status(room:&Room)->&'static str{
     }
     match room.finish_reason.as_str(){
         "stopped"=>"stopped",
-        "max_turns_reached"=>"interrupted",
+        "max_turns_reached"|"room_lifetime_limit_reached"=>"interrupted",
         "cost_budget_exceeded"|"token_budget_exceeded"=>"failed",
         _=>"completed"
     }
@@ -149,7 +150,9 @@ pub fn room_view(room:&Room)->Value{
     "id":room.id.to_string(),"name":conf.name,"topic":conf.topic,
     "ownerName":conf.owner_name,"agentIds":conf.agent_ids,
     "routingMode":conf.routing_mode,"rounds":conf.rounds,
-    "maxTurns":conf.max_turns,"tokenBudget":conf.token_budget,
+    "maxTurns":conf.max_turns,
+    "lifetimeMaxResponses":conf.lifetime_max_responses,
+    "tokenBudget":conf.token_budget,
     "contextBudgetTokens":conf.context_budget_tokens,
     "toolsEnabled":conf.tools_enabled,"autoLearning":conf.auto_learning,
     "autoModels":conf.auto_models,"models":conf.models,
@@ -211,6 +214,7 @@ struct RoomDraft {
   id:Option<String>,name:String,topic:String,owner_name:String,
   agent_ids:Vec<String>,routing_mode:String,rounds:usize,max_turns:usize,
   token_budget:u64,context_budget_tokens:usize,
+  #[serde(default)]lifetime_max_responses:usize,
   auto_models:bool,tools_enabled:bool,auto_learning:bool,
   #[serde(default)]models:Vec<Value>,#[serde(default)]reasoning_effort:String,
 }
@@ -218,7 +222,8 @@ async fn checked(engine:&Engine,input:&RoomDraft)->Result<(FrontendRoom,Vec<Part
   if input.name.trim().is_empty()||input.name.len()>120||input.topic.len()>10_000
     ||input.owner_name.len()>120||!(1..=32).contains(&input.agent_ids.len())
     ||!(1..=12).contains(&input.rounds)
-    ||input.max_turns>10_000||input.context_budget_tokens>8_000{
+    ||input.max_turns>10_000||input.lifetime_max_responses>10_000
+    ||input.context_budget_tokens>8_000{
     return Err(bad("invalid room title, participant count, rounds or limit"));
   }
   if !matches!(input.routing_mode.as_str(),"discussion"|"round_robin"|"mentioned"){
@@ -263,7 +268,9 @@ async fn checked(engine:&Engine,input:&RoomDraft)->Result<(FrontendRoom,Vec<Part
     name:input.name.trim().into(),topic:input.topic.clone(),
     owner_name:input.owner_name.clone(),agent_ids:input.agent_ids.clone(),
     routing_mode:input.routing_mode.clone(),rounds:input.rounds,
-    max_turns:input.max_turns,token_budget:input.token_budget,
+    max_turns:input.max_turns,
+    lifetime_max_responses:input.lifetime_max_responses,
+    token_budget:input.token_budget,
     context_budget_tokens:input.context_budget_tokens.clamp(200,8_000),
     tools_enabled:false,auto_learning:input.auto_learning,
     auto_models:input.auto_models,models:input.models.clone(),
@@ -279,7 +286,8 @@ async fn save(State(engine):State<Arc<Engine>>,Json(input):Json<RoomDraft>)
   }
   let new=engine.groups.create(NewRoom{
     topic:if view.topic.trim().is_empty(){view.name.clone()}else{view.topic.clone()},
-    participants:participants.clone(),max_rounds:Some(if view.max_turns==0{10000}else{view.max_turns}),
+    participants:participants.clone(),max_rounds:Some(
+      if view.lifetime_max_responses==0{10000}else{view.lifetime_max_responses}),
     budget_krw:None,
   }).await.map_err(bad)?;
   let room=match engine.groups.configure(new.id,view.clone(),participants).await{
@@ -382,7 +390,14 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
   let expected=scheduled.len();
   let mut room=before;
   let mut turns=0;
-  for agent_id in scheduled{
+  // One client message gets at most maxTurns responses. Retries operate on
+  // the remaining allowance and never reset it or spend on a duplicate turn.
+  let owner=room.messages.iter().rposition(|m|m.speaker=="user");
+  let already_generated=owner.map_or(0,|index|
+    room.messages[index+1..].iter().take_while(|m|m.speaker!="user").count());
+  let allowance=if config.max_turns==0{usize::MAX}
+    else{config.max_turns.saturating_sub(already_generated)};
+  for agent_id in scheduled.into_iter().take(allowance){
     if room.status==RoomStatus::Finished{break;}
     // Read exact-scope durable notes. They influence subsequent turns as
     // explicitly lower-trust task context, never as system instructions.

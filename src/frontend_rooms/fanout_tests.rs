@@ -70,6 +70,7 @@ async fn setup_with_failure(max_turns:usize,routing_mode:&str,reject_at:Option<u
         owner_name:"owner".into(),
         agent_ids:participants.iter().map(|p|p.name.clone()).collect(),
         routing_mode:routing_mode.into(),rounds:3,max_turns,
+        lifetime_max_responses:0,
         token_budget:0,context_budget_tokens:2000,
         tools_enabled:false,auto_learning:false,auto_models:false,
         models:vec![json!({"providerId":"dominion-native","model":"mock-room-model"})],
@@ -81,7 +82,9 @@ async fn setup_with_failure(max_turns:usize,routing_mode:&str,reject_at:Option<u
 
 #[tokio::test]
 async fn nine_agents_three_owner_turns_produce_exactly_thirty_messages_and_durable_usage(){
-    let (engine,id,requests,server,root)=setup(100,"discussion").await;
+    // The old implementation stopped after 10 lifetime responses, midway
+    // through the SECOND owner message. maxTurns=10 now covers each owner.
+    let (engine,id,requests,server,root)=setup(10,"discussion").await;
     for index in 0..3{
         let response=send(State(Arc::clone(&engine)),Path(id),Json(SayInput{
             input:format!("Review this issue in round {}",index+1),
@@ -105,6 +108,8 @@ async fn nine_agents_three_owner_turns_produce_exactly_thirty_messages_and_durab
     let room=engine.groups.get(id).await.unwrap();
     assert_eq!(room.status,RoomStatus::Open);
     assert_eq!(room.rounds,27);
+    assert_eq!(room.max_rounds,10_000,
+        "maxTurns must not overwrite the independent room lifetime ceiling");
     assert_eq!(room.usage_receipts.len(),27);
     assert_eq!(room.used_tokens,2700);
     assert_eq!(room.usage_receipts.iter().map(|r|r.input_tokens).sum::<u64>(),2430);
@@ -148,13 +153,66 @@ async fn running_out_of_max_turns_never_claims_full_nine_agent_completion(){
     assert_eq!(response["job"]["result"]["expectedResponses"],9);
     assert_eq!(response["job"]["result"]["actualResponses"],4);
     assert_eq!(response["job"]["result"]["missingResponses"],5);
-    assert_eq!(response["room"]["status"],"interrupted");
-    assert_eq!(response["room"]["finishReason"],"max_turns_reached");
+    assert_eq!(response["room"]["status"],"idle");
+    assert_eq!(response["room"]["finishReason"],"",
+        "per-owner cap must not close the entire room");
     assert_eq!(requests.load(Ordering::SeqCst),4);
     assert_eq!(engine.groups.get(id).await.unwrap().messages.len(),5);
     server.abort();
     drop(engine);
     tokio::fs::remove_dir_all(root).await.unwrap();
+}
+#[tokio::test]
+async fn per_owner_limit_of_four_allows_the_next_owner_to_use_a_fresh_four(){
+    let (engine,id,requests,server,root)=setup(4,"discussion").await;
+    for index in 0..3{
+        let result=send(State(engine.clone()),Path(id),Json(SayInput{
+            input:format!("Owner request {index}"),agent_ids:vec![],
+            client_message_id:format!("limited-{index}"),reasoning_language:None,
+        })).await.unwrap().0;
+        assert_eq!(result["job"]["status"],"interrupted");
+        assert_eq!(result["job"]["result"]["expectedResponses"],9);
+        assert_eq!(result["job"]["result"]["actualResponses"],4);
+        assert_eq!(result["room"]["status"],"idle");
+    }
+    assert_eq!(requests.load(Ordering::SeqCst),12);
+    let room=engine.groups.get(id).await.unwrap();
+    assert_eq!(room.rounds,12);
+    assert_eq!(room.messages.len(),15);
+    let duplicate=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Owner request 2".into(),agent_ids:vec![],
+        client_message_id:"limited-2".into(),reasoning_language:None
+    })).await.unwrap().0;
+    assert_eq!(duplicate["job"]["result"]["actualResponses"],4);
+    assert_eq!(requests.load(Ordering::SeqCst),12,
+        "retrying at the same cap must not issue another billable model call");
+    server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
+async fn room_lifetime_cap_is_independent_from_per_owner_speaker_limit(){
+    let (engine,id,requests,server,root)=setup(10,"discussion").await;
+    let current=engine.groups.get(id).await.unwrap();
+    let mut config=current.frontend.unwrap();
+    let participants=current.participants;
+    config.lifetime_max_responses=12;
+    engine.groups.configure(id,config,participants).await.unwrap();
+    let first=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"First owner turn".into(),agent_ids:vec![],
+        client_message_id:"lifetime-1".into(),reasoning_language:None
+    })).await.unwrap().0;
+    assert_eq!(first["job"]["status"],"completed");
+    assert_eq!(first["job"]["result"]["actualResponses"],9);
+    let second=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Second owner turn".into(),agent_ids:vec![],
+        client_message_id:"lifetime-2".into(),reasoning_language:None
+    })).await.unwrap().0;
+    assert_eq!(second["job"]["status"],"interrupted");
+    assert_eq!(second["job"]["result"]["actualResponses"],3);
+    assert_eq!(second["room"]["finishReason"],"room_lifetime_limit_reached");
+    assert_eq!(requests.load(Ordering::SeqCst),12);
+    assert_eq!(engine.groups.get(id).await.unwrap().rounds,12);
+    server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
 }
 #[tokio::test]
 async fn named_member_selection_remains_scoped_without_broadcasting_to_all_nine(){
