@@ -257,6 +257,30 @@ mod tests {
             vec!["src/logic.rs".to_owned()]);
     }
     #[test]
+    fn direct_file_postcondition_transfers_without_paying_for_a_second_model_audit(){
+        let mut r=run();
+        intent(&mut r,"f","read_file","src/logic.rs");
+        settled(&mut r,"f","read_file",false);
+        r.event("tool_started","",Some(json!({
+            "id":"fix","name":"write_file",
+            "arguments":{"path":"src/logic.rs","content":"pub fn repaired() {}"}
+        })));
+        settled(&mut r,"fix","write_file",true);
+        intent(&mut r,"check","read_file","src/logic.rs");
+        settled(&mut r,"check","read_file",true);
+        r.messages.push(json!({"role":"tool","tool_call_id":"check",
+            "content":"pub fn repaired() {}"}));
+        assert!(r.events.iter().all(|e|e.kind!="verification"));
+        let evidence=crate::strategy::from_run(&r).unwrap();
+        assert_eq!(evidence.outcome,"artifact_verified");
+        assert_eq!(evidence.recovery.as_ref().unwrap().verification_basis,
+            "deterministic_exact_artifact");
+        let mut bad=r;
+        bad.messages.last_mut().unwrap()["content"]=json!("completely different");
+        assert!(crate::strategy::from_run(&bad).is_none(),
+            "simply executing read_file is not evidence of the requested content");
+    }
+    #[test]
     fn model_narration_stale_pass_and_missing_postflight_abstain(){
         let mut r=audited();
         r.events.retain(|e|e.kind!="verification");
