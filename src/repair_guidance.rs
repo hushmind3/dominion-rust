@@ -56,6 +56,21 @@ fn classify(kind:&str,code:&str,description:&str)->(&'static str,&'static str){
     ("tool_failure",
         "Inspect the durable tool error, isolate the failed step and change the approach; do not repeat the identical failed call.")
 }
+/// Reuse the *existing* failure classification for trace-linked historical
+/// receipts. Text is only a diagnostic label; the original event ID, exact
+/// tool call and observed resources determine whether a lesson may transfer.
+pub(crate) fn failure_family(event:&crate::domain::TimelineEvent)->Option<&'static str>{
+    if !matches!(event.kind.as_str(),
+        "tool_error"|"tool_admission_rejected"|"tool_policy_denied"
+        |"tool_denied"|"tool_hook_denied"|"mcp_remote_outcome_unknown"){
+        return None;
+    }
+    let code=event.detail.as_ref()
+        .and_then(|d|d["code"].as_str()).unwrap_or("");
+    let content=event.detail.as_ref()
+        .and_then(|d|d["result"].as_str()).unwrap_or("");
+    Some(classify(&event.kind,code,content).0)
+}
 /// Look only at authenticated, persisted event kinds since the last model
 /// receipt. Historical unrelated failures and model-authored prose never
 /// become routing signals. The original tool result remains in Run history.
