@@ -12,7 +12,12 @@ pub(super) fn sdk_view(run:&Run)->Value{
         else{json!({"state":status})};
     json!({
         "id":run.id.to_string(),"status":status,"instruction":run.instruction,
-        "answer":run.answer,"error":if run.status==RunStatus::Failed{
+        "answer":run.answer,"usage":native_run_usage(run),
+        "artifactEvidence":run.events.iter().rev()
+            .find(|e|matches!(e.kind.as_str(),
+                "artifact_evidence_checked"|"artifact_evidence_missing"))
+            .and_then(|e|e.detail.clone()),
+        "error":if run.status==RunStatus::Failed{
             run.events.last().map(|e|e.message.clone())}else{None},
         "checkpoint":{
             "state":current,
@@ -28,7 +33,10 @@ pub(super) fn sdk_view(run:&Run)->Value{
             "toolCalls":run.events.iter().filter(|event|event.kind=="tool_started").count(),
             "usage":{
                 "prompt_tokens":run.input_tokens,"completion_tokens":run.output_tokens,
-                "cached_prompt_tokens":run.cached_input_tokens
+                "cached_prompt_tokens":run.cached_input_tokens,
+                "uncached_prompt_tokens":run.input_tokens.saturating_sub(run.cached_input_tokens),
+                "cache_write_tokens":run.cache_write_tokens,
+                "provider_reported":native_run_usage(run)["providerUsageReported"]
             },
             "events":run.events.iter().map(|e|json!({
                 "kind":e.kind,"detail":e.detail,"message":e.message
@@ -118,7 +126,18 @@ mod program_view_tests{
             halt_requested:false,stop_when:None,observations:Default::default()
         });
         run.cost_krw=3.5;
+        run.input_tokens=350;
+        run.cached_input_tokens=110;
+        run.cache_write_tokens=15;
+        run.output_tokens=40;
+        run.event("model","observed metered response",Some(json!({"usage_reported":true})));
         let view=sdk_view(&run);
+        assert_eq!(view["usage"]["promptTokens"],350);
+        assert_eq!(view["usage"]["cachedPromptTokens"],110);
+        assert_eq!(view["usage"]["uncachedPromptTokens"],240);
+        assert_eq!(view["usage"]["totalTokens"],390);
+        assert_eq!(view["usage"]["modelRequests"],1);
+        assert_eq!(view["usage"]["providerUsageReported"],true);
         assert_eq!(view["checkpoint"]["program"]["total"],1);
         assert_eq!(view["checkpoint"]["program"]["current"]["tool"],"edit_file");
         assert_eq!(view["checkpoint"]["cost_krw"],3.5);

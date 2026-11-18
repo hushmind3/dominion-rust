@@ -102,6 +102,16 @@ def observed_usage(run):
     if not isinstance(events,list):events=[]
     messages = run.get("messages",[])
     if not isinstance(messages,list):messages=[]
+    model_events=[event for event in events if isinstance(event,dict)
+        and event.get("kind")=="model"]
+    missing=sum(isinstance(event.get("detail"),dict)
+        and event["detail"].get("usage_reported") is False
+        for event in model_events)
+    # An observed model call with no provider counters is unknown, not free.
+    token_absent=bool(model_events) and not (
+        run.get("input_tokens") or run.get("output_tokens"))
+    usage_status=("not_started" if not model_events else
+        "partial_or_unreported" if missing or token_absent else "reported")
     return {
         "run_id":run.get("id"),
         "status":run.get("status","unknown"),
@@ -112,7 +122,11 @@ def observed_usage(run):
         "tool_calls":sum(len(message.get("tool_calls",[]))
             for message in messages if isinstance(message,dict)
             and isinstance(message.get("tool_calls"),list)),
-        "input_tokens":run.get("input_tokens"),
+        "input_tokens":None if token_absent else run.get("input_tokens"),
+        "uncached_input_tokens":None if token_absent else
+            max(0,(run.get("input_tokens") or 0)-(run.get("cached_input_tokens") or 0)),
+        "provider_usage_status":usage_status,
+        "unmetered_model_requests":missing if not token_absent else max(missing,1),
         "cached_input_tokens":run.get("cached_input_tokens"),
         "cache_write_tokens":run.get("cache_write_tokens"),
         "output_tokens":run.get("output_tokens"),

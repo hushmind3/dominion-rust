@@ -133,7 +133,7 @@ pub(super) async fn session_usage(State(engine):State<Arc<Engine>>,Path(id):Path
     if let Some(room_id)=record.room_id{
         let rid=Uuid::parse_str(&room_id).map_err(|_|missing("room binding invalid"))?;
         let room=engine.groups.get(rid).await.ok_or_else(||missing("bound room not found"))?;
-        return Ok(Json(json!({"totalTokens":room.used_tokens})));
+        return Ok(Json(crate::frontend_rooms::room_usage(&room)));
     }
     let total=record.messages.iter().map(|m|m.metadata.as_ref()
         .and_then(|v|v.pointer("/usage/totalTokens")).and_then(Value::as_u64).unwrap_or(0)).sum::<u64>();

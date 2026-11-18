@@ -58,7 +58,11 @@ pub struct RunHeader {
     pub updated_at_ms:u64,
     pub steps:usize,
     pub input_tokens:u64,
+    pub cached_input_tokens:u64,
+    pub cache_write_tokens:u64,
     pub output_tokens:u64,
+    pub model_requests:usize,
+    pub unmetered_model_requests:usize,
     pub tool_calls:usize,
     pub last_error:Option<String>,
 }
@@ -76,7 +80,14 @@ impl RunHeader {
             updated_at_ms:run.updated_at_ms,
             steps:run.steps,
             input_tokens:run.input_tokens,
+            cached_input_tokens:run.cached_input_tokens,
+            cache_write_tokens:run.cache_write_tokens,
             output_tokens:run.output_tokens,
+            model_requests:run.events.iter().filter(|event|event.kind=="model").count(),
+            unmetered_model_requests:run.events.iter()
+                .filter(|event|event.kind=="model" && event.detail.as_ref()
+                    .and_then(|data|data.get("usage_reported"))
+                    .and_then(serde_json::Value::as_bool)!=Some(true)).count(),
             tool_calls:run.events.iter().filter(|event|event.kind=="tool_started").count(),
             last_error:if run.status==RunStatus::Failed{
                 run.events.last().map(|e|e.message.clone())

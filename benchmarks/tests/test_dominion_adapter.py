@@ -66,6 +66,14 @@ class TestAdapter(unittest.TestCase):
         self.assertEqual(usage["tool_calls"],1)
         self.assertEqual(usage["input_tokens"],300)
         self.assertEqual(usage["cost_krw"],3.5)
+        self.assertEqual(usage["provider_usage_status"],"reported")
+        missing={"id":"unreported","events":[{"kind":"model",
+            "detail":{"usage_reported":False}}],
+            "input_tokens":0,"output_tokens":0}
+        unknown=MODULE.observed_usage(missing)
+        self.assertIsNone(unknown["input_tokens"])
+        self.assertEqual(unknown["provider_usage_status"],"partial_or_unreported")
+        self.assertGreater(unknown["unmetered_model_requests"],0)
         with tempfile.TemporaryDirectory() as tmp:
             report=Path(tmp)/"evidence.json"
             MODULE.write_evidence(report,run,["sum.py"])

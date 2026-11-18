@@ -21,6 +21,8 @@ pub struct Reply {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub cache_write_tokens: u64,
+    /// Actual provider reported both counters; missing is not free usage.
+    pub usage_reported: bool,
     pub output_tokens: u64,
     pub cost_krw: f64,
     pub model: String,
@@ -157,17 +159,13 @@ impl ModelClient {
         // Keep only stable, provider-accepted fields in subsequent history.
         if !message.is_object() { return Err("provider message is not an object".into()); }
         message.as_object_mut().unwrap().retain(|key, _| ["role", "content", "tool_calls"].contains(&key.as_str()));
-        let input_tokens = raw.pointer("/usage/prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
-        let output_tokens = raw.pointer("/usage/completion_tokens").and_then(Value::as_u64).unwrap_or(0);
-        let cached_input_tokens=raw.pointer("/usage/prompt_tokens_details/cached_tokens")
-            .or_else(||raw.pointer("/usage/input_tokens_details/cached_tokens"))
-            .and_then(Value::as_u64).unwrap_or(0).min(input_tokens);
-        let cache_write_tokens=raw.pointer("/usage/prompt_tokens_details/cache_write_tokens")
-            .or_else(||raw.pointer("/usage/input_tokens_details/cache_write_tokens"))
-            .and_then(Value::as_u64).unwrap_or(0)
-            .min(input_tokens.saturating_sub(cached_input_tokens));
+        // Accept both Chat Completions and Responses-style gateway usage keys.
+        let (input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,
+             usage_reported)=openai_compatible_usage(&raw);
         let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens);
-        Ok(Reply { message, text, calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_krw, model: settings.name.clone() })
+        Ok(Reply { message, text, calls, input_tokens, cached_input_tokens,
+            cache_write_tokens,usage_reported,output_tokens,cost_krw,
+            model: settings.name.clone() })
     }
 
     /// Native Ollama /api/chat is not the OpenAI-compatible /v1 endpoint.
@@ -234,7 +232,8 @@ impl ModelClient {
         if !normalized_calls.is_empty(){message["tool_calls"]=json!(normalized_calls);}
         Ok(Reply{
             message,text,calls,input_tokens,cached_input_tokens:0,cache_write_tokens:0,
-            output_tokens,cost_krw:estimate_cost(settings,input_tokens,0,0,output_tokens),
+            output_tokens,usage_reported:true,
+            cost_krw:estimate_cost(settings,input_tokens,0,0,output_tokens),
             model:raw.get("model").and_then(Value::as_str)
                 .unwrap_or(&settings.name).to_owned()
         })
@@ -343,7 +342,7 @@ impl ModelClient {
         Ok(Reply{
             message,text:joined,calls,input_tokens:input_total,
             cached_input_tokens,cache_write_tokens,output_tokens,
-            cost_krw,model:raw.get("model").and_then(Value::as_str)
+            usage_reported:true,cost_krw,model:raw.get("model").and_then(Value::as_str)
                 .unwrap_or(&settings.name).to_owned()
         })
     }
@@ -400,6 +399,26 @@ fn ollama_messages(original:&[Value])->Result<Vec<Value>,String>{
         }
     }
     Ok(converted)
+}
+/// Normalize provider-reported token counts without estimating absent usage.
+fn openai_compatible_usage(raw:&Value)->(u64,u64,u64,u64,bool){
+    let input=raw.pointer("/usage/prompt_tokens").and_then(Value::as_u64)
+        .or_else(||raw.pointer("/usage/input_tokens").and_then(Value::as_u64));
+    let output=raw.pointer("/usage/completion_tokens").and_then(Value::as_u64)
+        .or_else(||raw.pointer("/usage/output_tokens").and_then(Value::as_u64));
+    let reported=input.is_some() && output.is_some();
+    let input=input.unwrap_or(0);
+    let output=output.unwrap_or(0);
+    let cached=raw.pointer("/usage/prompt_tokens_details/cached_tokens")
+        .or_else(||raw.pointer("/usage/input_tokens_details/cached_tokens"))
+        .or_else(||raw.pointer("/usage/cache_read_input_tokens"))
+        .and_then(Value::as_u64).unwrap_or(0).min(input);
+    let written=raw.pointer("/usage/prompt_tokens_details/cache_write_tokens")
+        .or_else(||raw.pointer("/usage/input_tokens_details/cache_write_tokens"))
+        .or_else(||raw.pointer("/usage/cache_creation_input_tokens"))
+        .and_then(Value::as_u64).unwrap_or(0)
+        .min(input.saturating_sub(cached));
+    (input,output,cached,written,reported)
 }
 fn strip_internal_cache_markers(body:&mut Value){
     if let Some(list)=body["messages"].as_array_mut(){
@@ -625,6 +644,18 @@ mod tests {
         assert!(openai["messages"][1].get("dominion_cache_anchor").is_none());
         assert!(ollama_messages(&original).unwrap().iter()
             .all(|entry|entry.get("dominion_cache_anchor").is_none()));
+    }
+    #[test]
+    fn actual_gateway_token_usage_is_accounted_and_missing_usage_is_labelled(){
+        let chat=json!({"usage":{"prompt_tokens":270,"completion_tokens":35,
+            "prompt_tokens_details":{"cached_tokens":150}}});
+        assert_eq!(openai_compatible_usage(&chat),(270,35,150,0,true));
+        let responses=json!({"usage":{"input_tokens":480,"output_tokens":60,
+            "input_tokens_details":{"cached_tokens":240,"cache_write_tokens":30}}});
+        assert_eq!(openai_compatible_usage(&responses),(480,60,240,30,true));
+        assert_eq!(openai_compatible_usage(&json!({"usage":{}})),(0,0,0,0,false));
+        assert_eq!(openai_compatible_usage(&json!({"usage":{"input_tokens":67}})),
+            (67,0,0,0,false));
     }
     #[test]
     fn cloudflare_room_affinity_is_explicit_scoped_and_not_sent_to_other_providers(){

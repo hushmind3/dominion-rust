@@ -34,6 +34,33 @@ pub(super) async fn save_policy(Json(input):Json<Value>)->Result<Json<Value>,Fau
     if escalate{return Err(unsupported("Native Rust tool approval policies do not accept blanket permissions via the legacy UI."));}
     Ok(Json(json!({"id":"default","autoApprove":[],"autoApproveMcp":false,"autoApproveAll":false})))
 }
+/// Common actual-provider token receipt for jobs, executions and SDK runs.
+/// 0 counters with an unmetered call are explicitly NOT treated as free usage.
+pub(super) fn usage_values(input:u64,cached:u64,written:u64,output:u64,
+    requests:usize,unmetered:usize,cost:f64)->Value{
+    json!({
+        "promptTokens":input,"completionTokens":output,
+        "cachedPromptTokens":cached,"uncachedPromptTokens":input.saturating_sub(cached),
+        "cacheWriteTokens":written,"totalTokens":input.saturating_add(output),
+        "modelRequests":requests,"unmeteredModelRequests":unmetered,
+        "providerUsageReported":requests>0 && unmetered==0,
+        "usageStatus":if requests==0{"not_started"}
+            else if unmetered>0{"partial_or_unreported"}else{"reported"},
+        "costKrw":cost
+    })
+}
+pub(super) fn native_run_usage(run:&Run)->Value{
+    let requests=run.events.iter().filter(|e|e.kind=="model").count();
+    let missing=run.events.iter().filter(|e|e.kind=="model"
+        &&e.detail.as_ref().and_then(|v|v.get("usage_reported"))
+            .and_then(Value::as_bool)!=Some(true)).count();
+    usage_values(run.input_tokens,run.cached_input_tokens,run.cache_write_tokens,
+        run.output_tokens,requests,missing,run.cost_krw)
+}
+pub(super) fn native_header_usage(run:&crate::store::RunHeader)->Value{
+    usage_values(run.input_tokens,run.cached_input_tokens,run.cache_write_tokens,
+        run.output_tokens,run.model_requests,run.unmetered_model_requests,run.cost_krw)
+}
 pub(super) fn as_job(run:&Run)->Value{
     json!({
         "id":run.id.to_string(),"kind":"native_agent","status":run.status,
@@ -42,7 +69,14 @@ pub(super) fn as_job(run:&Run)->Value{
         "createdAt":timestamp(run.created_at_ms),
         "updatedAt":timestamp(run.updated_at_ms),
         "sessionId":Value::Null,
-        "result":if run.terminal(){json!({"answer":run.answer,"costKrw":run.cost_krw})}else{Value::Null}
+        "usage":native_run_usage(run),
+        "artifactEvidence":run.events.iter().rev()
+            .find(|e|matches!(e.kind.as_str(),
+                "artifact_evidence_checked"|"artifact_evidence_missing"))
+            .and_then(|e|e.detail.clone()),
+        "result":if run.terminal(){json!({"answer":run.answer,
+            "costKrw":run.cost_krw,"usage":native_run_usage(run)})}
+            else{Value::Null}
     })
 }
 pub(super) async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
@@ -53,7 +87,9 @@ pub(super) async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
         "createdAt":timestamp(run.created_at_ms),
         "updatedAt":timestamp(run.updated_at_ms),
         "sessionId":Value::Null,
-        "result":if run.terminal(){json!({"answer":run.answer,"costKrw":run.cost_krw})}
+        "usage":native_header_usage(run),
+        "result":if run.terminal(){json!({"answer":run.answer,
+            "costKrw":run.cost_krw,"usage":native_header_usage(run)})}
             else{Value::Null}
     })).collect::<Vec<_>>();
     Json(Value::Array(all))
@@ -118,7 +154,8 @@ pub(super) async fn executions(State(engine):State<Arc<Engine>>)->Json<Value>{
             "finishedAt":if run.terminal(){Some(timestamp(run.updated_at_ms))}else{None},
             "reason":run.last_error,
             "iterations":run.steps,"modelCalls":run.steps,
-            "toolCalls":run.tool_calls,"tokens":run.input_tokens+run.output_tokens
+            "toolCalls":run.tool_calls,"tokens":run.input_tokens+run.output_tokens,
+            "usage":native_header_usage(&run)
         })
     }).collect::<Vec<_>>();
     Json(json!(list))

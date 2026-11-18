@@ -108,7 +108,7 @@ fn owner_turn_progress(room:&Room,index:usize,requested:&[String])->(usize,usize
         .filter(|m|m.speaker!="user").count();
     (wanted,produced)
 }
-fn room_usage(room:&Room)->Value{
+pub(crate) fn room_usage(room:&Room)->Value{
     let prompt=room.usage_receipts.iter().map(|m|m.input_tokens).sum::<u64>();
     let output=room.usage_receipts.iter().map(|m|m.output_tokens).sum::<u64>();
     let cached=room.usage_receipts.iter().map(|m|m.cached_input_tokens).sum::<u64>();

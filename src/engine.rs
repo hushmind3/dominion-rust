@@ -323,7 +323,8 @@ impl Engine {
             "cached_input_tokens":reply.cached_input_tokens,
             "cache_write_tokens":reply.cache_write_tokens,
             "output_tokens":reply.output_tokens,
-            "cost_krw":reply.cost_krw,"model":reply.model})));
+            "cost_krw":reply.cost_krw,"model":reply.model,
+            "usage_reported":reply.usage_reported})));
         if run.cost_krw > policy::effective_budget_krw(run) {
             run.status = RunStatus::Failed;
             run.event("budget_exceeded", "Own model charges exceed budget remaining after delegated worker reservations", Some(json!({"cost_krw":run.cost_krw,"reserved_krw":run.reserved_budget_krw,"budget_krw":run.budget_krw})));
