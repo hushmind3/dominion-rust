@@ -81,6 +81,9 @@ impl ModelClient {
         if protocol=="anthropic"{
             return self.request_anthropic(settings,messages,tools).await;
         }
+        if protocol=="ollama"{
+            return self.request_ollama(settings,messages,tools).await;
+        }
         let mut body = json!({"model": settings.name, "messages": messages, "stream": false});
         // OpenAI-specific cache controls are explicitly gated to the native
         // endpoint so OpenAI-compatible third-party servers are not broken.
@@ -132,6 +135,73 @@ impl ModelClient {
             .min(input_tokens.saturating_sub(cached_input_tokens));
         let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens);
         Ok(Reply { message, text, calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_krw, model: settings.name.clone() })
+    }
+
+    /// Native Ollama /api/chat is not the OpenAI-compatible /v1 endpoint.
+    /// Keep the native JSON-object tool arguments and observed token counts,
+    /// then normalize the response into the one durable Run/tool journal.
+    async fn request_ollama(&self,settings:&ModelSettings,messages:&[Value],tools:&[Value])
+        ->Result<Reply,String>{
+        let mut body=json!({"model":settings.name,
+            "messages":ollama_messages(messages)?,"stream":false});
+        if !tools.is_empty(){body["tools"]=Value::Array(tools.to_vec());}
+        let root=settings.base_url.trim_end_matches('/');
+        let root=root.strip_suffix("/v1").unwrap_or(root);
+        let mut request=self.http.post(format!("{root}/api/chat")).json(&body);
+        if !settings.api_key.is_empty(){request=request.bearer_auth(&settings.api_key);}
+        let response=request.send().await.map_err(|e|format!("provider transport: {e}"))?;
+        let status=response.status();
+        let bytes=bounded_body(response).await?;
+        if !status.is_success(){
+            let body=String::from_utf8_lossy(&bytes);
+            return Err(format!("provider HTTP {status}: {}",
+                body.chars().take(500).collect::<String>()));
+        }
+        let raw:Value=serde_json::from_slice(&bytes)
+            .map_err(|e|format!("invalid Ollama JSON: {e}"))?;
+        if raw.get("done")!=Some(&Value::Bool(true)){
+            return Err("Ollama response is incomplete: done=true missing; upstream inference may already have occurred".into());
+        }
+        let original=raw.get("message").and_then(Value::as_object)
+            .ok_or("Ollama response has no message")?;
+        if original.get("role").and_then(Value::as_str)!=Some("assistant"){
+            return Err("Ollama response message is not assistant".into());
+        }
+        let text=original.get("content").and_then(Value::as_str)
+            .unwrap_or_default().to_owned();
+        let mut calls=Vec::new();
+        let mut normalized_calls=Vec::new();
+        if let Some(raw_calls)=original.get("tool_calls"){
+            let entries=raw_calls.as_array().ok_or("Ollama tool_calls must be an array")?;
+            if entries.len()>16{return Err("Ollama tool_calls exceed 16 calls".into());}
+            for (index,entry) in entries.iter().enumerate(){
+                let name=entry.pointer("/function/name").and_then(Value::as_str)
+                    .ok_or("Ollama tool call missing function name")?;
+                let args=entry.pointer("/function/arguments")
+                    .ok_or("Ollama tool call missing arguments")?;
+                if !args.is_object(){return Err("Ollama tool arguments must be JSON objects".into());}
+                let id=entry.get("id").and_then(Value::as_str)
+                    .filter(|s|!s.trim().is_empty()).map(str::to_owned)
+                    .unwrap_or_else(||format!("ollama-{index}-{}",uuid::Uuid::new_v4()));
+                normalized_calls.push(json!({"id":id,"type":"function",
+                    "function":{"name":name,"arguments":args.to_string()}}));
+                calls.push(ToolCall{id,name:name.to_owned(),arguments:args.clone()});
+            }
+        }
+        validate_completion("openai",Some(if calls.is_empty(){"stop"}else{"tool_calls"}),
+            !text.trim().is_empty(),!calls.is_empty())?;
+        let input_tokens=raw.get("prompt_eval_count").and_then(Value::as_u64)
+            .ok_or("Ollama response missing prompt_eval_count")?;
+        let output_tokens=raw.get("eval_count").and_then(Value::as_u64)
+            .ok_or("Ollama response missing eval_count")?;
+        let mut message=json!({"role":"assistant","content":text});
+        if !normalized_calls.is_empty(){message["tool_calls"]=json!(normalized_calls);}
+        Ok(Reply{
+            message,text,calls,input_tokens,cached_input_tokens:0,cache_write_tokens:0,
+            output_tokens,cost_krw:estimate_cost(settings,input_tokens,0,0,output_tokens),
+            model:raw.get("model").and_then(Value::as_str)
+                .unwrap_or(&settings.name).to_owned()
+        })
     }
 
     async fn request_anthropic(&self,settings:&ModelSettings,messages:&[Value],tools:&[Value])
@@ -235,6 +305,58 @@ impl ModelClient {
     }
 }
 
+/// Convert the persisted OpenAI-shaped transcript to Ollama's native
+/// messages. Tool results must carry their originating tool name; the tool
+/// ID stays in the Run journal and is not delegated to the model server.
+fn ollama_messages(original:&[Value])->Result<Vec<Value>,String>{
+    let mut converted=Vec::with_capacity(original.len());
+    let mut pending=std::collections::HashMap::<String,String>::new();
+    for record in original {
+        let role=record.get("role").and_then(Value::as_str)
+            .ok_or("model history entry missing role")?;
+        let content=match record.get("content"){
+            Some(Value::String(s))=>s.as_str(),
+            Some(Value::Null)|None=>"",
+            _=>return Err("Ollama history requires plain text content".into())
+        };
+        match role{
+            "system"|"developer"=>converted.push(json!({"role":"system","content":content})),
+            "user"=>converted.push(json!({"role":"user","content":content})),
+            "assistant"=>{
+                let mut message=json!({"role":"assistant","content":content});
+                if let Some(calls)=record.get("tool_calls").and_then(Value::as_array){
+                    let mut native=Vec::new();
+                    for call in calls{
+                        let id=call.get("id").and_then(Value::as_str)
+                            .ok_or("Ollama history tool call missing ID")?;
+                        let name=call.pointer("/function/name").and_then(Value::as_str)
+                            .ok_or("Ollama history tool call missing name")?;
+                        let raw=call.pointer("/function/arguments").and_then(Value::as_str)
+                            .ok_or("Ollama history tool call missing arguments")?;
+                        let arguments:Value=serde_json::from_str(raw)
+                            .map_err(|e|format!("Ollama previous tool arguments invalid: {e}"))?;
+                        if !arguments.is_object(){return Err("Ollama previous tool input must be an object".into());}
+                        if pending.insert(id.to_owned(),name.to_owned()).is_some(){
+                            return Err("Ollama history repeated tool call ID".into());
+                        }
+                        native.push(json!({"function":{"name":name,"arguments":arguments}}));
+                    }
+                    if !native.is_empty(){message["tool_calls"]=json!(native);}
+                }
+                converted.push(message);
+            },
+            "tool"=>{
+                let id=record.get("tool_call_id").and_then(Value::as_str)
+                    .ok_or("Ollama tool result missing call ID")?;
+                let name=pending.remove(id)
+                    .ok_or("Ollama orphan tool result without its assistant call")?;
+                converted.push(json!({"role":"tool","tool_name":name,"content":content}));
+            },
+            other=>return Err(format!("unsupported native message role for Ollama: {other}"))
+        }
+    }
+    Ok(converted)
+}
 fn anthropic_messages(original:&[Value])->Result<(String,Vec<Value>),String>{
     let mut system=Vec::<String>::new();
     let mut messages=Vec::<Value>::new();
@@ -344,6 +466,76 @@ fn estimate_cost(settings:&ModelSettings,input:u64,cached:u64,written:u64,output
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_ollama_history_maps_tool_names_and_object_arguments(){
+        let original=vec![
+            json!({"role":"system","content":"tools"}),
+            json!({"role":"user","content":"inspect"}),
+            json!({"role":"assistant","content":null,"tool_calls":[{
+                "id":"call-x","type":"function","function":{
+                    "name":"read_file","arguments":"{\\"path\\":\\"main.rs\\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"call-x","content":"rust"}),
+        ];
+        let normalized=ollama_messages(&original).unwrap();
+        assert_eq!(normalized[2]["tool_calls"][0]["function"]["arguments"]["path"],"main.rs");
+        assert_eq!(normalized[3]["tool_name"],"read_file");
+        assert!(normalized[2]["tool_calls"][0].get("id").is_none());
+        let mut invalid=original.clone();
+        invalid[3]["tool_call_id"]=json!("invented");
+        assert!(ollama_messages(&invalid).unwrap_err().contains("orphan"));
+    }
+    #[tokio::test]
+    async fn native_ollama_calls_real_api_chat_normalizes_calls_and_bills_tokens(){
+        use axum::{extract::State,routing::post,Json,Router};
+        use std::sync::{Arc,Mutex};
+        async fn server(State(received):State<Arc<Mutex<Vec<Value>>>>,
+            Json(body):Json<Value>)->Json<Value>{
+            let mut requests=received.lock().unwrap();
+            requests.push(body);
+            if requests.len()==1{
+                Json(json!({"model":"qwen-local","done":true,
+                    "message":{"role":"assistant","content":"",
+                        "tool_calls":[{"function":{"name":"read_file",
+                            "arguments":{"path":"main.rs"}}}]},
+                    "prompt_eval_count":120,"eval_count":13}))
+            }else{
+                Json(json!({"model":"qwen-local","done":true,
+                    "message":{"role":"assistant","content":"Artifact inspected"},
+                    "prompt_eval_count":155,"eval_count":8}))
+            }
+        }
+        let received=Arc::new(Mutex::new(Vec::<Value>::new()));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let app=Router::new().route("/api/chat",post(server)).with_state(received.clone());
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let mut settings=Settings::from_env().unwrap();
+        settings.main.api_key.clear();
+        settings.main.base_url=format!("http://{address}");
+        settings.main.name="qwen-local".into();
+        settings.main.input_krw_per_million=1000.0;
+        settings.main.output_krw_per_million=2000.0;
+        let client=ModelClient::new(&settings).unwrap()
+            .with_primary_protocol(settings.main.clone(),"ollama").unwrap();
+        let tool=json!({"type":"function","function":{"name":"read_file",
+            "description":"inspect file","parameters":{"type":"object",
+                "properties":{"path":{"type":"string"}},"required":["path"]}}});
+        let mut history=vec![json!({"role":"user","content":"inspect main.rs"})];
+        let result=client.complete(&history,&[tool],false).await.unwrap();
+        assert_eq!(result.calls.len(),1);
+        assert_eq!(result.calls[0].arguments["path"],"main.rs");
+        assert_eq!(result.input_tokens,120);
+        assert_eq!(result.output_tokens,13);
+        assert!((result.cost_krw-0.146).abs()<0.000001);
+        history.push(result.message);
+        history.push(json!({"role":"tool","tool_call_id":result.calls[0].id,
+            "content":"file text"}));
+        let final_reply=client.complete(&history,&[],false).await.unwrap();
+        assert_eq!(final_reply.text,"Artifact inspected");
+        assert_eq!(received.lock().unwrap()[1]["messages"][2]["tool_name"],"read_file");
+        assert_eq!(received.lock().unwrap()[0]["tools"][0]["function"]["name"],"read_file");
+        server.abort();
+    }
     #[test]
     fn retry_policy_is_precise(){
         assert!(retryable("provider HTTP 429 Too Many Requests: throttled"));
