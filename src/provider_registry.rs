@@ -145,9 +145,19 @@ impl Registry{
         if old.is_none()&&next.entries.len()>=128{return Err("maximum 128 providers".into());}
         let id=draft.id.unwrap_or_else(||Uuid::new_v4().to_string());
         if id.len()>120{return Err("invalid provider ID".into());}
-        let key=draft.api_key.filter(|key|!key.is_empty())
-            .or_else(||old.as_ref().map(|r|r.api_key.clone()))
-            .unwrap_or_default();
+        // Credentials belong to a concrete provider endpoint and protocol.
+        // An omitted key preserves the credential only for that exact binding.
+        // A changed URL/protocol must never inherit the previous server's key.
+        // Some("") is an explicit credential revocation; None is "unchanged"
+        // only while the endpoint and protocol are unchanged.
+        let same_binding=old.as_ref().is_some_and(|entry|
+            entry.base_url.as_str()==base_url.as_str() &&
+            entry.kind.as_str()==draft.kind.as_str());
+        let key=match draft.api_key{
+            Some(key)=>key,
+            None if same_binding=>old.as_ref().map_or_else(String::new,|entry|entry.api_key.clone()),
+            None=>String::new(),
+        };
         if key.len()>8192||key.contains('\r')||key.contains('\n'){
             return Err("invalid provider credential".into());
         }
@@ -238,4 +248,66 @@ pub fn public(record:&Provider)->serde_json::Value{
         "requestsPerMinute":record.requests_per_minute,
         "pricing":"unconfigured"
     })
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+
+    fn draft(id:Option<String>,base_url:&str,kind:&str,key:Option<&str>)->Draft{
+        Draft{
+            id,name:"Test provider".into(),base_url:base_url.into(),
+            kind:kind.into(),model:"test-model".into(),api_key:key.map(str::to_owned),
+            enabled:true,local:false,reflection:false,reflection_model:None,
+            requests_per_minute:0,
+        }
+    }
+
+    #[test]
+    fn changed_provider_endpoint_cannot_inherit_old_credential(){
+        let root=std::env::temp_dir()
+            .join(format!("dominion-credential-binding-{}",Uuid::new_v4()));
+        let registry=Registry::open(root.clone()).unwrap();
+        let saved=registry.upsert(draft(None,
+            "https://api.example.test/v1","openai",Some("original-secret"))).unwrap();
+        let id=saved.id;
+
+        // The browser omits an unchanged password while editing metadata.
+        let unchanged=registry.upsert(draft(Some(id.clone()),
+            "https://api.example.test/v1","openai",None)).unwrap();
+        assert_eq!(unchanged.api_key,"original-secret");
+
+        // Changing the destination with an omitted key clears the old one.
+        let moved=registry.upsert(draft(Some(id.clone()),
+            "https://replacement.example.test/v1","openai",None)).unwrap();
+        assert_eq!(moved.api_key,"");
+        assert_eq!(public(&moved)["hasKey"],false);
+        assert_eq!(registry.get(&id).unwrap().api_key,"");
+
+        // An explicit replacement is bound to the new endpoint.
+        let replaced=registry.upsert(draft(Some(id.clone()),
+            "https://replacement.example.test/v1","openai",
+            Some("replacement-secret"))).unwrap();
+        assert_eq!(replaced.api_key,"replacement-secret");
+
+        // Switching protocol on the same URL is also a new credential scope.
+        let changed_protocol=registry.upsert(draft(Some(id.clone()),
+            "https://replacement.example.test/v1","anthropic",None)).unwrap();
+        assert!(changed_protocol.api_key.is_empty());
+
+        // Empty string is an explicit revoke, not a request to retain.
+        registry.upsert(draft(Some(id.clone()),
+            "https://replacement.example.test/v1","anthropic",
+            Some("temporary-secret"))).unwrap();
+        let revoked=registry.upsert(draft(Some(id.clone()),
+            "https://replacement.example.test/v1","anthropic",Some(""))).unwrap();
+        assert!(revoked.api_key.is_empty());
+
+        // Verify no stale credential is restored by a process restart.
+        drop(registry);
+        let reopened=Registry::open(root.clone()).unwrap();
+        assert!(reopened.get(&id).unwrap().api_key.is_empty());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
