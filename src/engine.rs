@@ -1082,6 +1082,7 @@ impl Engine {
             // higher-priority owner correction. Keep started external effects
             // intact until a durable observation or manual reconciliation.
             program_session::supersede(run)?;
+            journal::supersede_on_directive(run);
             run.discovered_tools.clear();
             run.event("directive","User updated instructions",Some(json!({"text":content})));
             Ok(())

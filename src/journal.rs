@@ -25,6 +25,41 @@ pub fn replay_safe(name:&str)->bool {
     )
 }
 
+/// Close the former model turn without executing its *unstarted* calls.
+/// Keep tool-call correlation for models that insist on one result per call.
+/// The started call's intent is never erased; completion/reconciliation owns it.
+fn settle_superseded(run:&mut Run)->usize {
+    let mut obsolete=std::mem::take(&mut run.queued_calls);
+    if let Some(pending)=run.pending_approval.take(){obsolete.push(pending);}
+    run.approval_decision=None;
+    let count=obsolete.len();
+    for call in obsolete {
+        run.messages.push(json!({"role":"tool","tool_call_id":call.id,
+            "content":"TOOL ERROR [SUPERSEDED]: Owner issued a newer instruction before this tool started."}));
+        run.event("tool_superseded",
+            format!("Dropped unstarted {} ({}) after owner directive",call.name,call.id),
+            Some(json!({"call_id":call.id,"name":call.name,"dispatched":false})));
+    }
+    if run.status==RunStatus::AwaitingApproval {run.status=RunStatus::Running;}
+    run.advertised_tools.clear();
+    run.supersede_after_tool=false;
+    count
+}
+
+/// An owner instruction revokes earlier *unstarted* model decisions.
+/// Preserve started effects until their original receipt; during a read batch,
+/// defer tail receipts so read results remain in their original model order.
+pub fn supersede_on_directive(run:&mut Run){
+    if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty(){
+        run.supersede_after_tool=true;
+        run.event("directive_execution_barrier",
+            "Newest owner instruction supersedes queued tools after started work settles",
+            Some(json!({"in_flight":run.in_flight.as_ref().map(|c|&c.id),
+                "reads":run.read_batch_in_flight.len()})));
+    } else {
+        settle_superseded(run);
+    }
+}
 fn same_call(a:&ToolCall,b:&ToolCall)->bool {
     a.id==b.id && a.name==b.name && a.arguments==b.arguments
 }
@@ -121,7 +156,11 @@ pub fn finish_read_batch(run:&mut Run,calls:&[ToolCall],results:&[Result<String,
     }
     run.queued_calls.drain(0..calls.len());
     run.read_batch_in_flight.clear();
+    if run.supersede_after_tool && !run.cancel_after_tool {
+        settle_superseded(run);
+    }
     if run.cancel_after_tool{
+        run.supersede_after_tool=false;
         // Keep transcript pairing valid even for the tail that was never
         // dispatched after the user requested cancellation.
         for call in run.queued_calls.drain(..){
@@ -279,8 +318,12 @@ pub fn finish(run:&mut Run,call:&ToolCall,outcome:&Result<String,String>,observe
             if outcome.is_ok(){"ok"}else{"failed"}),
         Some(json!({"call_id":call.id,"name":call.name,"result":text.chars().take(1200).collect::<String>(),
             "observed":observed,"succeeded":outcome.is_ok()})));
+    if run.supersede_after_tool && !run.cancel_after_tool {
+        settle_superseded(run);
+    }
     if run.cancel_after_tool{
         run.cancel_after_tool=false;
+        run.supersede_after_tool=false;
         run.status=RunStatus::Cancelled;
         run.queued_calls.clear();
         run.event("cancelled","Cancelled after durable tool result/reconciliation",None);

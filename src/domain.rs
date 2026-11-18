@@ -52,6 +52,10 @@ pub struct Run {
     /// Persist cancellation intent while an external side effect is in flight.
     #[serde(default)]
     pub cancel_after_tool: bool,
+    /// Owner directive arrived during a started tool/read batch. Drop only
+    /// unstarted siblings after the started receipts are committed in order.
+    #[serde(default)]
+    pub supersede_after_tool: bool,
     #[serde(default)]
     pub parent_run_id: Option<Uuid>,
     #[serde(default)]
@@ -140,7 +144,7 @@ impl Run {
         let mut run = Self {
             id, instruction, status: RunStatus::Queued, plan: None, answer: None,
             messages: Vec::new(), events: Vec::new(), queued_calls: Vec::new(), advertised_tools: Vec::new(), discovered_tools:Vec::new(), read_batch_in_flight:Vec::new(), program_session:None,
-            pending_approval: None, approval_decision: None, in_flight: None, cancel_after_tool: false, parent_run_id: None, context_chars_avoided: 0, repository: None, base_commit: None, steps: 0,
+            pending_approval: None, approval_decision: None, in_flight: None, cancel_after_tool: false, supersede_after_tool:false, parent_run_id: None, context_chars_avoided: 0, repository: None, base_commit: None, steps: 0,
             input_tokens: 0, cached_input_tokens: 0, cache_write_tokens:0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
             reserved_budget_krw:0.0, delegated_spent_krw:0.0, settled_child_ids:Vec::new(), waiting_for_children:false, read_only:false, strategy_candidate:false, tool_schema_chars_avoided:0,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),

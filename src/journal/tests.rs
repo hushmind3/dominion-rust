@@ -136,6 +136,88 @@ use super::*;
     }
 
     #[test]
+    fn owner_directive_closes_ordinary_pending_approval_before_any_dispatch(){
+        let mut run=running();
+        run.status=RunStatus::AwaitingApproval;
+        run.pending_approval=Some(tool("mcp__remote__publish","old-approval"));
+        supersede_on_directive(&mut run);
+        assert_eq!(run.status,RunStatus::Running);
+        assert!(run.pending_approval.is_none());
+        assert!(run.approval_decision.is_none());
+        assert_eq!(run.messages.last().unwrap()["tool_call_id"],"old-approval");
+        assert!(!run.events.iter().any(|e|e.kind=="tool_started"));
+        assert!(run.events.iter().any(|e|e.kind=="tool_superseded"));
+    }
+    #[test]
+    fn owner_directive_discards_all_unstarted_model_tool_calls_with_receipts(){
+        let mut run=running();
+        let first=tool("read_file","old-r");
+        let second=tool("write_file","old-w");
+        run.queued_calls.extend([first.clone(),second.clone()]);
+        supersede_on_directive(&mut run);
+        assert!(run.queued_calls.is_empty());
+        let results=run.messages.iter().filter(|m|m["role"]=="tool").collect::<Vec<_>>();
+        assert_eq!(results.len(),2);
+        assert_eq!(results[0]["tool_call_id"],first.id);
+        assert_eq!(results[1]["tool_call_id"],second.id);
+        assert!(!run.supersede_after_tool);
+    }
+    #[test]
+    fn owner_directive_waits_for_started_write_receipt_then_discards_old_tail(){
+        let mut run=running();
+        let first=tool("write_file","started");
+        let second=tool("write_file","stale-tail");
+        run.queued_calls.extend([first.clone(),second.clone()]);
+        begin(&mut run,&first).unwrap();
+        supersede_on_directive(&mut run);
+        assert!(run.supersede_after_tool);
+        assert_eq!(run.queued_calls.len(),2);
+        finish(&mut run,&first,&Ok("write settled".into()),false).unwrap();
+        assert!(!run.supersede_after_tool);
+        assert!(run.queued_calls.is_empty());
+        let receipts=run.messages.iter().filter(|m|m["role"]=="tool").collect::<Vec<_>>();
+        assert_eq!(receipts.len(),2);
+        assert_eq!(receipts[0]["tool_call_id"],"started");
+        assert_eq!(receipts[1]["tool_call_id"],"stale-tail");
+        assert!(receipts[1]["content"].as_str().unwrap().contains("SUPERSEDED"));
+        assert_eq!(run.events.iter().filter(|e|e.kind=="tool_started").count(),1);
+    }
+    #[test]
+    fn owner_directive_preserves_read_batch_order_before_superseding_old_write(){
+        let mut run=running();
+        let first=tool("read_file","r1");
+        let second=tool("read_file","r2");
+        let tail=tool("write_file","old-write");
+        run.queued_calls.extend([first.clone(),second.clone(),tail]);
+        begin_read_batch(&mut run,&[first.clone(),second.clone()]).unwrap();
+        supersede_on_directive(&mut run);
+        assert_eq!(run.queued_calls.len(),3);
+        finish_read_batch(&mut run,&[first,second],
+            &[Ok("a".into()),Ok("b".into())]).unwrap();
+        assert!(run.queued_calls.is_empty());
+        let receipts=run.messages.iter().filter(|m|m["role"]=="tool")
+            .map(|m|m["tool_call_id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(receipts,vec!["r1","r2","old-write"]);
+        assert_eq!(run.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+    }
+    #[test]
+    fn pending_owner_directive_is_preserved_across_restart_and_reconciliation(){
+        let mut run=running();
+        let first=tool("write_file","uncertain");
+        let tail=tool("mcp__remote__publish","obsolete");
+        run.queued_calls.extend([first.clone(),tail]);
+        begin(&mut run,&first).unwrap();
+        supersede_on_directive(&mut run);
+        let restored:Run=serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        assert!(restored.supersede_after_tool);
+        let mut restored=restored;
+        assert!(!recover(&mut restored));
+        assert!(restored.in_flight.is_some());
+        finish(&mut restored,&first,&Ok("externally verified".into()),true).unwrap();
+        assert!(restored.queued_calls.is_empty());
+        assert_eq!(restored.events.iter().filter(|e|e.kind=="tool_superseded").count(),1);
+    }
+    #[test]
     fn approved_call_can_be_vetoed_by_new_hook_without_dispatch(){
         let mut run=running();
         let call=tool("shell","approved-then-blocked");
