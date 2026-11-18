@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Reject retired duplicate runtimes and legacy context projection
+        run: bash scripts/check-sub4-architecture.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Native SDK UI progress and cost view (dev profile)
