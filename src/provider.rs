@@ -2,6 +2,7 @@ use crate::{config::{ModelSettings, Settings}, domain::ToolCall};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
+use sha2::{Digest,Sha256};
 
 #[derive(Clone)]
 pub struct ModelClient {
@@ -22,6 +23,10 @@ pub struct ModelClient {
 pub struct StatefulReply {
     pub reply:Reply,
     pub response_id:Option<String>,
+    /// True only when the completed request really referenced remote history.
+    /// A definitively rejected stale pointer can trigger a clean rebase.
+    pub used_previous_response:bool,
+    pub invalidated_previous_response:bool,
 }
 pub struct Reply {
     pub message: Value,
@@ -111,7 +116,14 @@ impl ModelClient {
         }else{(&self.strong,self.strong_protocol.as_str())};
         if protocol=="responses"||
             (protocol=="openai"&&settings.base_url=="https://api.openai.com/v1"){
-            Some(format!("{}|{}|{}",settings.base_url,protocol,settings.name))
+            // Qwen Code's 2026 session/cache comparison requires matching
+            // endpoint, resolved model and auth identity. Persist only a
+            // one-way credential fingerprint: never store the secret key.
+            let credential=Sha256::digest(settings.api_key.as_bytes());
+            let fingerprint=credential[..16].iter()
+                .map(|byte|format!("{byte:02x}")).collect::<String>();
+            Some(format!("{}|{}|{}|{}",settings.base_url,protocol,
+                settings.name,fingerprint))
         }else{None}
     }
     pub async fn complete_room_continuation(&self,full:&[Value],
@@ -119,7 +131,8 @@ impl ModelClient {
         ->Result<StatefulReply,String>{
         if self.room_stateful_identity(economy).is_none(){
             return self.complete(full,&[],economy).await.map(|reply|
-                StatefulReply{reply,response_id:None});
+                StatefulReply{reply,response_id:None,
+                    used_previous_response:false,invalidated_previous_response:false});
         }
         let (settings,protocol)=if economy{
             (&self.economy,self.economy_protocol.as_str())
@@ -128,8 +141,24 @@ impl ModelClient {
         // inference. Do not silently issue a second full-prompt generation.
         debug_assert!(protocol=="responses"||
             settings.base_url=="https://api.openai.com/v1");
-        self.request_responses(settings,if previous_response_id.is_some(){delta}
-            else{full},previous_response_id).await
+        let result=self.request_responses(settings,
+            if previous_response_id.is_some(){delta}else{full},
+            previous_response_id).await;
+        match result{
+            // A 400/404 with *explicit* previous_response_id error means
+            // the remote state was rejected before inference. Recover once
+            // from the exact durable Room projection, not from an invented
+            // model summary. Do NOT replay ambiguous 5xx or transport errors.
+            Err(ref error) if previous_response_id.is_some()
+                &&error.starts_with("provider previous_response_id unavailable:")=>{
+                tracing::warn!(model=%settings.name,
+                    "remote Responses history unavailable; rebasing once from durable room");
+                let mut fresh=self.request_responses(settings,full,None).await?;
+                fresh.invalidated_previous_response=true;
+                Ok(fresh)
+            }
+            other=>other
+        }
     }
     async fn request_responses(&self,settings:&ModelSettings,input:&[Value],
         previous_response_id:Option<&str>)->Result<StatefulReply,String>{
@@ -166,9 +195,14 @@ impl ModelClient {
         let status=response.status();
         let bytes=bounded_body(response).await?;
         if !status.is_success(){
-            return Err(format!("provider HTTP {status}: {}",
-                String::from_utf8_lossy(&bytes).chars().take(500)
-                    .collect::<String>()));
+            let detail=String::from_utf8_lossy(&bytes)
+                .chars().take(500).collect::<String>();
+            if previous_response_id.is_some()
+                &&definitely_missing_previous_response(status.as_u16(),&bytes){
+                return Err(format!(
+                    "provider previous_response_id unavailable: HTTP {status}: {detail}"));
+            }
+            return Err(format!("provider HTTP {status}: {detail}"));
         }
         let raw:Value=serde_json::from_slice(&bytes)
             .map_err(|e|format!("invalid Responses provider JSON: {e}"))?;
@@ -204,7 +238,9 @@ impl ModelClient {
                 cache_write_tokens,usage_reported,output_tokens,cost_krw,
                 model:settings.name.clone()
             },
-            response_id:Some(response_id)
+            response_id:Some(response_id),
+            used_previous_response:previous_response_id.is_some(),
+            invalidated_previous_response:false
         })
     }
     pub async fn complete(&self, messages: &[Value], tools: &[Value], economy: bool) -> Result<Reply, String> {
@@ -551,6 +587,26 @@ fn ollama_messages(original:&[Value])->Result<Vec<Value>,String>{
     }
     Ok(converted)
 }
+/// Fail closed on ambiguous remote errors. Only an explicit provider-side
+/// rejection of the previous_response_id parameter is safe for rebase/retry.
+/// A network/5xx failure may have already performed billable inference.
+fn definitely_missing_previous_response(status:u16,body:&[u8])->bool{
+    if status!=400&&status!=404{return false;}
+    let Ok(json)=serde_json::from_slice::<Value>(body) else{return false;};
+    let Some(error)=json.get("error") else{return false;};
+    if error.get("param").and_then(Value::as_str)!=Some("previous_response_id"){
+        return false;
+    }
+    let code=error.get("code").and_then(Value::as_str)
+        .unwrap_or("").to_ascii_lowercase();
+    let msg=error.get("message").and_then(Value::as_str)
+        .unwrap_or("").to_ascii_lowercase();
+    matches!(code.as_str(),"previous_response_not_found"|
+        "invalid_previous_response_id"|"response_not_found"|
+        "not_found"|"invalid_request_error")
+        &&(msg.contains("not found")||msg.contains("does not exist")||
+            msg.contains("expired")||msg.contains("invalid"))
+}
 /// Normalize provider-reported token counts without estimating absent usage.
 fn openai_compatible_usage(raw:&Value)->(u64,u64,u64,u64,bool){
     let input=raw.pointer("/usage/prompt_tokens").and_then(Value::as_u64)
@@ -812,6 +868,50 @@ mod tests {
         assert_eq!(openai_compatible_usage(&json!({"usage":{}})),(0,0,0,0,false));
         assert_eq!(openai_compatible_usage(&json!({"usage":{"input_tokens":67}})),
             (67,0,0,0,false));
+    }
+    #[test]
+    fn stale_responses_rebase_only_with_explicit_parameter_error(){
+        let legitimate=json!({"error":{"param":"previous_response_id",
+            "code":"invalid_previous_response_id",
+            "message":"Previous response not found"}}).to_string();
+        assert!(definitely_missing_previous_response(400,legitimate.as_bytes()));
+        assert!(definitely_missing_previous_response(404,legitimate.as_bytes()));
+        assert!(!definitely_missing_previous_response(500,legitimate.as_bytes()));
+        assert!(!definitely_missing_previous_response(429,legitimate.as_bytes()));
+        for payload in [
+            json!({"error":{"param":"model","code":"invalid_request_error",
+                "message":"model not found"}}),
+            json!({"error":{"code":"invalid_request_error",
+                "message":"Response not found"}}),
+            json!({"error":{"param":"previous_response_id",
+                "code":"invalid_request_error","message":"bad function schema"}})
+        ]{
+            assert!(!definitely_missing_previous_response(400,
+                payload.to_string().as_bytes()),
+                "never duplicate a potentially billable or unrelated call");
+        }
+    }
+    #[test]
+    fn responses_affinity_changes_with_account_credentials(){
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.main.base_url="https://api.openai.com/v1".into();
+        cfg.main.name="gpt-6".into();
+        cfg.main.api_key="sk-test-account-one".into();
+        let model=ModelClient::new(&cfg).unwrap();
+        let first=model.room_stateful_identity(false).unwrap();
+        assert!(!first.contains("account-one"));
+        let second_cfg=ModelSettings{api_key:"sk-test-account-two".into(),
+            ..cfg.main.clone()};
+        let other=model.with_primary(second_cfg);
+        let second=other.room_stateful_identity(false).unwrap();
+        assert_ne!(first,second,
+            "reusing a response ID across provider accounts causes 400");
+        assert_eq!(model.room_stateful_identity(false),
+            model.room_stateful_identity(false));
+        let unrelated=ModelSettings{base_url:"https://example.net/v1".into(),
+            ..cfg.main.clone()};
+        assert!(model.with_primary(unrelated).room_stateful_identity(false)
+            .is_none(),"unsupported gateways cannot claim remote state");
     }
     #[test]
     fn first_party_openai_cache_key_inherits_stable_session_or_explicit_operator_key(){

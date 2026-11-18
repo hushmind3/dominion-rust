@@ -68,6 +68,9 @@ pub struct RoomUsageReceipt {
     /// True if this call referenced previous_response_id instead of
     /// uploading the complete system/persona/history again.
     #[serde(default)] pub reused_server_continuation:bool,
+    /// Remote previous_response_id was conclusively rejected; this call
+    /// safely rebased from the durable original room after a 400/404.
+    #[serde(default)] pub remote_history_rebased:bool,
     /// Character accounting for context composition. Provider token usage
     /// above remains authoritative for billing and cache hit measurement.
     #[serde(default)] pub source_context_chars:usize,
@@ -726,9 +729,11 @@ impl Groups {
             }
         };
         room.last_provider_failure=None;
+        let reused_remote=response.used_previous_response;
+        let remote_history_rebased=response.invalidated_previous_response;
         let reply=response.reply;
         let persisted_response_id=response.response_id;
-        let transmitted_chars=if previous.is_some(){
+        let transmitted_chars=if reused_remote{
             delta.iter().filter_map(|m|m["content"].as_str())
                 .map(|s|s.chars().count()).sum::<usize>()
         }else{
@@ -740,8 +745,9 @@ impl Groups {
                 provider_model:identity,
                 previous_response_id:response_id,
                 sent_through:room.messages.len(),
-                accumulated_chars:previous.map_or(0,|s|s.accumulated_chars)
-                    .saturating_add(transmitted_chars),
+                accumulated_chars:(if reused_remote{
+                    previous.map_or(0,|s|s.accumulated_chars)
+                }else{0}).saturating_add(transmitted_chars),
                 last_notes:notes.to_owned()
             });
         let tokens=reply.input_tokens.saturating_add(reply.output_tokens);
@@ -763,7 +769,8 @@ impl Groups {
             provider_usage_reported:Some(reply.usage_reported),
             output_tokens:reply.output_tokens,cost_krw:reply.cost_krw,
             wire_prompt_chars:transmitted_chars,
-            reused_server_continuation:previous.is_some(),
+            reused_server_continuation:reused_remote,
+            remote_history_rebased,
             source_context_chars:projected.source_chars,
             projected_context_chars:projected.projected_chars,
             omitted_context_messages:projected.omitted_messages,
@@ -1325,6 +1332,106 @@ mod tests {
             assert!(!bodies[i]["input"].as_array().unwrap().is_empty());
         }
         server.abort();drop(store);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    async fn responses_with_dropped_remote_pointer(
+        axum::extract::State(requests):axum::extract::State<
+            Arc<Mutex<Vec<Value>>>>,
+        axum::Json(body):axum::Json<Value>,
+    )->(axum::http::StatusCode,axum::Json<Value>){
+        let mut seen=requests.lock().await;
+        seen.push(body.clone());
+        let ordinal=seen.len();
+        if body["previous_response_id"]=="resp-stale-1"{
+            return (axum::http::StatusCode::NOT_FOUND,axum::Json(json!({
+                "error":{"param":"previous_response_id",
+                    "code":"previous_response_not_found",
+                    "message":"Previous response not found"}
+            })));
+        }
+        (axum::http::StatusCode::OK,axum::Json(json!({
+            "id":format!("resp-stale-{ordinal}"),"status":"completed",
+            "output_text":format!("Completed analysis {ordinal}"),
+            "usage":{"input_tokens":100,"output_tokens":14,
+                "input_tokens_details":{"cached_tokens":20}}
+        })))
+    }
+    #[tokio::test]
+    async fn stale_remote_history_rebases_once_from_durable_room_and_resumes_delta(){
+        use axum::{routing::post,Router};
+        use crate::config::Settings;
+        let observed=Arc::new(Mutex::new(Vec::<Value>::new()));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server={
+            let observed=observed.clone();
+            tokio::spawn(async move{
+                axum::serve(listener,Router::new()
+                    .route("/responses",post(responses_with_dropped_remote_pointer))
+                    .with_state(observed)).await.unwrap();
+            })
+        };
+        let mut settings=Settings::from_env().unwrap();
+        settings.main.base_url=format!("http://{address}");
+        settings.main.api_key.clear();
+        settings.main.name="mock-stale-remote".into();
+        settings.economy=settings.main.clone();
+        let model=ModelClient::new(&settings).unwrap()
+            .with_primary_protocol(settings.main.clone(),"responses").unwrap();
+        let root=std::env::temp_dir().join(format!(
+            "dominion-stale-chain-{}",Uuid::new_v4()));
+        let group=Groups::open(root.clone()).await.unwrap();
+        let room=group.create(NewRoom{
+            topic:"Continuity after remote expiry".into(),
+            participants:vec![Participant{
+                name:"reviewer".into(),
+                role:"quality auditor of durable decisions".into(),
+                economy:false
+            }],
+            max_rounds:Some(12),budget_krw:Some(10000.0)
+        }).await.unwrap();
+        group.say(room.id,"First decision: keep the journal".into())
+            .await.unwrap();
+        group.next_for(&model,room.id,Some("reviewer")).await.unwrap();
+        group.say(room.id,"Second decision: keep the journal".into())
+            .await.unwrap();
+        group.next_for(&model,room.id,Some("reviewer")).await.unwrap();
+        let partial=group.get(room.id).await.unwrap();
+        assert_eq!(partial.messages.len(),4);
+        assert_eq!(partial.usage_receipts.len(),2,
+            "upstream rejected the stale pointer before inference");
+        assert_eq!(partial.usage_receipts.iter()
+            .filter(|r|r.remote_history_rebased).count(),1);
+        assert!(!partial.usage_receipts[1].reused_server_continuation);
+        assert!(partial.usage_receipts[1].wire_prompt_chars
+            >partial.usage_receipts[0].wire_prompt_chars/2,
+            "recovery must send reconstructed full history, not stale delta");
+        assert_eq!(partial.remote_continuations["reviewer"].previous_response_id,
+            "resp-stale-3");
+        group.say(room.id,"Third owner: continue from last decision".into())
+            .await.unwrap();
+        group.next_for(&model,room.id,Some("reviewer")).await.unwrap();
+        let all=observed.lock().await.clone();
+        assert_eq!(all.len(),4,"1 full, 1 rejected delta, 1 safe full, 1 delta");
+        assert_eq!(all[0]["previous_response_id"],Value::Null);
+        assert_eq!(all[1]["previous_response_id"],"resp-stale-1");
+        assert_eq!(all[2]["previous_response_id"],Value::Null);
+        assert!(all[2]["input"].to_string().contains(
+            "quality auditor of durable decisions"));
+        assert_eq!(all[3]["previous_response_id"],"resp-stale-3");
+        assert!(!all[3]["input"].to_string().contains(
+            "quality auditor of durable decisions"));
+        let finished=group.get(room.id).await.unwrap();
+        assert_eq!(finished.messages.len(),6);
+        assert_eq!(finished.usage_receipts.len(),3);
+        assert_eq!(finished.rounds,3);
+        assert!(finished.usage_receipts[2].reused_server_continuation);
+        assert_eq!(finished.used_tokens,3*114);
+        let restored:Room=serde_json::from_value(
+            serde_json::to_value(&finished).unwrap()).unwrap();
+        assert!(restored.usage_receipts[1].remote_history_rebased);
+        server.abort();drop(group);
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]

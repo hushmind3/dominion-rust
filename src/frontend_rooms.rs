@@ -118,6 +118,8 @@ pub(crate) fn room_usage(room:&Room)->Value{
     let delivered=room.usage_receipts.iter().filter(|m|m.accepted).count();
     let delta_calls=room.usage_receipts.iter()
         .filter(|m|m.reused_server_continuation).count();
+    let expired_rebases=room.usage_receipts.iter()
+        .filter(|m|m.remote_history_rebased).count();
     let total_wire_chars=room.usage_receipts.iter()
         .map(|m|m.wire_prompt_chars).sum::<usize>();
     let by_agent=room.participants.iter().map(|p|{
@@ -131,6 +133,8 @@ pub(crate) fn room_usage(room:&Room)->Value{
             "billedUndeliveredCalls":receipts.iter().filter(|r|!r.accepted).count(),
             "serverContinuationCalls":receipts.iter()
                 .filter(|r|r.reused_server_continuation).count(),
+            "expiredContinuationRebases":receipts.iter()
+                .filter(|r|r.remote_history_rebased).count(),
             "wirePromptChars":receipts.iter().map(|r|r.wire_prompt_chars).sum::<usize>(),
             "providerUsageReported":!receipts.is_empty() && not_reported==0,
             "promptTokens":receipts.iter().map(|r|r.input_tokens).sum::<u64>(),
@@ -153,6 +157,7 @@ pub(crate) fn room_usage(room:&Room)->Value{
         "deliveredCalls":delivered,
         "billedUndeliveredCalls":room.usage_receipts.len().saturating_sub(delivered),
         "serverContinuationCalls":delta_calls,
+        "expiredContinuationRebases":expired_rebases,
         "fullPromptCalls":room.usage_receipts.len().saturating_sub(delta_calls),
         "wirePromptChars":total_wire_chars,
         "wireUnits":"characters_transmitted_not_provider_billing_tokens",
@@ -202,6 +207,7 @@ pub fn message_rows(room:&Room)->Vec<UiMessage>{
         "providerUsageReported":receipt.provider_usage_reported,
         "wirePromptChars":receipt.wire_prompt_chars,
         "serverContinuation":receipt.reused_server_continuation,
+        "expiredContinuationRebase":receipt.remote_history_rebased,
         "totalTokens":receipt.input_tokens.saturating_add(receipt.output_tokens),
         "costKrw":receipt.cost_krw,
         "contextComposition":{
