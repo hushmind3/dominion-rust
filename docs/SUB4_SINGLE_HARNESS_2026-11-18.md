@@ -16,7 +16,7 @@ External implementations read:
 ## Implemented in Sub4
 
 `src/tool_discovery.rs` is a **pure catalog-projection and ranked-search algorithm**, *not* an executor. It adds:
-1. When >8 currently permitted external tools are connected, advertise the small native `tool_search` instead of all remote JSON parameter schemas. Small catalogs remain eagerly available, to avoid paying for discovery.
+1. When >8 currently permitted external tools are connected, advertise `tool_search` plus up to 3 intent-relevant original external schemas instead of all remote JSON parameter schemas. Small catalogs remain eagerly available. Relevant actions can start on the first turn without paid discovery, while all other tools remain discoverable.
 2. Search **only the current operator-authorized Run catalog**, using weighted name/description/argument-name matches, smoothed corpus IDF and Korean/Chinese query aliases. Results include exact external names and required parameter keys, not action authority.
 3. Record selected names only from successful, post-hook receipts, in the original durable Run journal (bounded 16; backward-compatible serde default). On the next model turn the selected original schemas become visible.
 4. The model then invokes `mcp__...`/`github_...`/`google_...` directly. This uses the *existing* `tool_schema::admit`, policy, veto hooks, explicit approval, cancellation, write-ahead intent, outcome-unknown handling and recovery. No `tool_call` bridge dispatch or second scheduler can bypass those invariants.

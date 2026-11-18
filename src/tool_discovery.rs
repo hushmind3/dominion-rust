@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 pub const THRESHOLD:usize=8;
 const MAX_RETAINED:usize=16;
 const MAX_RESULT:usize=8;
+const MAX_PREFETCH:usize=3;
 
 fn name(tool:&Value)->Option<&str>{
     tool.pointer("/function/name").and_then(Value::as_str)
@@ -26,8 +27,20 @@ pub fn for_turn(run:&Run,tools:Vec<Value>,denied:&[String])->(Vec<Value>,usize,b
         return (eligible.into_iter().cloned().collect(),0,false);
     }
     let original=eligible.iter().map(|t|t.to_string().len()).sum::<usize>();
+    // Auto-show a few intent-relevant *original* schemas on the first turn.
+    // Search remains available for everything else, and lexically unrelated
+    // tools stay hidden. This avoids a mandatory paid discovery round.
+    let docs=documents(eligible.clone());
+    let goal=run.messages.iter().rev().filter_map(|message|
+        message.get("content").and_then(Value::as_str)
+            .filter(|_|message.get("role").and_then(Value::as_str)==Some("user"))
+            .and_then(|s|s.strip_prefix("New user instruction: ")))
+        .next().unwrap_or(&run.instruction);
+    let prefetch=ranked(&docs,goal).into_iter().take(MAX_PREFETCH)
+        .filter_map(|idx|name(docs[idx].tool)).collect::<BTreeSet<_>>();
     let visible=eligible.into_iter().filter(|tool|name(tool)
-        .is_some_and(|n|run.discovered_tools.iter().any(|saved|saved==n)))
+        .is_some_and(|n|run.discovered_tools.iter().any(|saved|saved==n)
+            ||prefetch.contains(n)))
         .cloned().collect::<Vec<_>>();
     let retained=visible.iter().map(|t|t.to_string().len()).sum::<usize>();
     (visible,original.saturating_sub(retained),true)
@@ -92,6 +105,16 @@ fn score(doc:&Doc<'_>,query:&str,terms:&BTreeSet<String>,docs:&[Doc<'_>])->f64{
     }
     score
 }
+fn ranked(docs:&[Doc<'_>],query:&str)->Vec<usize>{
+    let terms=query_terms(query);
+    let lowercase=query.to_lowercase();
+    let mut ranks=docs.iter().enumerate()
+        .map(|(idx,doc)|(score(doc,&lowercase,&terms,docs),idx))
+        .filter(|(score,_)|*score>0.0).collect::<Vec<_>>();
+    ranks.sort_by(|a,b|b.0.total_cmp(&a.0)
+        .then_with(||docs[a.1].name.cmp(&docs[b.1].name)));
+    ranks.into_iter().map(|(_,idx)|idx).collect()
+}
 /// Read-only discovery over the current Run's actual operator-authorized
 /// catalog. Returns names/required fields, never an execution grant.
 pub fn search(run:&Run,tools:Vec<Value>,denied:&[String],
@@ -100,12 +123,8 @@ pub fn search(run:&Run,tools:Vec<Value>,denied:&[String],
     if query.is_empty()||query.chars().count()>256 {return Err("tool_search query must contain 1..256 characters".into());}
     if !(1..=MAX_RESULT).contains(&limit){return Err("tool_search limit must be 1..8".into());}
     let docs=documents(allowed(run,tools.iter(),denied));
-    let terms=query_terms(query);
-    let lowercase=query.to_lowercase();
-    let mut ranks=docs.iter().map(|doc|(score(doc,&lowercase,&terms,&docs),doc))
-        .filter(|(score,_)|*score>0.0).collect::<Vec<_>>();
-    ranks.sort_by(|a,b|b.0.total_cmp(&a.0).then_with(||a.1.name.cmp(&b.1.name)));
-    let matches=ranks.into_iter().take(limit).map(|(_,doc)|{
+    let matches=ranked(&docs,query).into_iter().take(limit).map(|idx|{
+        let doc=&docs[idx];
         let required=doc.tool.pointer("/function/parameters/required")
             .and_then(Value::as_array).map(|v|v.iter().take(12).cloned().collect::<Vec<_>>())
             .unwrap_or_default();
@@ -163,6 +182,7 @@ mod tests{
     #[test]
     fn progressive_discovery_requires_an_observed_receipt_and_original_schema(){
         let mut r=run();
+        r.instruction="assemble an asteroid mining craft".into();
         let external=catalog();
         let (hidden,bytes,active)=for_turn(&r,external.clone(),&[]);
         assert!(active&&hidden.is_empty()&&bytes>300);
@@ -179,6 +199,28 @@ mod tests{
         let forbidden=vec!["mcp__repo__create_issue".into()];
         let (revoked,_,_)=for_turn(&restored,external,&forbidden);
         assert!(!revoked.iter().any(|x|name(x)==Some("mcp__repo__create_issue")));
+    }
+    #[test]
+    fn relevant_tools_are_eagerly_disclosed_without_weakening_schema_or_policy(){
+        let mut r=run();
+        r.instruction="Create a GitHub issue".into();
+        let tools=catalog();
+        let (visible,saved,active)=for_turn(&r,tools.clone(),&[]);
+        assert!(active&&saved>0);
+        assert!(visible.len()<=MAX_PREFETCH);
+        let create=ToolCall{id:"create".into(),name:"mcp__repo__create_issue".into(),
+            arguments:json!({"title":"Bug"})};
+        assert!(tool_schema::admit(&create,&visible).is_ok());
+        assert!(tool_schema::admit(&ToolCall{arguments:json!({}),..create},&visible).is_err());
+        assert!(!visible.iter().any(|x|name(x)==Some("mcp__repo__generic_00")));
+        let denied=vec!["mcp__repo__create_issue".into()];
+        assert!(!for_turn(&r,tools.clone(),&denied).0.iter()
+            .any(|x|name(x)==Some("mcp__repo__create_issue")));
+        r.instruction="Manage an unrelated project".into();
+        r.messages.push(json!({"role":"user","content":
+            "New user instruction: Read GitHub issue"}));
+        let corrected=for_turn(&r,tools,&[]).0;
+        assert!(corrected.iter().any(|x|name(x)==Some("mcp__repo__get_issue")));
     }
     #[test]
     fn no_discovery_bridge_overhead_for_small_catalog_or_disabled_search(){
