@@ -13,6 +13,9 @@ pub struct ModelClient {
     /// Stable routing hint for providers that explicitly support prompt
     /// affinity. It is not evidence of a cache hit or billed-token discount.
     session_affinity:Option<String>,
+    /// Inert per-client fallback. First-party OpenCode Go still gets a stable
+    /// non-global session ID if a raw caller did not supply Run/Room identity.
+    opencode_default_session:String,
 }
 pub struct Reply {
     pub message: Value,
@@ -35,14 +38,16 @@ impl ModelClient {
             .build().map_err(|e| e.to_string())?;
         Ok(Self { http, strong: settings.main.clone(), economy: settings.economy.clone(),
             strong_protocol:"openai".into(),economy_protocol:"openai".into(),
-            session_affinity:None })
+            session_affinity:None,
+            opencode_default_session:uuid::Uuid::new_v4().to_string() })
     }
     /// Snapshot the selected provider for a single native Run. Requests
     /// never fall back to a different vendor or model without user choice.
     pub fn with_primary(&self,selected:ModelSettings)->Self{
         Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
             strong_protocol:"openai".into(),economy_protocol:"openai".into(),
-            session_affinity:self.session_affinity.clone()}
+            session_affinity:self.session_affinity.clone(),
+            opencode_default_session:self.opencode_default_session.clone()}
     }
     pub fn with_primary_protocol(&self,selected:ModelSettings,protocol:&str)->Result<Self,String>{
         if !matches!(protocol,"openai"|"ollama"|"anthropic"){
@@ -50,7 +55,8 @@ impl ModelClient {
         }
         Ok(Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
             strong_protocol:protocol.to_owned(),economy_protocol:protocol.to_owned(),
-            session_affinity:self.session_affinity.clone()})
+            session_affinity:self.session_affinity.clone(),
+            opencode_default_session:self.opencode_default_session.clone()})
     }
     /// Keep the same UUID-derived routing hint across participants in one
     /// room. Only Cloudflare's documented Workers AI endpoint receives it.
@@ -67,6 +73,17 @@ impl ModelClient {
         if url.scheme()=="https"&&url.host_str()==Some("api.cloudflare.com")
             &&url.path().contains("/ai/"){
             self.session_affinity.as_deref()
+        }else{None}
+    }
+    /// Route by conversation, never by branch-wide shared constant.
+    /// Exact first-party HTTPS origin/path checks prevent leaking a session
+    /// identifier to arbitrary OpenAI-compatible gateways or lookalike hosts.
+    fn opencode_session_for(&self,settings:&ModelSettings)->Option<&str>{
+        let url=reqwest::Url::parse(&settings.base_url).ok()?;
+        if url.scheme()=="https" && url.host_str()==Some("opencode.ai")
+            && url.path().starts_with("/zen/"){
+            self.session_affinity.as_deref()
+                .or(Some(self.opencode_default_session.as_str()))
         }else{None}
     }
     pub async fn complete(&self, messages: &[Value], tools: &[Value], economy: bool) -> Result<Reply, String> {
@@ -129,9 +146,10 @@ impl ModelClient {
             req=req.header("x-session-affinity",affinity);
         }
         if !settings.api_key.is_empty() { req = req.bearer_auth(&settings.api_key); }
-        // OpenCode Go requires a routing session header on every request.
-        if settings.base_url.contains("opencode.ai") {
-            req = req.header("x-opencode-session", "dominion-sub4");
+        // OpenCode Go conversation affinity survives retries/restarts for
+        // native Runs and is isolated across unrelated Rooms and Runs.
+        if let Some(session)=self.opencode_session_for(settings){
+            req=req.header("x-opencode-session",session);
         }
         let response = req.send().await.map_err(|e| format!("provider transport: {e}"))?;
         let status = response.status();
@@ -180,8 +198,8 @@ impl ModelClient {
         let root=root.strip_suffix("/v1").unwrap_or(root);
         let mut request=self.http.post(format!("{root}/api/chat")).json(&body);
         if !settings.api_key.is_empty(){request=request.bearer_auth(&settings.api_key);}
-        if settings.base_url.contains("opencode.ai"){
-            request=request.header("x-opencode-session","dominion-sub4");
+        if let Some(session)=self.opencode_session_for(settings){
+            request=request.header("x-opencode-session",session);
         }
         let response=request.send().await.map_err(|e|format!("provider transport: {e}"))?;
         let status=response.status();
@@ -656,6 +674,36 @@ mod tests {
         assert_eq!(openai_compatible_usage(&json!({"usage":{}})),(0,0,0,0,false));
         assert_eq!(openai_compatible_usage(&json!({"usage":{"input_tokens":67}})),
             (67,0,0,0,false));
+    }
+    #[test]
+    fn opencode_affinity_uses_durable_run_identity_and_never_leaks_to_other_hosts(){
+        let mut config=Settings::from_env().unwrap();
+        config.main.base_url="https://opencode.ai/zen/go/v1".into();
+        config.main.name="go/test".into();
+        let base=ModelClient::new(&config).unwrap();
+        let fallback=base.opencode_session_for(&config.main).unwrap().to_string();
+        assert_ne!(fallback,"dominion-sub4",
+            "branch-wide hard-coded session IDs contaminate unrelated users");
+        let run_a=base.with_session_affinity("run-aa11");
+        let run_b=base.with_session_affinity("run-bb22");
+        assert_eq!(run_a.opencode_session_for(&config.main),Some("run-aa11"));
+        assert_eq!(run_b.opencode_session_for(&config.main),Some("run-bb22"));
+        assert_eq!(run_a.with_primary(config.main.clone())
+            .opencode_session_for(&config.main),Some("run-aa11"));
+        assert_eq!(run_a.with_primary_protocol(config.main.clone(),"openai").unwrap()
+            .opencode_session_for(&config.main),Some("run-aa11"));
+        assert_eq!(base.opencode_session_for(&config.main),Some(fallback.as_str()));
+        let unrelated=ModelClient::new(&config).unwrap();
+        assert_ne!(unrelated.opencode_session_for(&config.main),Some(fallback.as_str()));
+        for origin in ["http://opencode.ai/zen/go/v1",
+            "https://opencode.ai.attacker.test/zen/go/v1",
+            "https://not-opencode.ai/zen/go/v1",
+            "https://example.com/v1","https://api.openai.com/v1"] {
+            let mut other=config.main.clone();
+            other.base_url=origin.into();
+            assert_eq!(run_a.opencode_session_for(&other),None,
+                "private affinity must not leak to {origin}");
+        }
     }
     #[test]
     fn cloudflare_room_affinity_is_explicit_scoped_and_not_sent_to_other_providers(){
