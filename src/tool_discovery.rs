@@ -23,12 +23,12 @@ fn allowed<'a>(run:&Run,tools:impl IntoIterator<Item=&'a Value>,
 pub fn for_turn(run:&Run,tools:Vec<Value>,denied:&[String])->(Vec<Value>,usize,bool){
     let eligible=allowed(run,tools.iter(),denied);
     if eligible.len()<=THRESHOLD || !policy::admitted_tool(run,"tool_search",denied){
-        return (tools,0,false);
+        return (eligible.into_iter().cloned().collect(),0,false);
     }
     let original=eligible.iter().map(|t|t.to_string().len()).sum::<usize>();
-    let visible=tools.into_iter().filter(|tool|name(tool)
+    let visible=eligible.into_iter().filter(|tool|name(tool)
         .is_some_and(|n|run.discovered_tools.iter().any(|saved|saved==n)))
-        .collect::<Vec<_>>();
+        .cloned().collect::<Vec<_>>();
     let retained=visible.iter().map(|t|t.to_string().len()).sum::<usize>();
     (visible,original.saturating_sub(retained),true)
 }
