@@ -113,6 +113,7 @@ pub fn evaluate(input:&Value)->Value{
 fn linked_quote(conn:&rusqlite::Connection,candidate:&Value,side:&Value)->Result<Value,String>{
     let source=text(side,"sourceId");
     let quote=text(side,"quote");
+    let requested_revision=text(side,"revisionId");
     if source.is_empty(){
         return Ok(json!({"status":"no_source_reference_user_assumption"}));
     }
@@ -127,11 +128,54 @@ fn linked_quote(conn:&rusqlite::Connection,candidate:&Value,side:&Value)->Result
     let Some(raw)=raw else{
         return Ok(json!({"sourceId":source,"status":"original_source_unavailable"}));
     };
-    let item:Value=serde_json::from_str(&raw).map_err(err)?;
-    let status=super::provenance::citation_status(&item,quote);
-    let version=super::provenance::prepare(&item);
-    Ok(json!({"sourceId":source,"revisionId":version["revisionId"],
-        "quote":quote.chars().take(400).collect::<String>(),
+    let current:Value=serde_json::from_str(&raw).map_err(err)?;
+    let current_version=super::provenance::prepare(&current);
+    let current_id=current_version["revisionId"].as_str().unwrap_or("");
+    // A supplied revision is an exact historical proof request, not a hint:
+    // never silently fall back to the current source when a pin is unavailable.
+    if !requested_revision.is_empty() &&
+        (requested_revision.len()!=64 ||
+         !requested_revision.bytes().all(|byte|byte.is_ascii_hexdigit())){
+        return Ok(json!({"sourceId":source,"requestedRevisionId":requested_revision,
+            "currentRevisionId":current_id,"status":"invalid_source_revision_id",
+            "tradeVerified":false}));
+    }
+    let mut selected=current;
+    let mut revision_status="current_snapshot";
+    if !requested_revision.is_empty(){
+        if requested_revision!=current_id{
+            let historical:Option<String>=conn.query_row(
+                "SELECT record FROM money_signal_revisions
+                 WHERE source_id=?1 AND revision_id=?2",
+                params![source,requested_revision],|r|r.get(0)
+            ).optional().map_err(err)?;
+            let Some(historical)=historical else{
+                return Ok(json!({"sourceId":source,
+                    "requestedRevisionId":requested_revision,
+                    "currentRevisionId":current_id,
+                    "status":"source_revision_unavailable",
+                    "tradeVerified":false}));
+            };
+            selected=serde_json::from_str(&historical).map_err(err)?;
+            revision_status="historical_saved_revision";
+        }else{
+            revision_status="pinned_current_snapshot";
+        }
+    }
+    let selected_version=super::provenance::prepare(&selected);
+    let selected_id=selected_version["revisionId"].as_str().unwrap_or("");
+    if !requested_revision.is_empty()&&selected_id!=requested_revision{
+        return Ok(json!({"sourceId":source,
+            "requestedRevisionId":requested_revision,
+            "currentRevisionId":current_id,
+            "status":"source_revision_integrity_mismatch",
+            "tradeVerified":false}));
+    }
+    let status=super::provenance::citation_status(&selected,quote);
+    Ok(json!({"sourceId":source,"revisionId":selected_id,
+        "currentRevisionId":current_id,"revisionStatus":revision_status,
+        "revisionChangedSinceQuote":selected_id!=current_id,
+        "quote":quote.chars().take(600).collect::<String>(),
         "status":status,"tradeVerified":false}))
 }
 /// Same domain database and owner audit history; does not start any Run.
@@ -144,10 +188,18 @@ pub fn compare_and_store(root:&Path,id:&str,input:&Value)->Result<Value,String>{
         |r|r.get(0)).optional().map_err(err)?;
     let Some(raw)=raw else{return Err("candidate not found".into());};
     let mut candidate:Value=serde_json::from_str(&raw).map_err(err)?;
-    let buyer_check=linked_quote(&tx,&candidate,&input["buyer"])?;
-    let supplier_check=linked_quote(&tx,&candidate,&input["supplier"])?;
+    // Repeated owner input must return the *stored* original receipt. Otherwise
+    // collection revisions change the apparent citation proof for the same ID.
     let signature=format!("{id}:{}",input);
     let comparison_id=format!("price:{}",format!("{:x}",Sha256::digest(signature.as_bytes())));
+    let existing:Option<String>=tx.query_row(
+        "SELECT record FROM money_price_comparisons WHERE id=?1",
+        params![comparison_id],|r|r.get(0)).optional().map_err(err)?;
+    if let Some(existing)=existing{
+        return serde_json::from_str(&existing).map_err(err);
+    }
+    let buyer_check=linked_quote(&tx,&candidate,&input["buyer"])?;
+    let supplier_check=linked_quote(&tx,&candidate,&input["supplier"])?;
     let mut record=evaluate(input);
     record["id"]=json!(comparison_id);
     record["candidateId"]=json!(id);
@@ -243,4 +295,56 @@ mod tests{
     q["fxAsOf"]=json!("2026-11-18");
     assert_eq!(evaluate(&q)["spreadKrw"],39000.0);
  }
+    #[test]fn pinned_historical_quotes_survive_refresh_without_rewriting_old_price_receipts(){
+        let root=std::env::temp_dir().join(format!(
+            "dominion-price-revisions-{}",uuid::Uuid::new_v4()));
+        let source=json!({"id":"buyer-source","url":"https://buyer.example/request",
+            "title":"Buyer requests sensors",
+            "description":"Budget estimate 120000 won",
+            "sourceName":"Buyer","contentStatus":"headline_observed"});
+        super::super::save_signals(&root,&[source.clone()]).unwrap();
+        let original_revision=super::super::provenance::prepare(&source)["revisionId"]
+            .as_str().unwrap().to_owned();
+        super::super::save_report(&root,&[json!({"id":"lead-revised",
+            "status":"draft","sourceIds":["buyer-source"]})],
+            &json!({"candidateIds":["lead-revised"]})).unwrap();
+        let mut input=example();
+        input["buyer"]["sourceId"]=json!("buyer-source");
+        input["buyer"]["quote"]=json!("Budget estimate 120000 won");
+        let first=compare_and_store(&root,"lead-revised",&input).unwrap();
+        assert_eq!(first["sourceChecks"]["buyer"]["revisionId"],original_revision);
+        let mut changed=source.clone();
+        changed["description"]=json!("Budget estimate withdrawn");
+        super::super::save_signals(&root,&[changed.clone()]).unwrap();
+        let current_revision=super::super::provenance::prepare(&changed)["revisionId"]
+            .as_str().unwrap().to_owned();
+        assert_ne!(original_revision,current_revision);
+        // Same input, same ID, same immutable receipt despite the new source.
+        assert_eq!(compare_and_store(&root,"lead-revised",&input).unwrap(),first);
+        let mut pinned=input.clone();
+        pinned["buyer"]["revisionId"]=json!(original_revision);
+        pinned["buyer"]["amount"]=json!(121000);
+        let historical=compare_and_store(&root,"lead-revised",&pinned).unwrap();
+        assert_eq!(historical["sourceChecks"]["buyer"]["status"],
+            "exact_saved_feed_field_not_primary_document");
+        assert_eq!(historical["sourceChecks"]["buyer"]["revisionStatus"],
+            "historical_saved_revision");
+        assert_eq!(historical["sourceChecks"]["buyer"]["revisionChangedSinceQuote"],true);
+        assert_eq!(historical["sourceChecks"]["buyer"]["currentRevisionId"],current_revision);
+        assert_eq!(historical["tradeVerified"],false);
+        let mut bad_pin=pinned.clone();
+        bad_pin["buyer"]["revisionId"]=json!("f".repeat(64));
+        let unknown=compare_and_store(&root,"lead-revised",&bad_pin).unwrap();
+        assert_eq!(unknown["sourceChecks"]["buyer"]["status"],
+            "source_revision_unavailable");
+        let mut unpinned=pinned;
+        unpinned["buyer"].as_object_mut().unwrap().remove("revisionId");
+        unpinned["buyer"]["amount"]=json!(122000);
+        let latest=compare_and_store(&root,"lead-revised",&unpinned).unwrap();
+        assert_eq!(latest["sourceChecks"]["buyer"]["status"],
+            "quote_not_found_in_saved_source");
+        assert_eq!(comparisons(&root,"lead-revised").unwrap().len(),4);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }
