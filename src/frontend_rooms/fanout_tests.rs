@@ -367,7 +367,18 @@ async fn background_nine_agent_room_returns_before_fanout_and_preserves_same_id_
 #[tokio::test]
 async fn background_room_lease_rejects_overlapping_sends_and_exposes_running_state(){
     let (engine,id,requests,server,root)=setup(10,"discussion").await;
+    let seeded=engine.groups.say_once(id,"First request".into(),
+        "seeded-request",vec![]).await.unwrap();
+    assert!(seeded.1);
     let lease=engine.groups.try_frontend_turn(id).unwrap();
+    let same=send_background(State(engine.clone()),Path(id),Json(SayInput{
+        input:"First request".into(),agent_ids:vec![],
+        client_message_id:"seeded-request".into(),reasoning_language:None
+    })).await.unwrap();
+    assert_eq!(same.0,StatusCode::ACCEPTED);
+    assert_eq!(same.1.0["job"]["status"],"running");
+    assert_eq!(engine.groups.get(id).await.unwrap().messages.len(),1,
+        "a retry must not create a second durable owner message");
     let overlapping=send_background(State(engine.clone()),Path(id),Json(SayInput{
         input:"Overlapping owner request".into(),agent_ids:vec![],
         client_message_id:"overlap-1".into(),reasoning_language:None
