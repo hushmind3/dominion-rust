@@ -804,7 +804,11 @@ mod tests {
             "older durable decisions must survive recent irrelevant chatter");
         assert!(projection.text.contains("Earlier API concurrency failure diagnosis"));
         assert!(projection.projected_chars<projection.source_chars);
-        assert!(projection.omitted_messages>0);
+        // All 19 source-addressed excerpts can now fit without a cache
+        // rebase. Lower source bytes are achieved by clipping large peer
+        // bodies, not by unnecessarily removing complete message turns.
+        assert!(projection.projected_chars.saturating_mul(3)<projection.source_chars,
+            "long unrelated peer bodies should shrink without losing decisions");
         assert!(projection.text.chars().count()<=1950);
         assert_eq!(room.messages.len(),19,"projection never mutates durable history");
     }
