@@ -58,6 +58,11 @@ def exported_paths(worktree):
 
 
 def apply_worktree_changes(worktree, destination):
+    # macOS exposes temporary trees through both /var and /private/var.
+    # Canonicalize both sides before the path containment checks, while
+    # still rejecting links or path traversal outside either workspace.
+    worktree = worktree.resolve()
+    destination = destination.resolve()
     count = 0
     for name in exported_paths(worktree):
         if not name or name.startswith(".git") or ".." in Path(name).parts:
@@ -84,7 +89,7 @@ def safe_required_paths(raw):
     unique = set()
     for path in values:
         if (not isinstance(path,str) or not path or len(path)>512
-                or "\\\\" in path or Path(path).is_absolute()
+                or "\\" in path or Path(path).is_absolute()
                 or any(segment in (".","..","") for segment in path.split("/"))
                 or path in unique):
             raise ValueError("invalid required_changed_paths entry")

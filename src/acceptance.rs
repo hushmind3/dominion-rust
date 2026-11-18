@@ -77,7 +77,10 @@ fn porcelain_changed(output:&[u8])->Result<Vec<String>,String>{
     let mut entries=output.split(|b|*b==0).filter(|x|!x.is_empty());
     let mut names=HashSet::new();
     while let Some(record)=entries.next(){
-        if record.len()<4||record[2]!=b' '{
+        // Git porcelain XY are status bytes, not arbitrary leading text.
+        // Bad status data must never be treated as proof of a source edit.
+        let valid=|code:u8|matches!(code,b' '|b'M'|b'A'|b'D'|b'R'|b'C'|b'U'|b'T'|b'?'|b'!');
+        if record.len()<4||record[2]!=b' '||!valid(record[0])||!valid(record[1]){
             return Err("invalid git porcelain status record".into());
         }
         let name=String::from_utf8(record[3..].to_vec())
