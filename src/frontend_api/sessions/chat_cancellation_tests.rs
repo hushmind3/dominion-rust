@@ -25,12 +25,11 @@ async fn provider(MockState(state):MockState<Arc<Inference>>,
         "usage":{"prompt_tokens":11,"completion_tokens":5}}))
 }
 fn input(session_id:&str,value:&str)->super::super::chat::ChatInput{
-    super::super::chat::ChatInput{
-        session_id:session_id.into(),agent_id:"general".into(),input:value.into(),
-        provider_id:None,model:None,tools_enabled:false,
-        tools_execution_enabled:false,auto_learning:false,
-        reasoning_effort:None,reasoning_language:None,thinking:None
-    }
+    serde_json::from_value(json!({
+        "sessionId":session_id,"agentId":"general","input":value,
+        "toolsEnabled":false,"toolsExecutionEnabled":false,
+        "autoLearning":false
+    })).unwrap()
 }
 async fn fixture()->(Arc<Engine>,Arc<Inference>,String,
     tokio::task::JoinHandle<()>,std::path::PathBuf){
