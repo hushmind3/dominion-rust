@@ -61,6 +61,8 @@ jobs:
         run: 'cargo test --lib repair_guidance::'
       - name: Permission-scoped progressive tool discovery and durable resume (dev profile)
         run: 'cargo test --lib tool_discovery::tests'
+      - name: MCP JSON Schema unions, maps and fail-closed admission (dev profile)
+        run: 'cargo test --lib tool_schema::tests'
       - name: Operator tool admission and budget policy regressions (dev profile)
         run: 'cargo test --lib policy::'
       - name: Common workspace path regression (dev profile)
