@@ -707,6 +707,29 @@ impl Engine {
                 }).await?;
                 return Ok(());
             }
+            // The model's final text is not acceptance evidence. Inspect the
+            // actual run-id Git worktree before either default completion or
+            // the optional paid model auditor. Reuse the existing repair loop:
+            // no second planner, tool executor, or automatic shell invocation.
+            let artifact=crate::acceptance::inspect(&self.settings,&run).await?;
+            if artifact.inspected {
+                let observed=self.store.mutate(id,|current|{
+                    if current.terminal()||current.status!=RunStatus::Running
+                        ||current.messages.len()!=expected_history+1{return Ok(());}
+                    current.event(if artifact.satisfied{"artifact_evidence_checked"}
+                        else{"artifact_evidence_missing"},artifact.summary.clone(),
+                        Some(artifact.json()));
+                    if !artifact.satisfied{
+                        current.messages.push(json!({"role":"user","content":format!(
+                            "Verifier requested corrections. {} Actual changed files: {}.                             You must perform the missing workspace change before reporting completion.",
+                            artifact.summary,artifact.changed.join(", "))}));
+                        current.event("replan","Deterministic artifact pre-completion check rejected the final answer",None);
+                    }
+                    Ok(())
+                }).await?;
+                if observed.terminal(){return Ok(());}
+                if observed.messages.len()!=expected_history+1{continue;}
+            }
             if !self.settings.separate_model_audit_enabled && !run.strategy_candidate {
                 // External judge is distinct from the harness. Do not pay for
                 // another model to rubber-stamp the model's final answer.

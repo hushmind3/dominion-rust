@@ -48,6 +48,7 @@ pub mod skills;
 pub mod store;
 pub mod tools;
 pub mod verification;
+pub mod acceptance;
 pub mod repair_guidance;
 pub mod workspace;
 pub use sdk::Dominion;

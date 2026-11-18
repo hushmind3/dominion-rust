@@ -61,6 +61,8 @@ jobs:
         run: 'cargo test --lib knowledge::'
       - name: Agent context retention and repair regression (dev profile)
         run: 'cargo test --lib context::'
+      - name: Owner-controlled deterministic artifact gate and run isolation
+        run: 'cargo test --lib acceptance::tests'
       - name: Evidence-driven next-step repair and observation regressions (dev profile)
         run: 'cargo test --lib repair_guidance::'
       - name: Permission-scoped progressive tool discovery and durable resume (dev profile)

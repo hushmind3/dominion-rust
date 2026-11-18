@@ -142,7 +142,16 @@ impl Dominion {
     /// Run a coding task against an isolated Git worktree of an existing project.
     /// The original checkout remains unchanged until the user explicitly adopts edits.
     pub async fn submit_from_repository(&self,input:CreateRun,repository:&str)->Result<Run,String>{
+        self.submit_from_repository_with_checks(input,repository,vec![]).await
+    }
+    /// Trusted caller-specified changed paths are immutable owner acceptance
+    /// criteria, stored before the model is launched. No tool/model may alter
+    /// the required paths mid-run.
+    pub async fn submit_from_repository_with_checks(&self,input:CreateRun,repository:&str,
+        required_changed_paths:Vec<String>)->Result<Run,String>{
+        crate::acceptance::validate_paths(&required_changed_paths)?;
         let mut run=Run::new(input,self.engine.settings.max_steps)?;
+        run.required_changed_paths=required_changed_paths;
         let repo=repository.trim();
         let commit=crate::workspace::attach(&self.engine.settings,run.id,repo).await?;
         run.repository=Some(repo.to_string());

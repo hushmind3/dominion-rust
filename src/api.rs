@@ -193,10 +193,14 @@ struct RepositoryRunRequest {
     repository:String,
     budget_krw:Option<f64>,
     max_steps:Option<usize>,
+    #[serde(default)]
+    required_changed_paths:Vec<String>,
 }
 async fn create_repository_run(State(engine):State<Arc<Engine>>,Json(input):Json<RepositoryRunRequest>)->Result<(StatusCode,Json<Run>),ApiError>{
     let req=CreateRun{instruction:input.instruction,budget_krw:input.budget_krw,max_steps:input.max_steps};
-    let run=crate::sdk::Dominion::from_engine(engine).submit_from_repository(req,&input.repository).await.map_err(bad)?;
+    let run=crate::sdk::Dominion::from_engine(engine)
+        .submit_from_repository_with_checks(req,&input.repository,input.required_changed_paths)
+        .await.map_err(bad)?;
     Ok((StatusCode::CREATED,Json(run)))
 }
 async fn get_run(State(engine): State<Arc<Engine>>, Path(id):Path<Uuid>) -> Result<Json<Run>,ApiError> {
