@@ -77,12 +77,22 @@ export interface GroupRoom {
 export interface CreateGroup {
   topic: string; participants: Participant[]; max_rounds?: number; budget_krw?: number;
 }
+/** Actual tool-call / file / postflight evidence, not semantic-keyword relevance. */
+export interface RecoveryProof {
+  failure_kind:string; failed_tool:string; affected_path:string;
+  failed_call_id:string; repair_call_id:string; postflight_call_id:string;
+  failure_seq:number; repair_seq:number; postflight_seq:number;
+  verification_seq:number;
+  verification_basis:'auditor_pass_with_postflight'|'deterministic_exact_artifact';
+  claim:string;
+}
 export interface StrategyEvidence {
-  source_id: string; source: 'agent'; repository: string;
+  source_id: string; source: 'agent'|'trace_recovery_2026'; repository: string;
   goal: string; principle: string; when_to_use: string; failure_mode: string;
-  files: string[]; outcome: 'verified';
+  files: string[]; outcome: 'verified'|'artifact_verified'|'adopted';
   baseline_score: number | null; resulting_score: number | null;
   attempts: number; cost_krw: number; updated_at_ms: number;
+  recovery?: RecoveryProof | null;
 }
 export interface LegacySqlitePreview {
   sourceAgents:number;sourceProviders:number;importableProviders:number;alreadyPresentProviders:number;skippedProviderRecords:number;sourceSessions:number;sourceMessages:number;
