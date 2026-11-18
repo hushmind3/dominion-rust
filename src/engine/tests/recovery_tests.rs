@@ -167,3 +167,77 @@ use super::*;
         assert!(reconciled.events.iter().any(|event|event.kind=="tool_reconciled"));
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
+
+
+    #[tokio::test]
+    async fn live_owner_correction_revokes_pending_nonprogram_approval(){
+        let root=std::env::temp_dir().join(format!("dominion-owner-revokes-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let engine=Engine::new(settings,Arc::clone(&store),groups).unwrap();
+        let mut run=Run::new(CreateRun{instruction:"Publish the existing artifact".into(),
+            budget_krw:Some(10.0),max_steps:Some(8)},8).unwrap();
+        let call=ToolCall{id:"old-publish".into(),name:"mcp__site__publish".into(),
+            arguments:json!({"target":"production"})};
+        run.status=RunStatus::AwaitingApproval;
+        run.pending_approval=Some(call.clone());
+        run.messages.push(json!({"role":"assistant","tool_calls":[{
+            "id":call.id,"type":"function","function":{
+                "name":call.name,"arguments":call.arguments.to_string()}}]}));
+        let id=run.id;
+        store.put(run).await.unwrap();
+        // Represent a still-registered worker so the directive does not
+        // start a real provider request during this state-transition test.
+        engine.active.lock().await.insert(id);
+        let corrected=engine.directive(id,
+            "Do not publish. Inspect the draft instead.".into()).await.unwrap();
+        assert_eq!(corrected.status,RunStatus::Running);
+        assert!(corrected.pending_approval.is_none());
+        assert!(corrected.queued_calls.is_empty());
+        assert!(corrected.in_flight.is_none());
+        assert_eq!(corrected.messages[corrected.messages.len()-2]["tool_call_id"],"old-publish");
+        assert!(corrected.messages.last().unwrap()["content"].as_str()
+            .unwrap().contains("Do not publish"));
+        assert!(corrected.events.iter().all(|e|e.kind!="tool_started"));
+        engine.active.lock().await.remove(&id);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn owner_correction_during_started_write_preserves_receipt_discards_followups(){
+        let root=std::env::temp_dir().join(format!("dominion-owner-write-barrier-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let engine=Engine::new(settings,Arc::clone(&store),groups).unwrap();
+        let mut run=Run::new(CreateRun{instruction:"Write draft then deploy".into(),
+            budget_krw:Some(10.0),max_steps:Some(8)},8).unwrap();
+        let first=ToolCall{id:"write-draft".into(),name:"write_file".into(),
+            arguments:json!({"path":"draft.txt","content":"v1"})};
+        let next=ToolCall{id:"deploy-old".into(),name:"mcp__site__publish".into(),
+            arguments:json!({"target":"production"})};
+        run.status=RunStatus::Running;
+        run.queued_calls.extend([first.clone(),next]);
+        crate::journal::begin(&mut run,&first).unwrap();
+        let id=run.id;
+        store.put(run).await.unwrap();
+        engine.active.lock().await.insert(id);
+        let corrected=engine.directive(id,"Cancel future deployment".into()).await.unwrap();
+        assert!(corrected.supersede_after_tool);
+        assert_eq!(corrected.queued_calls.len(),2);
+        let finished=store.mutate(id,|run|
+            crate::journal::finish(run,&first,&Ok("confirmed local write".into()),false)
+        ).await.unwrap();
+        assert!(finished.queued_calls.is_empty());
+        assert!(!finished.supersede_after_tool);
+        assert_eq!(finished.events.iter().filter(|e|e.kind=="tool_started").count(),1);
+        assert_eq!(finished.events.iter().filter(|e|e.kind=="tool_superseded").count(),1);
+        assert_eq!(finished.messages.iter().filter(|m|m["role"]=="tool").count(),2);
+        engine.active.lock().await.remove(&id);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
