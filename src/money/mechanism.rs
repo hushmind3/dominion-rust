@@ -73,16 +73,54 @@ fn duplicated_observation(a:&Value,b:&Value)->bool{
     let title_b=normalize(b);
     title_a.chars().count()>=12 && title_a==title_b
 }
-fn observation_time(row:&Value)->Option<i64>{
-    let raw=row["publishedAt"].as_str()?;
-    let parsed=chrono::DateTime::parse_from_rfc3339(raw)
-        .or_else(|_|chrono::DateTime::parse_from_rfc2822(raw)).ok()?;
-    Some(parsed.timestamp())
+/// Calendar-day distance is enough for a six-month uncertainty flag.
+/// Parse ISO/RFC3339 and RFC2822 calendar dates without adding a background
+/// date service, crate, timezone guess, or dependency to the Rust kernel.
+fn civil_day(year:i64,month:i64,day:i64)->Option<i64>{
+    if !(1900..=2100).contains(&year)||!(1..=12).contains(&month){return None;}
+    let leap=year%4==0&&(year%100!=0||year%400==0);
+    let max_day=match month{
+        2=>if leap{29}else{28},
+        4|6|9|11=>30,
+        _=>31
+    };
+    if day<1||day>max_day{return None;}
+    // Days from civil date (proleptic Gregorian) with 1970-01-01 at 0.
+    let y=year-if month<=2{1}else{0};
+    let era=y.div_euclid(400);
+    let yoe=y-era*400;
+    let m=month+if month>2{-3}else{9};
+    let doy=(153*m+2)/5+day-1;
+    let doe=yoe*365+yoe/4-yoe/100+doy;
+    Some(era*146097+doe-719468)
+}
+fn observation_day(row:&Value)->Option<i64>{
+    let raw=row["publishedAt"].as_str()?.trim();
+    let components=if raw.len()>=10
+        &&raw.as_bytes().get(4)==Some(&b'-')
+        &&raw.as_bytes().get(7)==Some(&b'-'){
+        let mut split=raw.get(..10)?.split('-');
+        (split.next()?.parse().ok()?,split.next()?.parse().ok()?,
+            split.next()?.parse().ok()?)
+    }else{
+        // RFC2822: Wed, 18 Nov 2026 04:12:00 +0900.
+        let items=raw.split_whitespace().collect::<Vec<_>>();
+        let offset=if items.first().is_some_and(|s|s.ends_with(',')){1}else{0};
+        let day=items.get(offset)?.parse::<i64>().ok()?;
+        let month=match *items.get(offset+1)?{
+            "Jan"=>1,"Feb"=>2,"Mar"=>3,"Apr"=>4,"May"=>5,"Jun"=>6,
+            "Jul"=>7,"Aug"=>8,"Sep"=>9,"Oct"=>10,"Nov"=>11,"Dec"=>12,
+            _=>return None
+        };
+        let year=items.get(offset+2)?.parse().ok()?;
+        (year,month,day)
+    };
+    civil_day(components.0,components.1,components.2)
 }
 /// Time proximity is an observation, not a purchase or a price match.
 fn temporal_relation(a:&Value,b:&Value)->&'static str{
-    match (observation_time(a),observation_time(b)){
-        (Some(x),Some(y)) if x.abs_diff(y)>180*24*60*60=>
+    match (observation_day(a),observation_day(b)){
+        (Some(x),Some(y)) if x.abs_diff(y)>180=>
             "different_periods_check_current_market",
         (Some(_),Some(_))=>"same_reporting_period_not_same_contract",
         _=>"publication_times_unverified",
@@ -248,6 +286,13 @@ mod tests{
         supplier["feedOriginalSha256"]=json!("identical-feed-content");
         buyer["feedOriginalSha256"]=json!("identical-feed-content");
         assert!(discover(&[supplier,buyer],10).is_empty());
+    }
+    #[test] fn source_calendar_parsing_rejects_invalid_dates_and_supports_rfc2822(){
+        assert_eq!(civil_day(2024,2,29).unwrap()+1,civil_day(2024,3,1).unwrap());
+        assert!(civil_day(2026,2,29).is_none());
+        assert_eq!(observation_day(&json!({"publishedAt":"2026-11-18T05:12:00Z"})),
+            observation_day(&json!({"publishedAt":"Wed, 18 Nov 2026 14:12:00 +0900"})));
+        assert!(observation_day(&json!({"publishedAt":"unknown date"})).is_none());
     }
     #[test] fn cross_year_archival_pairs_are_not_ranked_as_current_market_evidence(){
         let mut supplier=article("a","source A",&["hardware"],"cost_drop");
