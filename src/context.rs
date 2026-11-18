@@ -246,8 +246,7 @@ mod tests {
         let mut messages=vec![
             json!({"role":"system","content":"system"}),
             json!({"role":"user","content":"inspect the repository"})];
-        messages.push(json!({"role":"tool","tool_call_id":"very-large-legacy",
-            "content":"z".repeat(40_000)}));
+        messages.push(json!({"role":"assistant","content":"z".repeat(40_000)}));
         for i in 0..40{
             messages.push(json!({"role":"assistant","content":format!("evidence {i}")}));
         }
