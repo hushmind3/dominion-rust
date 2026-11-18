@@ -36,19 +36,22 @@ type Stats={
 type CandidatePage={items:Lead[];hasMore:boolean;nextOffset:number}
 type PriceResult={id:string;status:string;spreadKrw:number|null;
  landedCostKrw?:number|null;buyerTotalKrw?:number|null;issues:string[];
- tradeVerified:false;sourceChecks?:Record<string,{status:string}>;createdAt?:string}
+ tradeVerified:false;sourceChecks?:Record<string,{status:string;revisionId?:string;
+ currentRevisionId?:string;revisionStatus?:string;revisionChangedSinceQuote?:boolean}>;
+ createdAt?:string}
 type PriceFields={
  buyerAmount:string;supplierAmount:string;buyerCurrency:string;supplierCurrency:string;
  buyerFx:string;supplierFx:string;quantity:string;spec:string;unit:string;asOf:string;
  buyerKind:string;supplierKind:string;shippingKrw:string;feesKrw:string;
  taxKrw:string;laborKrw:string;returnsKrw:string;otherKrw:string;
- buyerSourceId:string;supplierSourceId:string;buyerQuote:string;supplierQuote:string
+ buyerSourceId:string;supplierSourceId:string;buyerQuote:string;supplierQuote:string;
+ buyerRevisionId:string;supplierRevisionId:string
 }
 const initialPrice:PriceFields={buyerAmount:'',supplierAmount:'',buyerCurrency:'KRW',
  supplierCurrency:'KRW',buyerFx:'',supplierFx:'',quantity:'1',spec:'',unit:'unit',
  asOf:'',buyerKind:'',supplierKind:'',shippingKrw:'',feesKrw:'',
  taxKrw:'',laborKrw:'',returnsKrw:'',otherKrw:'',buyerSourceId:'',
- supplierSourceId:'',buyerQuote:'',supplierQuote:''}
+ supplierSourceId:'',buyerQuote:'',supplierQuote:'',buyerRevisionId:'',supplierRevisionId:''}
 const initial:Report={drafts:[],modelCalls:0}
 const won=(n:number)=>Math.max(0,n).toLocaleString('ko-KR')+'원'
 
@@ -268,10 +271,12 @@ export function MoneyPage(){
    returnsKrw:numericPrice('returnsKrw'),otherKrw:numericPrice('otherKrw')}
   const buyer={...ref,amount:numericPrice('buyerAmount'),currency:priceDraft.buyerCurrency,
    krwPerUnit:numericPrice('buyerFx'),quoteKind:priceDraft.buyerKind,
-   sourceId:priceDraft.buyerSourceId,quote:priceDraft.buyerQuote.trim()}
+   sourceId:priceDraft.buyerSourceId,quote:priceDraft.buyerQuote.trim(),
+   revisionId:priceDraft.buyerRevisionId.trim()}
   const supplier={...ref,amount:numericPrice('supplierAmount'),currency:priceDraft.supplierCurrency,
    krwPerUnit:numericPrice('supplierFx'),quoteKind:priceDraft.supplierKind,
-   sourceId:priceDraft.supplierSourceId,quote:priceDraft.supplierQuote.trim()}
+   sourceId:priceDraft.supplierSourceId,quote:priceDraft.supplierQuote.trim(),
+   revisionId:priceDraft.supplierRevisionId.trim()}
   try{
    const result=await post<PriceResult>(
     '/api/money/candidates/'+encodeURIComponent(id)+'/price-compare',
@@ -640,12 +645,26 @@ export function MoneyPage(){
         {(['buyerSourceId','supplierSourceId'] as const).map(key=>
          <label key={key} className="text-[11px] text-[#71665D]">
           {key==='buyerSourceId'?'구매 근거 출처':'공급 근거 출처'}
-          <select value={priceDraft[key]} onChange={event=>priceField(key,event.target.value)}
+          <select value={priceDraft[key]} onChange={event=>{
+           const sourceId=event.target.value
+           const revisionId=(item.evidence||[]).find(e=>e.sourceId===sourceId)?.revisionId||''
+           setPriceDraft(prev=>key==='buyerSourceId'
+            ?{...prev,buyerSourceId:sourceId,buyerRevisionId:revisionId}
+            :{...prev,supplierSourceId:sourceId,supplierRevisionId:revisionId})
+          }}
            className="mt-1 w-full rounded-lg border border-[#DCCFC1] bg-white p-2 text-[12px]">
            <option value="">출처 없이 입력한 가정</option>
            {(item.evidence||[]).filter(e=>!!e.sourceId).map(e=>
             <option key={e.sourceId} value={e.sourceId}>{e.sourceName||e.claim||e.sourceId}</option>)}
           </select>
+         </label>)}
+        {(['buyerRevisionId','supplierRevisionId'] as const).map(key=>
+         <label key={key} className="text-[11px] text-[#71665D]">
+          {key==='buyerRevisionId'?'구매 근거 저장 리비전 (선택)':'공급 근거 저장 리비전 (선택)'}
+          <input aria-label={key} type="text" maxLength={64} value={priceDraft[key]}
+           placeholder="저장된 SHA-256 리비전 ID"
+           onChange={event=>priceField(key,event.target.value)}
+           className="mt-1 w-full rounded-lg border border-[#DCCFC1] p-2 text-[12px]"/>
          </label>)}
         {(['buyerQuote','supplierQuote'] as const).map(key=>
          <label key={key} className="text-[11px] text-[#71665D]">
@@ -672,6 +691,12 @@ export function MoneyPage(){
         </p>
         {review.issues.map((issue,index)=><p key={index} className="mt-1">미확인: {issue}</p>)}
         <p className="mt-1">실제 계약·결제 검증: 없음 · 추정 환율은 입력값 기준</p>
+        {Object.entries(review.sourceChecks||{}).map(([side,check])=><p key={side} className="mt-1 break-all text-[#76685A]">
+         {side==='buyer'?'구매 근거':'공급 근거'}: {check.status}
+         {check.revisionId?' · 리비전 '+check.revisionId.slice(0,12):''}
+         {check.revisionStatus?' · '+check.revisionStatus:''}
+         {check.revisionChangedSinceQuote?' · 이후 원문 갱신됨':''}
+        </p>)}
         {review.createdAt&&<p className="mt-1 text-[#8B7D70]">저장: {review.createdAt}</p>}
        </div>)}
      </details>
