@@ -10,6 +10,9 @@ pub struct ModelClient {
     economy: ModelSettings,
     strong_protocol:String,
     economy_protocol:String,
+    /// Stable routing hint for providers that explicitly support prompt
+    /// affinity. It is not evidence of a cache hit or billed-token discount.
+    session_affinity:Option<String>,
 }
 pub struct Reply {
     pub message: Value,
@@ -29,20 +32,40 @@ impl ModelClient {
             .redirect(reqwest::redirect::Policy::none())
             .build().map_err(|e| e.to_string())?;
         Ok(Self { http, strong: settings.main.clone(), economy: settings.economy.clone(),
-            strong_protocol:"openai".into(),economy_protocol:"openai".into() })
+            strong_protocol:"openai".into(),economy_protocol:"openai".into(),
+            session_affinity:None })
     }
     /// Snapshot the selected provider for a single native Run. Requests
     /// never fall back to a different vendor or model without user choice.
     pub fn with_primary(&self,selected:ModelSettings)->Self{
         Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
-            strong_protocol:"openai".into(),economy_protocol:"openai".into()}
+            strong_protocol:"openai".into(),economy_protocol:"openai".into(),
+            session_affinity:self.session_affinity.clone()}
     }
     pub fn with_primary_protocol(&self,selected:ModelSettings,protocol:&str)->Result<Self,String>{
         if !matches!(protocol,"openai"|"ollama"|"anthropic"){
             return Err("unsupported native model protocol".into());
         }
         Ok(Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
-            strong_protocol:protocol.to_owned(),economy_protocol:protocol.to_owned()})
+            strong_protocol:protocol.to_owned(),economy_protocol:protocol.to_owned(),
+            session_affinity:self.session_affinity.clone()})
+    }
+    /// Keep the same UUID-derived routing hint across participants in one
+    /// room. Only Cloudflare's documented Workers AI endpoint receives it.
+    pub fn with_session_affinity(&self,identifier:&str)->Self{
+        let mut selected=self.clone();
+        if !identifier.is_empty()&&identifier.len()<=128
+            &&identifier.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_'){
+            selected.session_affinity=Some(identifier.to_owned());
+        }
+        selected
+    }
+    fn affinity_for(&self,settings:&ModelSettings)->Option<&str>{
+        let url=reqwest::Url::parse(&settings.base_url).ok()?;
+        if url.scheme()=="https"&&url.host_str()==Some("api.cloudflare.com")
+            &&url.path().contains("/ai/"){
+            self.session_affinity.as_deref()
+        }else{None}
     }
     pub async fn complete(&self, messages: &[Value], tools: &[Value], economy: bool) -> Result<Reply, String> {
         if economy {
@@ -97,6 +120,9 @@ impl ModelClient {
             body["parallel_tool_calls"] = json!(settings.parallel_tool_calls);
         }
         let mut req = self.http.post(format!("{}/chat/completions", settings.base_url)).json(&body);
+        if let Some(affinity)=self.affinity_for(settings){
+            req=req.header("x-session-affinity",affinity);
+        }
         if !settings.api_key.is_empty() { req = req.bearer_auth(&settings.api_key); }
         // OpenCode Go requires a routing session header on every request.
         if settings.base_url.contains("opencode.ai") {
@@ -542,6 +568,28 @@ mod tests {
         assert_eq!(received.lock().unwrap()[1]["messages"][2]["tool_name"],"read_file");
         assert_eq!(received.lock().unwrap()[0]["tools"][0]["function"]["name"],"read_file");
         server.abort();
+    }
+    #[test]
+    fn cloudflare_room_affinity_is_explicit_scoped_and_not_sent_to_other_providers(){
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.main.base_url="https://api.cloudflare.com/client/v4/accounts/example/ai/v1".into();
+        cfg.main.name="@cf/zai-org/glm-4.7-flash".into();
+        let client=ModelClient::new(&cfg).unwrap()
+            .with_session_affinity("dominion-room-a1");
+        assert_eq!(client.affinity_for(&cfg.main),Some("dominion-room-a1"));
+        let another=ModelSettings{base_url:"https://api.openai.com/v1".into(),
+            ..cfg.main.clone()};
+        assert_eq!(client.affinity_for(&another),None);
+        let local=ModelSettings{base_url:"http://127.0.0.1:11434/v1".into(),
+            ..cfg.main.clone()};
+        assert_eq!(client.affinity_for(&local),None);
+        let malicious=ModelSettings{base_url:"https://api.cloudflare.com.attacker.test/ai/v1".into(),
+            ..cfg.main.clone()};
+        assert_eq!(client.affinity_for(&malicious),None);
+        let selected=client.with_primary(cfg.main.clone());
+        assert_eq!(selected.affinity_for(&cfg.main),Some("dominion-room-a1"));
+        let selected=client.with_primary_protocol(cfg.main.clone(),"openai").unwrap();
+        assert_eq!(selected.affinity_for(&cfg.main),Some("dominion-room-a1"));
     }
     #[test]
     fn retry_policy_is_precise(){
