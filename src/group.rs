@@ -62,6 +62,12 @@ pub struct RoomUsageReceipt {
     pub provider_usage_reported:Option<bool>,
     pub output_tokens:u64,
     pub cost_krw:f64,
+    /// Actual characters uploaded in THIS HTTP request (not tokens billed
+    /// for historical server-side model context).
+    #[serde(default)] pub wire_prompt_chars:usize,
+    /// True if this call referenced previous_response_id instead of
+    /// uploading the complete system/persona/history again.
+    #[serde(default)] pub reused_server_continuation:bool,
     /// Character accounting for context composition. Provider token usage
     /// above remains authoritative for billing and cache hit measurement.
     #[serde(default)] pub source_context_chars:usize,
@@ -79,6 +85,20 @@ pub struct RoomUsageReceipt {
     /// Mutable lower-trust room notes are a suffix, never a cache prefix.
     #[serde(default)] pub mutable_memory_chars:usize,
 }
+/// Per-speaker remote Responses chain. Retained in the room journal so a
+/// process restart cannot silently reset a provider's paid prompt context.
+#[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct RoomRemoteContinuation{
+    pub provider_model:String,
+    pub previous_response_id:String,
+    /// Number of original room transcript entries already observed when
+    /// previous_response_id was issued (before the model's new answer).
+    pub sent_through:usize,
+    /// Remote history grows: a bounded rebase periodically starts a fresh
+    /// full but compacted source-indexed context.
+    pub accumulated_chars:usize,
+    #[serde(default)] pub last_notes:String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Room {
     pub id: Uuid, pub topic: String, pub participants: Vec<Participant>,
@@ -91,6 +111,10 @@ pub struct Room {
     /// over-budget completed calls can be billed without a generated message.
     #[serde(default,skip_serializing_if="Vec::is_empty")]
     pub usage_receipts:Vec<RoomUsageReceipt>,
+    /// Each participant has an independent remote response chain. Never
+    /// share one participant's response ID with a different participant.
+    #[serde(default,skip_serializing_if="HashMap::is_empty")]
+    pub remote_continuations:HashMap<String,RoomRemoteContinuation>,
     /// Exceeding a limit or stopping is not successful completion.
     #[serde(default,skip_serializing_if="String::is_empty")]
     pub finish_reason:String,
@@ -409,7 +433,7 @@ impl Groups {
         let budget=req.budget_krw.unwrap_or(5000.0);
         if !budget.is_finite() || !(0.0..=1_000_000.0).contains(&budget) {return Err("invalid budget_krw".into());}
         let now=now_ms();
-        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),finish_reason:String::new(),last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
+        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
         self.save(room).await
     }
     pub async fn get(&self,id:Uuid)->Option<Room>{self.rooms.lock().await.get(&id).cloned()}
@@ -426,7 +450,17 @@ impl Groups {
             room.frontend.as_ref().is_some_and(|v|v.agent_ids!=config.agent_ids){
             return Err("reset the room before changing participants".into());
         }
-        room.topic=if config.topic.trim().is_empty(){config.name.clone()}else{config.topic.clone()};
+        let next_topic=if config.topic.trim().is_empty(){
+            config.name.clone()
+        }else{config.topic.clone()};
+        // A changed speaker instruction/topic invalidates the previous
+        // server-side model history; silently reusing it leaks old settings.
+        if room.topic!=next_topic||room.participants.iter()
+            .map(|p|(&p.name,&p.role,p.economy))
+            .ne(participants.iter().map(|p|(&p.name,&p.role,p.economy))){
+            room.remote_continuations.clear();
+        }
+        room.topic=next_topic;
         room.participants=participants;
         room.max_rounds=if config.lifetime_max_responses==0{10000}
             else{config.lifetime_max_responses.min(10000)};
@@ -454,7 +488,8 @@ impl Groups {
         if self.active.lock().await.contains(&id){return Err("wait for the ongoing group turn to finish".into());}
         let mut room=self.get(id).await.ok_or("room not found")?;
         room.messages.clear();room.client_messages.clear();room.recipients.clear();room.rounds=0;room.cost_krw=0.0;room.used_tokens=0;
-        room.usage_receipts.clear();room.finish_reason.clear();
+        room.usage_receipts.clear();room.remote_continuations.clear();
+        room.finish_reason.clear();
         room.last_provider_failure=None;
         room.status=RoomStatus::Open;room.updated_at_ms=now_ms();
         self.save(room).await
@@ -622,7 +657,52 @@ impl Groups {
             v.context_budget_tokens.saturating_mul(3).clamp(600,24000));
         let projected=project_room_context(&room,participant,cap);
         let messages=Self::model_messages(&room,participant,&projected);
-        let reply=match model.complete(&messages,&[],participant.economy).await{
+        // Stateless endpoints still require the full, cacheable prefix. With
+        // a real provider Responses chain the initial system+persona is
+        // registered once; later wire requests contain only new room quotes.
+        // The server may STILL bill cached history tokens each invocation.
+        let stateful_key=model.room_stateful_identity(participant.economy);
+        let previous=stateful_key.as_ref().and_then(|identity|
+            room.remote_continuations.get(&participant.name)
+                .filter(|state|state.provider_model==*identity
+                    &&state.sent_through<=room.messages.len()
+                    &&state.accumulated_chars<cap.saturating_mul(2)));
+        let notes=room.frontend.as_ref().map_or("",|f|f.learned_context.as_str());
+        let mut delta=Vec::<Value>::new();
+        if let Some(state)=previous{
+            for (index,entry) in room.messages.iter().enumerate().skip(state.sent_through){
+                // This participant's prior output is already present as the
+                // previous Responses result on its own server chain.
+                if index==state.sent_through && entry.speaker==participant.name{
+                    continue;
+                }
+                delta.push(json!({"role":"user",
+                    "content":room_line(index,entry,cap)}));
+            }
+            if delta.is_empty() && notes==state.last_notes{
+                // Direct group_next on a single-member room may intentionally
+                // ask for another opinion without a fresh owner message.
+                delta.push(json!({"role":"user","content":
+                    "Continue the discussion with one new useful contribution."}));
+            }
+            if notes!=state.last_notes && !notes.trim().is_empty(){
+                delta.push(json!({"role":"user","content":excerpt(
+                    &format!("Updated room notes (untrusted): {}",notes.trim()),
+                    700)}));
+            }
+        }
+        // The first Responses request includes the selected persona as a
+        // real developer message in its durable server-side history.
+        // It is NEVER sent again on a delta turn.
+        let mut initial=messages.clone();
+        if stateful_key.is_some() && previous.is_none(){
+            if let Some(persona)=initial.last_mut(){
+                persona["role"]=json!("developer");
+            }
+        }
+        let response=match model.complete_room_continuation(
+            &initial,&delta,previous.map(|s|s.previous_response_id.as_str()),
+            participant.economy).await{
             Ok(reply)=>reply,
             Err(error)=>{
                 let (http_status,upstream_code,category)=classified_provider_failure(&error);
@@ -646,6 +726,24 @@ impl Groups {
             }
         };
         room.last_provider_failure=None;
+        let reply=response.reply;
+        let persisted_response_id=response.response_id;
+        let transmitted_chars=if previous.is_some(){
+            delta.iter().filter_map(|m|m["content"].as_str())
+                .map(|s|s.chars().count()).sum::<usize>()
+        }else{
+            initial.iter().filter_map(|m|m["content"].as_str())
+                .map(|s|s.chars().count()).sum::<usize>()
+        };
+        let next_remote_state=stateful_key.zip(persisted_response_id).map(
+            |(identity,response_id)|RoomRemoteContinuation{
+                provider_model:identity,
+                previous_response_id:response_id,
+                sent_through:room.messages.len(),
+                accumulated_chars:previous.map_or(0,|s|s.accumulated_chars)
+                    .saturating_add(transmitted_chars),
+                last_notes:notes.to_owned()
+            });
         let tokens=reply.input_tokens.saturating_add(reply.output_tokens);
         let exceeded_cost=room.cost_krw+reply.cost_krw > room.budget_krw;
         let exceeded_tokens=room.frontend.as_ref().is_some_and(|v|
@@ -664,6 +762,8 @@ impl Groups {
             cache_write_tokens:reply.cache_write_tokens,
             provider_usage_reported:Some(reply.usage_reported),
             output_tokens:reply.output_tokens,cost_krw:reply.cost_krw,
+            wire_prompt_chars:transmitted_chars,
+            reused_server_continuation:previous.is_some(),
             source_context_chars:projected.source_chars,
             projected_context_chars:projected.projected_chars,
             omitted_context_messages:projected.omitted_messages,
@@ -684,6 +784,9 @@ impl Groups {
             return Err(if exceeded_cost{
                 "group budget exhausted after billed model request"
             }else{"group token budget exhausted after billed model request"}.into());
+        }
+        if let Some(state)=next_remote_state{
+            room.remote_continuations.insert(participant.name.clone(),state);
         }
         room.rounds+=1;
         // Forced frontend fan-out retains the original owner-selected
@@ -762,7 +865,7 @@ mod tests {
             participants:roles.clone(),messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],finish_reason:String::new(),
+            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:vec![]
         };
         let common=Groups::shared_prefix(&room);
@@ -792,7 +895,7 @@ mod tests {
             messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:100,
             cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],finish_reason:String::new(),
+            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:vec![]
         };
         for i in 0..17 {
@@ -833,7 +936,7 @@ mod tests {
             participants:vec![member.clone()],messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:1000,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],finish_reason:String::new(),last_provider_failure:None,
+            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
             frontend:None,client_messages:HashMap::new(),recipients:vec![]};
         for index in 0..100{
             let content=match index{
@@ -879,7 +982,7 @@ mod tests {
             participants:vec![participant.clone()],messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],finish_reason:String::new(),last_provider_failure:None,
+            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
             frontend:None,client_messages:HashMap::new(),recipients:vec![]};
         room.messages.push(Utterance{speaker:"user".into(),
             content:"Remember the deployment is cobalt and the API must preserve cancellation".into(),
@@ -906,7 +1009,7 @@ mod tests {
             participants:vec![participant.clone()],messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:1000,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],finish_reason:String::new(),last_provider_failure:None,
+            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
             frontend:None,client_messages:HashMap::new(),recipients:vec![]};
         for index in 0..100{
             let content=match index{
@@ -972,7 +1075,7 @@ mod tests {
             status:RoomStatus::Open,rounds:0,max_rounds:100,
             cost_krw:0.0,budget_krw:1000.0,created_at_ms:0,
             updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],finish_reason:String::new(),
+            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
             client_messages:HashMap::new(),recipients:vec![]
         };
@@ -1014,7 +1117,7 @@ mod tests {
             messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:100,
             cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],finish_reason:String::new(),
+            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
             client_messages:HashMap::new(),recipients:vec![]
         };
@@ -1091,7 +1194,7 @@ mod tests {
                 content:"Remember the release contract".into(),at_ms:0,model:None}],
             status:RoomStatus::Open,rounds:0,max_rounds:100,cost_krw:0.0,
             budget_krw:1000.0,created_at_ms:0,updated_at_ms:0,revision:0,
-            used_tokens:0,usage_receipts:vec![],finish_reason:String::new(),
+            used_tokens:0,usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:Some(frontend),
             client_messages:HashMap::new(),recipients:vec![]
         };
@@ -1121,7 +1224,7 @@ mod tests {
             participants:vec![participant.clone()],messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],finish_reason:String::new(),last_provider_failure:None,
+            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
             frontend:None,client_messages:HashMap::new(),recipients:vec![]};
         for i in 0..50{
             room.messages.push(Utterance{speaker:if i%2==0{"user"}else{"peer"}.into(),
@@ -1132,6 +1235,180 @@ mod tests {
         assert!(context.projected_chars<=600);
         assert!(context.messages.iter().all(|m|m["role"]=="user"));
         assert!(context.omitted_messages>0);
+    }
+    async fn fake_responses(
+        axum::extract::State(requests):axum::extract::State<
+            Arc<Mutex<Vec<Value>>>>,
+        axum::Json(body):axum::Json<Value>,
+    )->axum::Json<Value>{
+        let mut observed=requests.lock().await;
+        observed.push(body);
+        let index=observed.len();
+        axum::Json(json!({
+            "id":format!("resp-test-{index}"),
+            "status":"completed",
+            "output":[{"type":"message","role":"assistant",
+                "content":[{"type":"output_text",
+                    "text":format!("Agent analysis {index}")}]}],
+            "usage":{"input_tokens":4000,"output_tokens":12,
+                "input_tokens_details":{
+                    "cached_tokens":if index>1{3200}else{0}}}
+        }))
+    }
+    #[tokio::test]
+    async fn nine_remote_agents_reuse_each_original_persona_across_three_owner_turns(){
+        use axum::{routing::post,Router};
+        use crate::config::Settings;
+        let seen=Arc::new(Mutex::new(Vec::<Value>::new()));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server={
+            let seen=seen.clone();
+            tokio::spawn(async move{
+                axum::serve(listener,Router::new()
+                    .route("/responses",post(fake_responses))
+                    .with_state(seen)).await.unwrap();
+            })
+        };
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.main.base_url=format!("http://{address}");
+        cfg.main.name="mock-remote-stateful".into();
+        cfg.main.api_key.clear();
+        cfg.economy=cfg.main.clone();
+        let model=ModelClient::new(&cfg).unwrap()
+            .with_primary_protocol(cfg.main.clone(),"responses").unwrap();
+        let root=std::env::temp_dir().join(format!(
+            "dominion-9by3-remote-{}",Uuid::new_v4()));
+        let store=Groups::open(root.clone()).await.unwrap();
+        let members=(0..9).map(|i|Participant{
+            name:format!("agent-{i}"),
+            role:format!("private skill for agent {i}"),economy:false
+        }).collect::<Vec<_>>();
+        let room=store.create(NewRoom{
+            topic:"Shared test task".into(),participants:members.clone(),
+            max_rounds:Some(50),budget_krw:Some(10000.0)
+        }).await.unwrap();
+        for owner in 0..3{
+            store.say(room.id,format!("Owner message {}",owner+1)).await.unwrap();
+            for member in &members{
+                store.next_for(&model,room.id,Some(&member.name))
+                    .await.unwrap();
+            }
+        }
+        let room=store.get(room.id).await.unwrap();
+        assert_eq!(room.messages.len(),30);
+        assert_eq!(room.rounds,27);
+        assert_eq!(room.usage_receipts.len(),27);
+        assert_eq!(room.remote_continuations.len(),9);
+        assert_eq!(room.usage_receipts.iter()
+            .filter(|r|r.reused_server_continuation).count(),18);
+        assert!(room.usage_receipts[9].wire_prompt_chars
+            <room.usage_receipts[0].wire_prompt_chars,
+            "second owner turn must upload less than the first full persona");
+        let bodies=seen.lock().await.clone();
+        assert_eq!(bodies.len(),27);
+        for i in 0..9{
+            assert_eq!(bodies[i]["previous_response_id"],Value::Null);
+            let first=bodies[i]["input"].to_string();
+            assert!(first.contains(&format!("private skill for agent {i}")));
+        }
+        for i in 9..27{
+            let prev=i-8;
+            assert_eq!(bodies[i]["previous_response_id"],
+                format!("resp-test-{prev}"));
+            let input=bodies[i]["input"].to_string();
+            assert!(!input.contains("private skill for agent"),
+                "repeat group calls must send delta, not a full persona");
+            assert!(!input.contains("Shared test task"),
+                "common first-turn instructions remain in provider-side history");
+            assert!(!bodies[i]["input"].as_array().unwrap().is_empty());
+        }
+        server.abort();drop(store);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
+    async fn remote_responses_chain_sends_persona_once_then_only_delta_across_restart(){
+        use axum::{routing::post,Router};
+        use crate::config::Settings;
+        let requests=Arc::new(Mutex::new(Vec::<Value>::new()));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await.unwrap();
+        let port=listener.local_addr().unwrap();
+        let server={
+            let requests=requests.clone();
+            tokio::spawn(async move{
+                axum::serve(listener,Router::new().route("/responses",
+                    post(fake_responses)).with_state(requests))
+                    .await.unwrap();
+            })
+        };
+        let mut settings=Settings::from_env().unwrap();
+        settings.main.base_url=format!("http://{port}");
+        settings.main.name="fake-responses-model".into();
+        settings.main.api_key.clear();
+        settings.economy=settings.main.clone();
+        let model=ModelClient::new(&settings).unwrap()
+            .with_primary_protocol(settings.main.clone(),"responses").unwrap();
+        let root=std::env::temp_dir()
+            .join(format!("dominion-room-response-chain-{}",Uuid::new_v4()));
+        let group=Groups::open(root.clone()).await.unwrap();
+        let member=Participant{
+            name:"analyst".into(),role:"original durable persona".into(),economy:false
+        };
+        let room=group.create(NewRoom{
+            topic:"test lasting instructions".into(),participants:vec![member],
+            max_rounds:Some(12),budget_krw:Some(10000.0)
+        }).await.unwrap();
+        group.say(room.id,"First owner message".into()).await.unwrap();
+        group.next_for(&model,room.id,Some("analyst")).await.unwrap();
+        let stored=group.get(room.id).await.unwrap();
+        assert_eq!(stored.remote_continuations["analyst"].previous_response_id,
+            "resp-test-1");
+        assert_eq!(stored.messages.len(),2);
+        drop(group);
+        let reopened=Groups::open(root.clone()).await.unwrap();
+        assert_eq!(reopened.get(room.id).await.unwrap().remote_continuations
+            ["analyst"].previous_response_id,"resp-test-1");
+        reopened.say(room.id,"Second owner message".into()).await.unwrap();
+        reopened.next_for(&model,room.id,Some("analyst")).await.unwrap();
+        reopened.say(room.id,"Third owner message".into()).await.unwrap();
+        reopened.next_for(&model,room.id,Some("analyst")).await.unwrap();
+        let bodies=requests.lock().await.clone();
+        assert_eq!(bodies.len(),3);
+        assert_eq!(bodies[0]["previous_response_id"],Value::Null);
+        assert!(bodies[0]["input"].as_array().unwrap().iter().any(|m|
+            m["role"]=="developer" && m["content"].as_str().unwrap()
+                .contains("original durable persona")));
+        for (i,prior) in [(1,"resp-test-1"),(2,"resp-test-2")]{
+            assert_eq!(bodies[i]["previous_response_id"],prior);
+            let payload=bodies[i]["input"].to_string();
+            assert!(!payload.contains("original durable persona"),
+                "remote server already holds the persona; no second full prompt");
+            assert!(!payload.contains("test lasting instructions"),
+                "remote server already holds the shared group system header");
+            assert!(payload.contains(&format!(
+                "{} owner message",if i==1{"Second"}else{"Third"})));
+            assert_eq!(bodies[i]["input"].as_array().unwrap().len(),1,
+                "previous own reply is already part of the remote response chain");
+        }
+        let room=reopened.get(room.id).await.unwrap();
+        assert_eq!(room.messages.len(),6);
+        assert_eq!(room.usage_receipts.len(),3);
+        assert_eq!(room.usage_receipts.iter()
+            .map(|r|r.input_tokens).sum::<u64>(),12000,
+            "remote continuation reduces wire payload, not necessarily billed context");
+        assert_eq!(room.usage_receipts.iter()
+            .map(|r|r.cached_input_tokens).sum::<u64>(),6400);
+        assert_eq!(room.usage_receipts.iter()
+            .filter(|r|r.reused_server_continuation).count(),2);
+        assert!(room.usage_receipts[1].wire_prompt_chars
+            <room.usage_receipts[0].wire_prompt_chars);
+        assert_eq!(room.remote_continuations["analyst"].previous_response_id,
+            "resp-test-3");
+        server.abort();
+        drop(reopened);
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]
     async fn mention_selects_correct_participant() {

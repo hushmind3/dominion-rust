@@ -17,6 +17,12 @@ pub struct ModelClient {
     /// non-global session ID if a raw caller did not supply Run/Room identity.
     opencode_default_session:String,
 }
+/// A Responses API continuation receipt. Legacy Chat Completions has no
+/// remote session handle, so response_id is None and keeps full prompts.
+pub struct StatefulReply {
+    pub reply:Reply,
+    pub response_id:Option<String>,
+}
 pub struct Reply {
     pub message: Value,
     pub text: String,
@@ -50,7 +56,7 @@ impl ModelClient {
             opencode_default_session:self.opencode_default_session.clone()}
     }
     pub fn with_primary_protocol(&self,selected:ModelSettings,protocol:&str)->Result<Self,String>{
-        if !matches!(protocol,"openai"|"ollama"|"anthropic"){
+        if !matches!(protocol,"openai"|"ollama"|"anthropic"|"responses"){
             return Err("unsupported native model protocol".into());
         }
         Ok(Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
@@ -94,6 +100,113 @@ impl ModelClient {
                 .or(Some(self.opencode_default_session.as_str()))
         }else{None}
     }
+    /// Stateless Chat Completions MUST receive the full prompt on every
+    /// request. Only explicit Responses transport (or the exact first-party
+    /// OpenAI endpoint) may send a delta with a durable response handle.
+    /// This saves uploaded bytes; prior server-side context can still be
+    /// metered/billed, so the provider usage receipt remains authoritative.
+    pub fn room_stateful_identity(&self,economy:bool)->Option<String>{
+        let (settings,protocol)=if economy{
+            (&self.economy,self.economy_protocol.as_str())
+        }else{(&self.strong,self.strong_protocol.as_str())};
+        if protocol=="responses"||
+            (protocol=="openai"&&settings.base_url=="https://api.openai.com/v1"){
+            Some(format!("{}|{}|{}",settings.base_url,protocol,settings.name))
+        }else{None}
+    }
+    pub async fn complete_room_continuation(&self,full:&[Value],
+        delta:&[Value],previous_response_id:Option<&str>,economy:bool)
+        ->Result<StatefulReply,String>{
+        if self.room_stateful_identity(economy).is_none(){
+            return self.complete(full,&[],economy).await.map(|reply|
+                StatefulReply{reply,response_id:None});
+        }
+        let (settings,protocol)=if economy{
+            (&self.economy,self.economy_protocol.as_str())
+        }else{(&self.strong,self.strong_protocol.as_str())};
+        // Single explicit request: a transport failure can follow billable
+        // inference. Do not silently issue a second full-prompt generation.
+        debug_assert!(protocol=="responses"||
+            settings.base_url=="https://api.openai.com/v1");
+        self.request_responses(settings,if previous_response_id.is_some(){delta}
+            else{full},previous_response_id).await
+    }
+    async fn request_responses(&self,settings:&ModelSettings,input:&[Value],
+        previous_response_id:Option<&str>)->Result<StatefulReply,String>{
+        if input.is_empty(){return Err("Responses continuation has no new input".into());}
+        let mut items=Vec::with_capacity(input.len());
+        for entry in input{
+            let role=entry.get("role").and_then(Value::as_str)
+                .ok_or("Responses input message has no role")?;
+            if !matches!(role,"system"|"developer"|"user"|"assistant"){
+                return Err("unsupported Responses input role".into());
+            }
+            let content=entry.get("content").and_then(Value::as_str)
+                .ok_or("Responses input message has no text")?;
+            items.push(json!({"role":role,"content":content}));
+        }
+        let mut body=json!({"model":settings.name,"input":items,"store":true});
+        if let Some(id)=previous_response_id{
+            if id.is_empty(){return Err("empty previous_response_id".into());}
+            body["previous_response_id"]=json!(id);
+        }
+        if settings.base_url=="https://api.openai.com/v1"{
+            if let Some(ttl)=&settings.cache_ttl{
+                body["prompt_cache_options"]=json!({"ttl":ttl});
+            }
+            if let Some(key)=self.openai_cache_key_for(settings){
+                body["prompt_cache_key"]=json!(key);
+            }
+        }
+        let mut req=self.http.post(format!("{}/responses",settings.base_url))
+            .json(&body);
+        if !settings.api_key.is_empty(){req=req.bearer_auth(&settings.api_key);}
+        let response=req.send().await
+            .map_err(|e|format!("provider transport: {e}"))?;
+        let status=response.status();
+        let bytes=bounded_body(response).await?;
+        if !status.is_success(){
+            return Err(format!("provider HTTP {status}: {}",
+                String::from_utf8_lossy(&bytes).chars().take(500)
+                    .collect::<String>()));
+        }
+        let raw:Value=serde_json::from_slice(&bytes)
+            .map_err(|e|format!("invalid Responses provider JSON: {e}"))?;
+        if raw.get("status").and_then(Value::as_str)!=Some("completed"){
+            return Err("Responses provider did not complete generation".into());
+        }
+        let response_id=raw.get("id").and_then(Value::as_str)
+            .filter(|id|!id.is_empty())
+            .ok_or("Responses provider omitted response id")?.to_owned();
+        let text=raw.get("output_text").and_then(Value::as_str)
+            .filter(|s|!s.trim().is_empty()).map(str::to_owned)
+            .or_else(||{
+                let items=raw.get("output")?.as_array()?;
+                let content=items.iter().filter(|item|
+                    item.get("type").and_then(Value::as_str)==Some("message")
+                    &&item.get("role").and_then(Value::as_str)==Some("assistant"))
+                    .filter_map(|item|item.get("content").and_then(Value::as_array))
+                    .flatten()
+                    .filter(|block|block.get("type").and_then(Value::as_str)
+                        ==Some("output_text"))
+                    .filter_map(|block|block.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>().join("\n");
+                if content.trim().is_empty(){None}else{Some(content)}
+            }).ok_or("Responses provider returned no assistant output text")?;
+        let (input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,
+             usage_reported)=openai_compatible_usage(&raw);
+        let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,
+            cache_write_tokens,output_tokens);
+        Ok(StatefulReply{
+            reply:Reply{
+                message:json!({"role":"assistant","content":text}),
+                text,calls:vec![],input_tokens,cached_input_tokens,
+                cache_write_tokens,usage_reported,output_tokens,cost_krw,
+                model:settings.name.clone()
+            },
+            response_id:Some(response_id)
+        })
+    }
     pub async fn complete(&self, messages: &[Value], tools: &[Value], economy: bool) -> Result<Reply, String> {
         if economy {
             match self.request(&self.economy,&self.economy_protocol,messages,tools).await {
@@ -128,6 +241,12 @@ impl ModelClient {
     }
     async fn request_once(&self, settings:&ModelSettings,protocol:&str,
         messages:&[Value],tools:&[Value])->Result<Reply,String>{
+        if protocol=="responses"{
+            if !tools.is_empty(){
+                return Err("Responses transport does not yet support tool calls".into());
+            }
+            return self.request_responses(settings,messages,None).await.map(|v|v.reply);
+        }
         if protocol=="anthropic"{
             return self.request_anthropic(settings,messages,tools).await;
         }
