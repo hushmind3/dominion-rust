@@ -24,6 +24,9 @@ External implementations read:
 
 Existing `read_program` and `run_program` keep their bounded native-only semantics; no remote tool was smuggled into these paths. Built-in Skills remain lazy procedural references, not invisible executable permissions.
 
+- Concurrent native Runs now coalesce a cold per-server `tools/list` request under a server-scoped asynchronous gate. Cache entries additionally carry the MCP configuration/authorization generation, so private tool metadata from an old token cannot reappear if a best-effort cache clear races with configuration replacement. Independent servers never wait behind a global HTTP listing lock.
+- Added a real local HTTP fixture that launches 12 simultaneous callers, checks one request on first discovery and one on forced expiry, and simulates restoring an old private cache entry after bearer-token rotation. These are deterministic request-count regressions, **not** a claim of measured model-token or end-to-end latency improvement.
+
 ## Limits, measurements and next frontier
 
 - `tool_search` adds a model round for the first cold deferred capability. This is a known tradeoff; compare task completion and full token cost in a fixed matrix before widening the threshold. The `schema_chars_saved` metric records external schema bytes omitted, *not* measured token reduction or quality gain.

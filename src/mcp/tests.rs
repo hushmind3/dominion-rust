@@ -266,10 +266,84 @@ use super::*;
         assert_eq!(calls.load(Ordering::SeqCst),2,"fresh listing should hit client cache");
         {
             let mut cache=client.cached.lock().await;
-            cache.get_mut("paged").unwrap().0=Instant::now()-Duration::from_secs(5);
+            cache.get_mut("paged").unwrap().1=Instant::now()-Duration::from_secs(5);
         }
         assert_eq!(client.definitions().await.len(),2);
         assert_eq!(calls.load(Ordering::SeqCst),4,"expired listing must fetch both pages");
+        server.abort();
+    }
+
+    async fn slow_cacheable_catalog(State(calls):State<Arc<AtomicUsize>>,
+        Json(body):Json<Value>)->Json<Value>{
+        calls.fetch_add(1,Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        Json(json!({"jsonrpc":"2.0","id":body["id"],"result":{
+            "resultType":"complete","ttlMs":5000,"cacheScope":"private",
+            "tools":[{"name":"inspect","description":"Inspect task context",
+                "inputSchema":{"type":"object","properties":{}}}]
+        }}))
+    }
+    #[tokio::test]
+    async fn concurrent_runs_coalesce_cacheable_tools_list_with_per_server_singleflight(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url=format!("http://{}/mcp",listener.local_addr().unwrap());
+        let calls=Arc::new(AtomicUsize::new(0));
+        let state=Arc::clone(&calls);
+        let server=tokio::spawn(async move{
+            axum::serve(listener,Router::new().route("/mcp",post(slow_cacheable_catalog))
+                .with_state(state)).await.unwrap();
+        });
+        let client=Arc::new(Mcp::new(vec![Server{
+            name:"shared".into(),url,bearer_token:String::new()
+        }]).unwrap());
+        for expected in [1,2]{
+            if expected==2{
+                let mut cache=client.cached.lock().await;
+                cache.get_mut("shared").unwrap().1=Instant::now()-Duration::from_secs(10);
+            }
+            let start=Arc::new(tokio::sync::Barrier::new(12));
+            let mut jobs=Vec::new();
+            for _ in 0..12{
+                let shared=Arc::clone(&client);
+                let barrier=Arc::clone(&start);
+                jobs.push(tokio::spawn(async move{
+                    barrier.wait().await;
+                    shared.definitions().await
+                }));
+            }
+            for job in jobs{
+                let definitions=job.await.unwrap();
+                assert_eq!(definitions.len(),1);
+                assert_eq!(definitions[0]["function"]["name"],"mcp__shared__inspect");
+            }
+            assert_eq!(calls.load(Ordering::SeqCst),expected,
+                "parallel native Runs must share one tools/list fetch per fresh epoch");
+        }
+        server.abort();
+    }
+    #[tokio::test]
+    async fn prior_authorization_generation_cannot_resurface_a_cached_catalog(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url=format!("http://{}/mcp",listener.local_addr().unwrap());
+        let calls=Arc::new(AtomicUsize::new(0));
+        let state=Arc::clone(&calls);
+        let server=tokio::spawn(async move{
+            axum::serve(listener,Router::new().route("/mcp",post(slow_cacheable_catalog))
+                .with_state(state)).await.unwrap();
+        });
+        let client=Mcp::new(vec![Server{
+            name:"scoped".into(),url:url.clone(),bearer_token:"old-token".into()
+        }]).unwrap();
+        assert_eq!(client.definitions().await.len(),1);
+        let stale=client.cached.lock().await.get("scoped").unwrap().clone();
+        client.initialize_servers(vec![Server{
+            name:"scoped".into(),url,bearer_token:"new-token".into()
+        }]).unwrap();
+        // Simulate a concurrent old cache clear losing a race. The epoch
+        // tag must still reject an old identity's private cached tools.
+        client.cached.lock().await.insert("scoped".into(),stale);
+        assert_eq!(client.definitions().await.len(),1);
+        assert_eq!(calls.load(Ordering::SeqCst),2);
         server.abort();
     }
 

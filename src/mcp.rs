@@ -6,7 +6,7 @@ use reqwest::{header, Client, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, net::IpAddr,
-    sync::{RwLock,atomic::{AtomicU64,Ordering}},time::{Duration, Instant}};
+    sync::{Arc,RwLock,atomic::{AtomicU64,Ordering}},time::{Duration, Instant}};
 use tokio::sync::{Mutex,watch,mpsc};
 
 const VERSION: &str = "2026-07-28";
@@ -122,7 +122,12 @@ pub struct Mcp {
     http: Client,
     servers: RwLock<Vec<Server>>,
     generation:AtomicU64,
-    cached: Mutex<HashMap<String, (Instant, Duration, Vec<RemoteTool>)>>,
+    // Cache entries are tagged with the authorization/configuration generation.
+    // A best-effort synchronous cache clear must not revive old credentials.
+    cached: Mutex<HashMap<String, (u64, Instant, Duration, Vec<RemoteTool>)>>,
+    // Per-server singleflight: parallel Runs share one cold tools/list refresh
+    // without serializing unrelated MCP endpoints.
+    listing_gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 fn safe_name(value: &str) -> bool {
@@ -232,7 +237,8 @@ impl Mcp {
         let http=Client::builder().timeout(Duration::from_secs(35)).redirect(reqwest::redirect::Policy::none())
             .build().map_err(|e|e.to_string())?;
         Ok(Self{http,servers:RwLock::new(servers),generation:AtomicU64::new(0),
-            cached:Mutex::new(HashMap::new())})
+            cached:Mutex::new(HashMap::new()),
+            listing_gates:Mutex::new(HashMap::new())})
     }
     pub fn server_count(&self)->usize{
         self.servers.read().unwrap_or_else(|e|e.into_inner()).len()
@@ -249,6 +255,7 @@ impl Mcp {
         *self.servers.write().unwrap_or_else(|e|e.into_inner())=servers;
         self.generation.fetch_add(1,Ordering::SeqCst);
         if let Ok(mut cache)=self.cached.try_lock(){cache.clear();}
+        if let Ok(mut gates)=self.listing_gates.try_lock(){gates.clear();}
         Ok(())
     }
     pub async fn replace_servers(&self,servers:Vec<Server>)->Result<(),String>{
@@ -257,6 +264,7 @@ impl Mcp {
         *self.servers.write().unwrap_or_else(|e|e.into_inner())=servers;
         self.generation.fetch_add(1,Ordering::SeqCst);
         self.cached.lock().await.clear();
+        self.listing_gates.lock().await.clear();
         Ok(())
     }
 
@@ -406,8 +414,29 @@ impl Mcp {
         let epoch=self.generation.load(Ordering::SeqCst);
         {
             let cache=self.cached.lock().await;
-            if let Some((at,ttl,tools))=cache.get(name){
-                if at.elapsed()<*ttl && self.generation.load(Ordering::SeqCst)==epoch{
+            if let Some((cached_epoch,at,ttl,tools))=cache.get(name){
+                if *cached_epoch==epoch && at.elapsed()<*ttl
+                    && self.generation.load(Ordering::SeqCst)==epoch{
+                    return Ok(tools.clone());
+                }
+            }
+        }
+        // Await only the same named endpoint. Recheck both the authorization
+        // generation and freshness after the previous cold fetch completes.
+        let gate={
+            let mut gates=self.listing_gates.lock().await;
+            Arc::clone(gates.entry(name.to_string())
+                .or_insert_with(||Arc::new(Mutex::new(()))))
+        };
+        let _refresh_guard=gate.lock().await;
+        if self.generation.load(Ordering::SeqCst)!=epoch{
+            return Err("MCP server settings changed during tool discovery; retry with current registry".into());
+        }
+        {
+            let cache=self.cached.lock().await;
+            if let Some((cached_epoch,at,ttl,tools))=cache.get(name){
+                if *cached_epoch==epoch && at.elapsed()<*ttl
+                    && self.generation.load(Ordering::SeqCst)==epoch{
                     return Ok(tools.clone());
                 }
             }
@@ -469,7 +498,7 @@ impl Mcp {
         if ttl.is_zero(){
             cache.remove(name);
         }else{
-            cache.insert(name.into(),(Instant::now(),ttl,tools.clone()));
+            cache.insert(name.into(),(epoch,Instant::now(),ttl,tools.clone()));
         }
         Ok(tools)
     }
