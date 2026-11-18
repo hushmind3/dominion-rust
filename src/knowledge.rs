@@ -135,6 +135,61 @@ impl Knowledge{
         self.revision.fetch_add(1,Ordering::Release);
         Ok(())
     }
+    /// Context-conditioned recall for the *existing* Rust model loop.
+    /// The root goal, latest owner correction, and observed failure are
+    /// separate weighted channels. This prevents a long root prompt from
+    /// saturating the old first-20-terms lexical window. No model calls,
+    /// retained data changes or speculative fixes.
+    pub async fn search_context(&self,scope:&str,goal:&str,owner_change:&str,
+        failure:&str,max:usize)->Vec<MemoryEntry>{
+        fn terms(text:&str,max:usize)->HashSet<String>{
+            text.to_lowercase().split(|c:char|!c.is_alphanumeric())
+                .filter(|term|term.chars().count()>=3)
+                .take(max).map(str::to_owned).collect()
+        }
+        fn score(terms:&HashSet<String>,title:&str,body:&str)->(usize,usize){
+            let mut weighted=0usize;
+            let mut matched=0usize;
+            for word in terms{
+                if title.contains(word){weighted+=4;matched+=1;}
+                else if body.contains(word){weighted+=1;matched+=1;}
+            }
+            (weighted,matched)
+        }
+        let base=terms(goal,24);
+        let change=terms(owner_change,24);
+        let failed=terms(failure,12);
+        if base.is_empty()&&change.is_empty()&&failed.is_empty(){return vec![];}
+        let entries=self.entries.lock().await;
+        let mut ranked=entries.iter()
+            .filter(|entry|entry.scope==scope||(scope!="global"&&entry.scope=="global"))
+            .filter_map(|entry|{
+                let title=entry.title.to_lowercase();
+                let body=entry.content.to_lowercase();
+                let (base_score,base_hits)=score(&base,&title,&body);
+                let (change_score,change_hits)=score(&change,&title,&body);
+                let (failure_score,failure_hits)=score(&failed,&title,&body);
+                // An unrelated historic suggestion should never displace the
+                // concrete failure receipt with generic task overlap.
+                if !failed.is_empty() && failure_hits==0 && change_hits==0{
+                    return None;
+                }
+                let hits=base_hits+change_hits+failure_hits;
+                let focused=change_score>0||failure_score>0;
+                let exact_title=base.iter().chain(change.iter()).chain(failed.iter())
+                    .any(|term|title.contains(term));
+                if hits==0||(!focused && hits<2 && !exact_title){return None;}
+                let rank=base_score
+                    .saturating_add(change_score.saturating_mul(6))
+                    .saturating_add(failure_score.saturating_mul(9));
+                Some((rank,hits,entry))
+            }).collect::<Vec<_>>();
+        ranked.sort_by(|a,b|b.0.cmp(&a.0).then(b.1.cmp(&a.1))
+            .then_with(||b.2.updated_at_ms.cmp(&a.2.updated_at_ms))
+            .then_with(||a.2.id.cmp(&b.2.id)));
+        ranked.into_iter().take(max.min(8))
+            .map(|(_,_,entry)|entry.clone()).collect()
+    }
     pub async fn search(&self,scope:&str,query:&str,max:usize)->Vec<MemoryEntry>{
         let query=query.to_lowercase();
         let terms=query.split(|c:char|!c.is_alphanumeric())
@@ -157,6 +212,36 @@ impl Knowledge{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[tokio::test]
+    async fn long_goal_does_not_suppress_recent_owner_correction_recall(){
+        let dir=std::env::temp_dir().join(format!("dominion-memory-owner-{}",Uuid::new_v4()));
+        let k=Knowledge::open(dir.clone()).unwrap();
+        k.remember("repo","legacy compiler optimization","compiler optimization").await.unwrap();
+        k.remember("repo","helium telemetry","calibrated helium sensor").await.unwrap();
+        let long_goal=(0..40).map(|i|format!("compiler optimization token{i}"))
+            .collect::<Vec<_>>().join(" ");
+        let results=k.search_context("repo",&long_goal,"helium telemetry","",2).await;
+        assert_eq!(results[0].title,"helium telemetry",
+            "recent owner correction should outrank old high-frequency goal terms");
+        assert!(results.iter().any(|m|m.title=="legacy compiler optimization"));
+        fs::remove_dir_all(dir).await.unwrap();
+    }
+    #[tokio::test]
+    async fn failed_operation_retrieves_matching_memory_and_abstains_from_generic_fixes(){
+        let dir=std::env::temp_dir().join(format!("dominion-memory-failure-{}",Uuid::new_v4()));
+        let k=Knowledge::open(dir.clone()).unwrap();
+        k.remember("repo","missing path","resolve missing path by listing source files").await.unwrap();
+        k.remember("repo","test failure","inspect expected values from failed tests").await.unwrap();
+        k.remember("repo","general repair","avoid unnecessary generic repair").await.unwrap();
+        let recovered=k.search_context("repo","repair code","",
+            "test failure",4).await;
+        assert_eq!(recovered[0].title,"test failure");
+        assert!(!recovered.iter().any(|m|m.title=="general repair"),
+            "unrelated generic notes must abstain during known failures");
+        assert!(!recovered.iter().any(|m|m.title=="missing path"));
+        assert!(k.search_context("repo","different unrelated work","","",4).await.is_empty());
+        fs::remove_dir_all(dir).await.unwrap();
+    }
     #[tokio::test]
     async fn failed_persist_does_not_publish_non_durable_memory(){
         let dir=std::env::temp_dir().join(format!("dominion-memory-failure-{}",Uuid::new_v4()));

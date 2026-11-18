@@ -109,11 +109,17 @@ impl Engine {
             if message["role"]!="user"{return None;}
             message["content"].as_str()?.strip_prefix("New user instruction:")
         }).take(2).collect::<Vec<_>>();
-        let mut query=run.instruction.chars().take(1600).collect::<String>();
-        for change in changes.into_iter().rev(){
-            query.push(' ');
-            query.extend(change.chars().take(450));
-        }
+        let goal=run.instruction.chars().take(1600).collect::<String>();
+        let owner=changes.into_iter().rev()
+            .map(|change|change.chars().take(450).collect::<String>())
+            .collect::<Vec<_>>().join(" ");
+        // Only classified persisted failures are used as retrieval control
+        // signals. Arbitrary tool output never becomes a trusted query or
+        // new instruction. A changed failure invalidates cached recall.
+        let failure=crate::repair_guidance::advise(run)
+            .map(|advice|advice.kind.replace('_'," "))
+            .unwrap_or_default();
+        let query=format!("goal:{goal}\nowner:{owner}\nfailure:{failure}");
         let revision=self.knowledge.revision();
         {
             let cache=self.focused_memory.lock().await;
@@ -123,7 +129,8 @@ impl Engine {
                 }
             }
         }
-        let notes=self.knowledge.search(scope,&query,4).await;
+        let limit=if failure.is_empty(){4}else{2};
+        let notes=self.knowledge.search_context(scope,&goal,&owner,&failure,limit).await;
         let body=notes.iter().map(|note|format!("- {}: {}",
             note.title,note.content.chars().take(650).collect::<String>()))
             .collect::<Vec<_>>().join("\n");
