@@ -1,6 +1,7 @@
 //! Context projection for the native Rust agent loop.
 //! Full history stays durable; only outbound model requests are compacted.
 use serde_json::{json,Value};
+use std::collections::HashMap;
 
 #[derive(Debug,Clone)]
 pub struct Projection {
@@ -48,14 +49,34 @@ fn clipped(message:&Value)->Value {
     }
     result
 }
+/// Preserve complete tool-call exchanges as one projection unit, even if a
+/// newer owner directive arrived while the original operation was in flight.
+/// The durable journal is immutable; this is provider-facing ordering only.
 fn exchanges(messages:&[Value])->Vec<Vec<Value>> {
     let mut output:Vec<Vec<Value>>=Vec::new();
+    let mut awaiting=HashMap::<String,usize>::new();
     for item in messages {
-        let tail_is_call=output.last().and_then(|group|group.first())
-            .is_some_and(|first| role(first)=="assistant" && first.get("tool_calls").is_some());
-        if role(item)=="tool" && tail_is_call {
-            output.last_mut().unwrap().push(item.clone());
-        } else {output.push(vec![item.clone()]);}
+        if role(item)=="assistant" {
+            if let Some(calls)=item.get("tool_calls").and_then(Value::as_array){
+                let idx=output.len();
+                for call in calls {
+                    if let Some(id)=call.get("id").and_then(Value::as_str){
+                        awaiting.insert(id.to_owned(),idx);
+                    }
+                }
+            }
+            output.push(vec![item.clone()]);
+        } else if role(item)=="tool" {
+            let index=item.get("tool_call_id").and_then(Value::as_str)
+                .and_then(|id|awaiting.remove(id));
+            if let Some(idx)=index {
+                output[idx].push(item.clone());
+            } else {
+                output.push(vec![item.clone()]);
+            }
+        } else {
+            output.push(vec![item.clone()]);
+        }
     }
     output
 }
@@ -70,7 +91,10 @@ pub fn compact_strict(messages:&[Value],max_chars:usize)->Result<Projection,Stri
  // while the exact transcript already fits. The old unconditional 16-group
  // cap lost meaningful context even for short tasks.
  if original_chars<=max_chars{
-  return Ok(Projection{messages:messages.to_vec(),original_chars,
+  // Even with no compaction, an owner correction can land between a started
+  // tool call and its eventual receipt. Providers must see paired tool calls.
+  let ordered=exchanges(messages).into_iter().flatten().collect::<Vec<_>>();
+  return Ok(Projection{messages:ordered,original_chars,
    projected_chars:original_chars,omitted_messages:0});
  }
  if messages.len()<=2{
@@ -137,7 +161,6 @@ These requirements survive context compaction and must not be silently discarded
   if cost>budget {continue}
   budget-=cost;
   selected.push((index,bounded));
-  if selected.len()>=16{break}
  }
  selected.sort_by_key(|(index,_)|*index);
  let kept=selected.iter().map(|(_,items)|items.len()).sum::<usize>();
@@ -183,6 +206,56 @@ pub fn planning_directives(messages:&[Value],max_chars:usize)->Result<String,Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delayed_tool_receipt_is_paired_before_new_user_message_without_touching_journal(){
+        let messages=vec![
+            json!({"role":"system","content":"system"}),
+            json!({"role":"user","content":"publish after reading"}),
+            json!({"role":"assistant","content":null,"tool_calls":[
+                {"id":"a1","type":"function","function":{"name":"read_file","arguments":"{}"}},
+                {"id":"a2","type":"function","function":{"name":"read_file","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"a1","content":"first"}),
+            json!({"role":"user","content":"New user instruction: cancel future publishing"}),
+            json!({"role":"tool","tool_call_id":"a2","content":"second"})
+        ];
+        let original=messages.clone();
+        let output=compact_strict(&messages,10000).unwrap();
+        assert_eq!(messages,original);
+        assert_eq!(output.messages[2]["role"],"assistant");
+        assert_eq!(output.messages[3]["tool_call_id"],"a1");
+        assert_eq!(output.messages[4]["tool_call_id"],"a2");
+        assert!(output.messages[5]["content"].as_str().unwrap().contains("cancel future"));
+        let mut expanded=messages.clone();
+        for i in 0..40{
+            expanded.push(json!({"role":"assistant","content":format!("filler {i} {}", "x".repeat(1800))}));
+        }
+        let compressed=compact_strict(&expanded,6000).unwrap();
+        let prompt=compressed.messages.iter().map(Value::to_string).collect::<String>();
+        assert!(prompt.contains("cancel future publishing"),
+            "owner directive must survive clipping and reordering");
+        for (idx,msg) in compressed.messages.iter().enumerate() {
+            if let Some(id)=msg.get("tool_call_id").and_then(Value::as_str) {
+                assert!(idx>0);
+                assert!(compressed.messages[idx-1]["tool_calls"].to_string().contains(id)
+                    ||compressed.messages[idx-2]["tool_calls"].to_string().contains(id));
+            }
+        }
+    }
+    #[test]
+    fn compaction_uses_available_context_budget_beyond_sixteen_small_exchanges(){
+        let mut messages=vec![
+            json!({"role":"system","content":"system"}),
+            json!({"role":"user","content":"inspect the repository"})];
+        messages.push(json!({"role":"tool","tool_call_id":"very-large-legacy",
+            "content":"z".repeat(40_000)}));
+        for i in 0..40{
+            messages.push(json!({"role":"assistant","content":format!("evidence {i}")}));
+        }
+        let output=compact_strict(&messages,9000).unwrap();
+        assert!(output.projected_chars<=9000);
+        assert!(output.messages.iter().filter(|m|m["role"]=="assistant").count()>16,
+            "history should be limited by actual budget rather than a 16-group artifact");
+    }
     #[test]
     fn strict_projection_is_lossless_when_ordinary_history_fits(){
         let mut messages=vec![
