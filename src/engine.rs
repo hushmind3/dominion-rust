@@ -881,7 +881,21 @@ impl Engine {
             return Ok(());
         }
         // In-flight intent MUST be synced to disk before any outside effect.
-        self.store.mutate(id,|run|journal::begin(run,&call)).await?;
+        let mut started=false;
+        self.store.mutate(id,|run|{
+            // A concurrent owner directive can supersede an unstarted tool
+            // after this worker selected it. Treat that race as a no-op,
+            // never as a failed Run or permission to execute stale work.
+            let queued=run.queued_calls.iter().any(|next|
+                next.id==call.id && next.name==call.name && next.arguments==call.arguments);
+            let pending=run.pending_approval.as_ref().is_some_and(|next|
+                next.id==call.id && next.name==call.name && next.arguments==call.arguments);
+            if !queued && !pending {return Ok(());}
+            journal::begin(run,&call)?;
+            started=true;
+            Ok(())
+        }).await?;
+        if !started {return Ok(());}
         let mut remote_uncertain=None;
         // Keep the transport signal independent from the reader cancellation
         // receiver borrowed by tokio::select! below.
@@ -1077,12 +1091,13 @@ impl Engine {
         if content.is_empty() || content.len()>10_000 {return Err("invalid directive".into());}
         let snapshot=self.store.mutate(id,|run| {
             if run.terminal() {return Err("execution finished".into());}
-            run.messages.push(json!({"role":"user","content":format!("New user instruction: {content}")}));
-            // Do not execute queued steps from the old model program after a
-            // higher-priority owner correction. Keep started external effects
-            // intact until a durable observation or manual reconciliation.
+            // Settle the old model turn before appending a new owner message;
+            // providers expect each assistant tool call to have a correlated
+            // result, even when the requested operation was never dispatched.
+            // Started tool receipts remain under their original Run intent.
             program_session::supersede(run)?;
             journal::supersede_on_directive(run);
+            run.messages.push(json!({"role":"user","content":format!("New user instruction: {content}")}));
             run.discovered_tools.clear();
             run.event("directive","User updated instructions",Some(json!({"text":content})));
             Ok(())
