@@ -17,7 +17,10 @@ struct Case{
 struct Check{command:Vec<String>,passed:bool,output:String}
 #[derive(Serialize)]
 struct ResultRow{
-    id:String,run_id:Option<String>,status:String,passed:bool,reason:String,
+    id:String,run_id:Option<String>,status:String,passed:bool,
+    /// Artifact verdict is independent of the native job's terminal label.
+    /// Both measures are recorded to expose a file-correct/failed-run split.
+    artifact_passed:bool,run_completed:bool,reason:String,
     expected_files:Vec<String>,changed_files:Vec<String>,checks:Vec<Check>,
     tool_approvals:usize,input_tokens:u64,output_tokens:u64,cached_input_tokens:u64,
     reported_cost_krw:f64,cost_priced:bool,elapsed_ms:u128,
@@ -177,7 +180,12 @@ async fn evaluate(sdk:&Dominion,settings:&Settings,case:&Case,permitted:&HashSet
     let missing=case.expected_files.iter().filter(|path|!changed.contains(path))
         .cloned().collect::<Vec<_>>();
     let mut checks=Vec::new();
-    if run.status==RunStatus::Completed && missing.is_empty(){
+    // An independently verified file can be correct even if the agent
+    // later trips a step limit. Only inspect settled, journal-safe worktrees;
+    // never execute a verifier while a tool still has an uncertain effect.
+    let settled=run.terminal()&&run.in_flight.is_none()
+        &&run.read_batch_in_flight.is_empty();
+    if settled && missing.is_empty(){
         for args in &case.verify{
             // Execute manifest-owned direct argv, never a generated shell string.
             let check=execute(&worktree,args,120).await?;
@@ -186,8 +194,12 @@ async fn evaluate(sdk:&Dominion,settings:&Settings,case:&Case,permitted:&HashSet
             if !passed{break;}
         }
     }
-    let passed=run.status==RunStatus::Completed&&missing.is_empty()
+    let artifact_passed=settled&&missing.is_empty()
         &&checks.len()==case.verify.len()&&checks.iter().all(|c|c.passed);
+    let run_completed=run.status==RunStatus::Completed;
+    // Preserve the strict legacy score but expose the artifact-based result
+    // used by independent judges without silently altering historical scores.
+    let passed=run_completed&&artifact_passed;
     let reason=if !reason.is_empty(){reason}
         else if !missing.is_empty(){format!("missing changed files: {}",missing.join(", "))}
         else if checks.iter().any(|c|!c.passed){"artifact verifier failed".into()}
@@ -195,7 +207,8 @@ async fn evaluate(sdk:&Dominion,settings:&Settings,case:&Case,permitted:&HashSet
         else{String::new()};
     let trace=trace_metrics(&run);
     Ok(ResultRow{
-        id:case.id.clone(),run_id:Some(id.to_string()),status,passed,reason,
+        id:case.id.clone(),run_id:Some(id.to_string()),status,passed,
+        artifact_passed,run_completed,reason,
         expected_files:case.expected_files.clone(),changed_files:changed,checks,
         tool_approvals:approvals,input_tokens:run.input_tokens,output_tokens:run.output_tokens,
         cached_input_tokens:run.cached_input_tokens,reported_cost_krw:run.cost_krw,
@@ -261,6 +274,7 @@ async fn run()->Result<(),String>{
             Ok(result)=>results.push(result),
             Err(error)=>results.push(ResultRow{
                 id:case.id.clone(),run_id:None,status:"error".into(),passed:false,
+                artifact_passed:false,run_completed:false,
                 reason:error,expected_files:case.expected_files.clone(),
                 changed_files:vec![],checks:vec![],tool_approvals:0,
                 input_tokens:0,output_tokens:0,cached_input_tokens:0,
@@ -272,6 +286,8 @@ async fn run()->Result<(),String>{
             }),
         }
     }
+    let artifact_successes=results.iter().filter(|r|r.artifact_passed).count();
+    eprintln!("Observed independent artifact passes: {artifact_successes}/{}; native Run completion is a separate field",results.len());
     let successes=results.iter().filter(|r|r.passed).count();
     let report=Report{version:1,model:settings.main.name,total:results.len(),passed:successes,results};
     if let Some(parent)=output.parent(){tokio::fs::create_dir_all(parent).await.map_err(|e|e.to_string())?;}

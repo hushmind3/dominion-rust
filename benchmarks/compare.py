@@ -168,7 +168,9 @@ def compare(manifest, directory, attempts, result_root):
                                        min(timeout,120),env)
                 artifacts = all(safe_child(workspace,p).exists()
                                 for p in task.get("artifacts",[]))
-                passed = ran["returncode"] == 0 and verified["returncode"] == 0 and artifacts and not tampered
+                artifact_passed = verified["returncode"] == 0 and artifacts and not tampered
+                run_completed = ran["returncode"] == 0 and not ran["timeout"]
+                passed = run_completed and artifact_passed
                 usage = None
                 if telemetry.exists():
                     try:
@@ -181,7 +183,9 @@ def compare(manifest, directory, attempts, result_root):
                         usage = None
                 outcomes.append({
                     "harness":harness["name"],"task":task["id"],
-                    "repeat":repeat,"passed":passed,"seconds":ran["seconds"],
+                    "repeat":repeat,"passed":passed,
+                    "artifact_passed":artifact_passed,"run_completed":run_completed,
+                    "seconds":ran["seconds"],
                     "returncode":ran["returncode"],"verify_code":verified["returncode"],
                     "timed_out":ran["timeout"],"artifacts":artifacts,
                     "protected_files_modified":tampered,
@@ -197,6 +201,8 @@ def compare(manifest, directory, attempts, result_root):
         summary.append({
             "harness":harness["name"],"attempts":len(own),
             "passed":sum(r["passed"] for r in own),
+            "artifacts_passed":sum(r["artifact_passed"] for r in own),
+            "jobs_completed":sum(r["run_completed"] for r in own),
             "success_rate":round(sum(r["passed"] for r in own)/len(own),4),
             "median_seconds":round(statistics.median(delays),3),
             "p95_seconds":delays[min(len(delays)-1,int(len(delays)*0.95))],
@@ -232,6 +238,20 @@ def selftest():
         out = compare(spec,root,2,root/"out")
         assert len(out["attempts"]) == 4
         assert all(r["passed"] and r["usage"] is None for r in out["attempts"])
+        # Native status and independent artifact verification must be separate.
+        # Exit 7 creates the correct proof but is not a completed job.
+        exited = {"version":1,"model":"local-mock-not-a-frontier-score",
+            "budget_krw":0,"max_steps":1,"timeout_seconds":8,
+            "harnesses":[{"name":"failed-run","argv":[sys.executable,"-c",
+                "from pathlib import Path;Path('proof.txt').write_text('yes');raise SystemExit(7)"]}],
+            "tasks":[{"id":"artifact","fixture":"fixture","prompt":"write proof",
+                "verify":checker,"artifacts":["proof.txt"]}]}
+        split = compare(exited,root,1,root/"out-exit")
+        assert split["attempts"][0]["artifact_passed"]
+        assert not split["attempts"][0]["run_completed"]
+        assert not split["attempts"][0]["passed"]
+        assert split["summary"][0]["artifacts_passed"]==1
+        assert split["summary"][0]["jobs_completed"]==0
         assert all(r["measured_cost_krw"] is None for r in out["summary"])
         assert (fixture/"base.txt").read_text()=="baseline"
         # Adversarial harness tries to rewrite the judge's own test. It must
