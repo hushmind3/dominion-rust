@@ -473,7 +473,7 @@ mod tests {
             json!({"role":"user","content":"inspect"}),
             json!({"role":"assistant","content":null,"tool_calls":[{
                 "id":"call-x","type":"function","function":{
-                    "name":"read_file","arguments":"{\\"path\\":\\"main.rs\\"}"}}]}),
+                    "name":"read_file","arguments":r#"{\"path\":\"main.rs\"}"#}}]}),
             json!({"role":"tool","tool_call_id":"call-x","content":"rust"}),
         ];
         let normalized=ollama_messages(&original).unwrap();
