@@ -46,8 +46,8 @@ pub(crate) fn from_run(run: &Run) -> Option<StrategyEvidence> {
     let repository=run.repository.as_ref()?;
     let proof=transfer::recovery_proof(run)?;
     let principle=format!(
-        "Observed {} after {}, corrected the same workspace file,          and read it before a later auditor PASS.",
-        proof.failure_kind,proof.failed_tool);
+        "Observed {} after {}, corrected the same workspace file,          and performed a read postflight with {} evidence.",
+        proof.failure_kind,proof.failed_tool,proof.verification_basis);
     Some(StrategyEvidence {
         source_id:run.id,source:"trace_recovery_2026".into(),
         repository:repository.clone(),
@@ -59,7 +59,9 @@ pub(crate) fn from_run(run: &Run) -> Option<StrategyEvidence> {
             "Prior failure {} at event seq {}, call {}",
             proof.failure_kind,proof.failure_seq,proof.failed_call_id),
         files:vec![proof.affected_path.clone()],
-        outcome:"verified".into(),
+        outcome:if proof.verification_basis=="deterministic_exact_artifact"{
+            "artifact_verified".into()
+        }else{"verified".into()},
         baseline_score:None,resulting_score:None,
         attempts:run.steps,cost_krw:run.cost_krw,
         updated_at_ms:run.updated_at_ms,recovery:Some(proof)
