@@ -163,3 +163,102 @@ pub fn prompt(records:&[StrategyEvidence])->String{
             e.cost_krw,e.attempts))
     }).take(3).collect::<Vec<_>>().join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::CreateRun;
+    use serde_json::json;
+    fn run()->Run{
+        let mut r=Run::new(CreateRun{instruction:"Repair src/logic.rs".into(),
+            budget_krw:Some(200.0),max_steps:Some(8)},8).unwrap();
+        r.strategy_learning=true;
+        r.repository=Some("repo".into());
+        r.status=RunStatus::Completed;
+        r.steps=4;r.cost_krw=12.0;
+        r
+    }
+    fn intent(r:&mut Run,id:&str,name:&str,source:&str){
+        r.event("tool_started","",Some(json!({
+            "id":id,"name":name,"arguments":{"path":source}})));
+    }
+    fn settled(r:&mut Run,id:&str,name:&str,ok:bool){
+        r.event(if ok{"tool_result"}else{"tool_error"},"",Some(json!({
+            "call_id":id,"name":name,"succeeded":ok,
+            "result":if ok{"read receipt"}else{"path does not exist"}})));
+    }
+    fn audited()->Run{
+        let mut r=run();
+        intent(&mut r,"f","read_file","src/logic.rs");
+        settled(&mut r,"f","read_file",false);
+        intent(&mut r,"fix","write_file","src/logic.rs");
+        settled(&mut r,"fix","write_file",true);
+        intent(&mut r,"check","read_file","src/logic.rs");
+        settled(&mut r,"check","read_file",true);
+        r.event("verification","PASS",None);
+        r
+    }
+    #[test]
+    fn real_failure_and_read_after_write_are_required_for_reusable_evidence(){
+        let r=audited();
+        let proof=recovery_proof(&r).unwrap();
+        assert_eq!(proof.failed_call_id,"f");
+        assert_eq!(proof.repair_call_id,"fix");
+        assert_eq!(proof.postflight_call_id,"check");
+        assert!(proof.failure_seq<proof.repair_seq);
+        assert!(proof.repair_seq<proof.postflight_seq);
+        assert!(proof.postflight_seq<proof.verification_seq);
+        assert!(r.plan.is_none(),"no separate plan model call is necessary");
+        assert_eq!(crate::strategy::from_run(&r).unwrap().files,
+            vec!["src/logic.rs".to_owned()]);
+    }
+    #[test]
+    fn model_narration_stale_pass_and_missing_postflight_abstain(){
+        let mut r=audited();
+        r.events.retain(|e|e.kind!="verification");
+        assert!(recovery_proof(&r).is_none());
+        r.event("verification","PASS maybe",None);
+        assert!(recovery_proof(&r).is_none());
+        let mut r=audited();
+        r.events.retain(|e|e.detail.as_ref().is_none_or(|d|d["call_id"]!="check"));
+        assert!(recovery_proof(&r).is_none());
+        let mut r=audited();
+        r.event("tool_result","late mutation",Some(json!({
+            "name":"edit_file","call_id":"late","succeeded":true})));
+        assert!(recovery_proof(&r).is_none());
+    }
+    #[test]
+    fn same_resource_failure_transfers_but_unrelated_queries_and_repositories_do_not(){
+        let historical=crate::strategy::from_run(&audited()).unwrap();
+        let mut current=run();
+        current.status=RunStatus::Running;
+        intent(&mut current,"new","read_file","src/logic.rs");
+        settled(&mut current,"new","read_file",false);
+        let found=rank_for_run(vec![historical.clone()],&current,2);
+        assert_eq!(found.len(),1);
+        assert!(prompt(&found).contains("do not"));
+        assert!(rank(vec![historical.clone()],"repo","generic bug fix",3).is_empty());
+        assert_eq!(rank(vec![historical.clone()],"repo",
+            "Repair src/logic.rs",3).len(),1);
+        assert!(rank(vec![historical.clone()],"repo",
+            "Repair src/unknown.rs",3).is_empty());
+        current.repository=Some("another".into());
+        assert!(rank_for_run(vec![historical],&current,2).is_empty());
+    }
+    #[test]
+    fn prior_denial_is_not_transferable_and_no_autorun_is_possible(){
+        let mut r=run();
+        intent(&mut r,"p","write_file","src/logic.rs");
+        r.event("tool_denied","owner denied",Some(json!({"call_id":"p"})));
+        assert!(r.events.iter().rev().all(|e|failure(&r,e).is_none()));
+        assert!(crate::strategy::from_run(&r).is_none());
+    }
+    #[test]
+    fn conflicting_cost_and_rounds_preserve_alternatives_without_fake_winner(){
+        let a=crate::strategy::from_run(&audited()).unwrap();
+        let mut b=a.clone();b.source_id=uuid::Uuid::new_v4();
+        b.attempts=2;b.cost_krw=80.0;
+        let ranked=rank(vec![a,b],"repo","",3);
+        assert_eq!(ranked.len(),2,"one is faster, one is cheaper; neither dominates");
+    }
+}
