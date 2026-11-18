@@ -52,6 +52,23 @@ const initialPrice:PriceFields={buyerAmount:'',supplierAmount:'',buyerCurrency:'
  asOf:'',buyerKind:'',supplierKind:'',shippingKrw:'',feesKrw:'',
  taxKrw:'',laborKrw:'',returnsKrw:'',otherKrw:'',buyerSourceId:'',
  supplierSourceId:'',buyerQuote:'',supplierQuote:'',buyerRevisionId:'',supplierRevisionId:''}
+const priceEvidenceStatus:Record<string,string>={
+ no_source_reference_user_assumption:'출처를 연결하지 않은 입력 가정',
+ source_not_in_original_candidate_evidence:'이 후보에 저장되지 않은 출처',
+ original_source_unavailable:'원문 저장 기록 없음',
+ invalid_source_revision_id:'원문 리비전 ID 형식 오류',
+ source_revision_unavailable:'요청한 원문 리비전이 보관되지 않음',
+ source_revision_integrity_mismatch:'원문 저장 기록의 해시가 일치하지 않음',
+ missing_or_unbounded_quote:'원문 인용 누락 또는 길이 초과',
+ quote_not_found_in_saved_source:'저장된 원문에서 인용을 찾지 못함',
+ exact_saved_feed_field_not_primary_document:'저장된 뉴스 피드 문구와 일치 (계약 검증 아님)',
+ exact_saved_page_field_not_transaction:'저장된 페이지 문구와 일치 (거래 검증 아님)'
+}
+const priceRevisionStatus:Record<string,string>={
+ current_snapshot:'최신 저장본',
+ pinned_current_snapshot:'지정한 최신 저장본',
+ historical_saved_revision:'과거 저장본'
+}
 const initial:Report={drafts:[],modelCalls:0}
 const won=(n:number)=>Math.max(0,n).toLocaleString('ko-KR')+'원'
 
@@ -647,10 +664,12 @@ export function MoneyPage(){
           {key==='buyerSourceId'?'구매 근거 출처':'공급 근거 출처'}
           <select value={priceDraft[key]} onChange={event=>{
            const sourceId=event.target.value
-           const revisionId=(item.evidence||[]).find(e=>e.sourceId===sourceId)?.revisionId||''
+           const evidence=(item.evidence||[]).find(e=>e.sourceId===sourceId)
+           const revisionId=evidence?.revisionId||''
+           const quote=evidence?.quote||''
            setPriceDraft(prev=>key==='buyerSourceId'
-            ?{...prev,buyerSourceId:sourceId,buyerRevisionId:revisionId}
-            :{...prev,supplierSourceId:sourceId,supplierRevisionId:revisionId})
+            ?{...prev,buyerSourceId:sourceId,buyerRevisionId:revisionId,buyerQuote:quote}
+            :{...prev,supplierSourceId:sourceId,supplierRevisionId:revisionId,supplierQuote:quote})
           }}
            className="mt-1 w-full rounded-lg border border-[#DCCFC1] bg-white p-2 text-[12px]">
            <option value="">출처 없이 입력한 가정</option>
@@ -692,9 +711,9 @@ export function MoneyPage(){
         {review.issues.map((issue,index)=><p key={index} className="mt-1">미확인: {issue}</p>)}
         <p className="mt-1">실제 계약·결제 검증: 없음 · 추정 환율은 입력값 기준</p>
         {Object.entries(review.sourceChecks||{}).map(([side,check])=><p key={side} className="mt-1 break-all text-[#76685A]">
-         {side==='buyer'?'구매 근거':'공급 근거'}: {check.status}
+         {side==='buyer'?'구매 근거':'공급 근거'}: {priceEvidenceStatus[check.status]||check.status}
          {check.revisionId?' · 리비전 '+check.revisionId.slice(0,12):''}
-         {check.revisionStatus?' · '+check.revisionStatus:''}
+         {check.revisionStatus?' · '+(priceRevisionStatus[check.revisionStatus]||check.revisionStatus):''}
          {check.revisionChangedSinceQuote?' · 이후 원문 갱신됨':''}
         </p>)}
         {review.createdAt&&<p className="mt-1 text-[#8B7D70]">저장: {review.createdAt}</p>}
