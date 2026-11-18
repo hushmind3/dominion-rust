@@ -45,45 +45,63 @@ pub fn admit(call:&ToolCall,catalog:&[Value])->Result<(),AdmissionError>{
     validate_value(schema,&call.arguments,0,"$").map_err(|reason|AdmissionError::new(AdmissionCode::InvalidArguments,reason))
 }
 
-fn schema_type(node:&Value)->Result<Option<&str>,String>{
+/// Only JSON Schema constructs whose constraints this validator actually
+/// enforces may enter a model-advertised capability. Common MCP nullable
+/// unions are supported without silently accepting arbitrary schema keywords.
+fn schema_types(node:&Value)->Result<Vec<&str>,String>{
     let Some(map)=node.as_object()else{return Err("schema node must be an object".into());};
     for key in map.keys(){
         if !matches!(key.as_str(),"type"|"properties"|"required"|"additionalProperties"|"items"|
             "enum"|"const"|"minimum"|"maximum"|"minLength"|"maxLength"|"minItems"|"maxItems"|
+            "minProperties"|"maxProperties"|"anyOf"|"oneOf"|"allOf"|
             "description"|"title"|"default"|"examples"){
             return Err(format!("unsupported schema keyword {key}"));
         }
     }
-    let ty=node.get("type").map(|x|x.as_str().ok_or("schema type must be a string")).transpose()?;
-    if let Some(t)=ty {
-        if !matches!(t,"object"|"string"|"integer"|"number"|"boolean"|"array"|"null"){
-            return Err(format!("unsupported schema type {t}"));
+    let Some(ty)=node.get("type")else{return Ok(Vec::new())};
+    let types=match ty {
+        Value::String(t)=>vec![t.as_str()],
+        Value::Array(items) if !items.is_empty() && items.len()<=8 =>
+            items.iter().map(|v|v.as_str()
+                .ok_or("schema type union must contain only strings")).collect::<Result<Vec<_>,_>>()?,
+        _=>return Err("schema type must be a string or 1..8 unique strings".into()),
+    };
+    let mut seen=std::collections::HashSet::new();
+    for t in &types {
+        if !matches!(*t,"object"|"string"|"integer"|"number"|"boolean"|"array"|"null")
+            ||!seen.insert(*t) {
+            return Err(format!("invalid or duplicate schema type {t}"));
         }
     }
-    Ok(ty)
+    Ok(types)
 }
 fn check_schema(node:&Value,depth:usize,path:&str)->Result<(),String>{
     if depth>MAX_DEPTH{return Err(format!("{path}: schema nesting exceeds {MAX_DEPTH}"));}
-    let ty=schema_type(node)?;
-    if node.get("properties").is_some()||node.get("required").is_some()||node.get("additionalProperties").is_some(){
-        if ty!=Some("object"){return Err(format!("{path}: object-only constraints on non-object schema"));}
+    let ty=schema_types(node)?;
+    if ["properties","required","additionalProperties","minProperties","maxProperties"]
+        .iter().any(|key|node.get(*key).is_some()) && !ty.contains(&"object"){
+        return Err(format!("{path}: object-only constraints on non-object schema"));
     }
-    if node.get("items").is_some()||node.get("minItems").is_some()||node.get("maxItems").is_some(){
-        if ty!=Some("array"){return Err(format!("{path}: array-only constraints on non-array schema"));}
+    if ["items","minItems","maxItems"]
+        .iter().any(|key|node.get(*key).is_some()) && !ty.contains(&"array"){
+        return Err(format!("{path}: array-only constraints on non-array schema"));
     }
-    if node.get("minLength").is_some()||node.get("maxLength").is_some(){
-        if ty!=Some("string"){return Err(format!("{path}: string-only constraints on non-string schema"));}
+    if ["minLength","maxLength"]
+        .iter().any(|key|node.get(*key).is_some()) && !ty.contains(&"string"){
+        return Err(format!("{path}: string-only constraints on non-string schema"));
     }
-    if node.get("minimum").is_some()||node.get("maximum").is_some(){
-        if !matches!(ty,Some("number"|"integer")){return Err(format!("{path}: number-only constraints on non-number schema"));}
+    if ["minimum","maximum"]
+        .iter().any(|key|node.get(*key).is_some())
+        && !ty.iter().any(|t|matches!(*t,"number"|"integer")){
+        return Err(format!("{path}: number-only constraints on non-number schema"));
     }
     for name in ["minimum","maximum"]{
         if node.get(name).is_some_and(|x|!x.is_number()){return Err(format!("{path}: {name} must be numeric"));}
     }
-    for name in ["minLength","maxLength","minItems","maxItems"]{
+    for name in ["minLength","maxLength","minItems","maxItems","minProperties","maxProperties"]{
         if node.get(name).is_some_and(|x|x.as_u64().is_none()){return Err(format!("{path}: {name} must be a nonnegative integer"));}
     }
-    for (min,max) in [("minLength","maxLength"),("minItems","maxItems")]{
+    for (min,max) in [("minLength","maxLength"),("minItems","maxItems"),("minProperties","maxProperties")]{
         if let (Some(a),Some(b))=(node.get(min).and_then(Value::as_u64),node.get(max).and_then(Value::as_u64)){
             if a>b{return Err(format!("{path}: {min} cannot exceed {max}"));}
         }
@@ -101,8 +119,19 @@ fn check_schema(node:&Value,depth:usize,path:&str)->Result<(),String>{
             }
         }
     }
-    if node.get("additionalProperties").is_some_and(|v|!v.is_boolean()){
-        return Err(format!("{path}: additionalProperties must be a boolean"));
+    if let Some(extra)=node.get("additionalProperties"){
+        if !extra.is_boolean(){check_schema(extra,depth+1,&format!("{path}.*"))?;}
+    }
+    for choice in ["anyOf","oneOf","allOf"] {
+        if let Some(branches)=node.get(choice){
+            let variants=branches.as_array().ok_or_else(||format!("{path}: {choice} must be an array"))?;
+            if variants.is_empty() || variants.len()>8 {
+                return Err(format!("{path}: {choice} must contain 1..8 schemas"));
+            }
+            for (index,variant) in variants.iter().enumerate(){
+                check_schema(variant,depth+1,&format!("{path}.{choice}[{index}]"))?;
+            }
+        }
     }
     if let Some(properties)=node.get("properties"){
         let properties=properties.as_object().ok_or_else(||format!("{path}: properties must be an object"))?;
@@ -122,14 +151,29 @@ fn check_schema(node:&Value,depth:usize,path:&str)->Result<(),String>{
 }
 fn validate_value(schema:&Value,value:&Value,depth:usize,path:&str)->Result<(),String>{
     if depth>MAX_DEPTH{return Err(format!("{path}: input too deep"));}
-    if let Some(ty)=schema.get("type").and_then(Value::as_str){
-        let matches=match ty{
+    if let Some(ty)=schema.get("type"){
+        let types:Vec<&str>=match ty {
+            Value::String(t)=>vec![t],
+            Value::Array(items)=>items.iter().filter_map(Value::as_str).collect(),
+            _=>return Err(format!("{path}: malformed type")),
+        };
+        if !types.iter().any(|t|match *t{
             "object"=>value.is_object(),"array"=>value.is_array(),"string"=>value.is_string(),
             "integer"=>value.as_i64().is_some()||value.as_u64().is_some(),
             "number"=>value.is_number(),"boolean"=>value.is_boolean(),"null"=>value.is_null(),
             _=>false
-        };
-        if !matches{return Err(format!("{path}: expected {ty}"));}
+        }){return Err(format!("{path}: expected {}",types.join(" or ")));}
+    }
+    for choice in ["anyOf","oneOf","allOf"] {
+        if let Some(variants)=schema.get(choice).and_then(Value::as_array){
+            let passed=variants.iter().filter(|rule|
+                validate_value(rule,value,depth+1,path).is_ok()).count();
+            let accepted=match choice {
+                "anyOf"=>passed>=1,"oneOf"=>passed==1,"allOf"=>passed==variants.len(),
+                _=>false
+            };
+            if !accepted{return Err(format!("{path}: {choice} constraint failed"));}
+        }
     }
     if schema.get("enum").and_then(Value::as_array).is_some_and(|list|!list.contains(value)){
         return Err(format!("{path}: value is not an allowed enum member"));
@@ -144,12 +188,24 @@ fn validate_value(schema:&Value,value:&Value,depth:usize,path:&str)->Result<(),S
                 if !obj.contains_key(name){return Err(format!("{path}.{name}: required argument missing"));}
             }
         }
+        let size=obj.len() as u64;
+        if size<schema.get("minProperties").and_then(Value::as_u64).unwrap_or(0){
+            return Err(format!("{path}: too few object properties"));
+        }
+        if schema.get("maxProperties").and_then(Value::as_u64).is_some_and(|max|size>max){
+            return Err(format!("{path}: too many object properties"));
+        }
         let properties=schema.get("properties").and_then(Value::as_object);
         for (name,child) in obj{
             if let Some(rule)=properties.and_then(|p|p.get(name)){
                 validate_value(rule,child,depth+1,&format!("{path}.{name}"))?;
-            } else if schema.get("additionalProperties")==Some(&Value::Bool(false)){
-                return Err(format!("{path}.{name}: unknown argument"));
+            } else {
+                match schema.get("additionalProperties"){
+                    Some(Value::Bool(false))=>return Err(format!("{path}.{name}: unknown argument")),
+                    Some(Value::Object(rule))=>
+                        validate_value(&Value::Object(rule.clone()),child,depth+1,&format!("{path}.{name}"))?,
+                    _=>{}
+                }
             }
         }
     }
@@ -221,6 +277,53 @@ mod tests{
     fn unsupported_schema_constraints_fail_closed(){
         assert_eq!(check(json!({"type":"object","properties":{"id":{"type":"string","pattern":"^good$"}}}),
             json!({"id":"bad"})).unwrap_err().code,AdmissionCode::InvalidSchema);
+    }
+    #[test]
+    fn mcp_union_schema_validates_all_branches_and_nullable_fields(){
+        let schema=json!({"type":"object","properties":{
+            "target":{"oneOf":[
+                {"type":"object","properties":{"id":{"type":"integer"}},
+                 "required":["id"],"additionalProperties":false},
+                {"type":"object","properties":{"url":{"type":"string","minLength":4}},
+                 "required":["url"],"additionalProperties":false}
+            ]},
+            "note":{"type":["string","null"],"minLength":2}
+        },"required":["target"],"additionalProperties":false});
+        assert!(check(schema.clone(),json!({"target":{"id":4},"note":null})).is_ok());
+        assert!(check(schema.clone(),json!({"target":{"url":"http"},"note":"ok"})).is_ok());
+        for invalid in [
+            json!({"target":{}}),
+            json!({"target":{"id":"4"}}),
+            json!({"target":{"id":1,"url":"http"}}),
+            json!({"target":{"url":"a"},"note":"a"})
+        ]{assert_eq!(check(schema.clone(),invalid).unwrap_err().code,AdmissionCode::InvalidArguments);}
+        assert_eq!(check(json!({"type":"object","properties":{"broken":{
+            "type":["string","string"]}}}),json!({"broken":"x"}))
+            .unwrap_err().code,AdmissionCode::InvalidSchema);
+    }
+    #[test]
+    fn mcp_anyof_allof_and_typed_additional_properties_fail_closed(){
+        let schema=json!({"type":"object","minProperties":1,"maxProperties":2,
+            "additionalProperties":{"anyOf":[
+                {"type":"integer","minimum":1},
+                {"type":"string","minLength":2}
+            ]}});
+        assert!(check(schema.clone(),json!({"a":3,"b":"ok"})).is_ok());
+        for invalid in [json!({}),json!({"a":0}),json!({"a":null}),
+            json!({"a":1,"b":2,"c":3}),json!({"a":"x"})]{
+            assert!(check(schema.clone(),invalid).is_err());
+        }
+        assert!(check(json!({"type":"object","properties":{"x":{
+            "allOf":[{"type":"integer","minimum":1},{"type":"integer","maximum":5}]
+        }}}),json!({"x":4})).is_ok());
+        assert!(check(json!({"type":"object","properties":{"x":{
+            "allOf":[{"type":"integer","minimum":1},{"type":"integer","maximum":5}]
+        }}}),json!({"x":9})).is_err());
+        // Unknown constraints must not be ignored, even under an alternative.
+        assert_eq!(check(json!({"type":"object","properties":{"x":{
+            "anyOf":[{"type":"string"},{"type":"string","pattern":"^safe$"}]
+        }}}),json!({"x":"unsafe"}))
+            .unwrap_err().code,AdmissionCode::InvalidSchema);
     }
     #[test]
     fn enum_constant_and_nested_structures(){
