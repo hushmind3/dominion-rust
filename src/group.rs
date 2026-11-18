@@ -62,6 +62,9 @@ pub struct RoomUsageReceipt {
     #[serde(default)] pub stable_context_chars:usize,
     #[serde(default)] pub rolling_context_chars:usize,
     #[serde(default)] pub checkpoint_end:usize,
+    /// Evidence from this participant's last durable answer, if it aged out
+    /// of the shared rolling window. Provider token receipts remain separate.
+    #[serde(default)] pub self_recall_chars:usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Room {
@@ -126,6 +129,8 @@ struct RoomContext{
     stable_context_chars:usize,
     rolling_context_chars:usize,
     checkpoint_end:usize,
+    private_evidence:Option<String>,
+    self_recall_chars:usize,
 }
 fn excerpt(s:&str,max_chars:usize)->String{
     let size=s.chars().count();
@@ -214,7 +219,7 @@ fn sealed_room_evidence(room:&Room,end:usize,budget:usize)->(String,usize){
     }
     (text,selected.len())
 }
-fn project_room_context(room:&Room,_participant:&Participant,cap:usize)->RoomContext{
+fn project_room_context(room:&Room,participant:&Participant,cap:usize)->RoomContext{
     let cap=cap.clamp(600,24000);
     let total=room.messages.len();
     let memory=room.frontend.as_ref().map(|f|f.learned_context.as_str())
@@ -223,7 +228,10 @@ fn project_room_context(room:&Room,_participant:&Participant,cap:usize)->RoomCon
         .map(|m|m.speaker.chars().count()+m.content.chars().count()+3)
         .sum::<usize>()+memory.chars().count();
     let stable_budget=cap.saturating_mul(38)/100;
-    let tail_budget=cap.saturating_sub(stable_budget+24);
+    // Reserve a bounded suffix for per-speaker self continuity. All earlier
+    // common messages remain cache-compatible across different speakers.
+    let private_reserve=if cap>=1600{(cap/16).clamp(120,360)}else{0};
+    let tail_budget=cap.saturating_sub(stable_budget+24+private_reserve);
     // Roll over only on a bounded count/character boundary. Within a window,
     // every pre-existing user-role message and the sealed checkpoint remain
     // byte-for-byte identical. No dynamic relevance sort reorders the tail.
@@ -252,7 +260,23 @@ fn project_room_context(room:&Room,_participant:&Participant,cap:usize)->RoomCon
     }
     let text=messages.iter().filter_map(|m|m["content"].as_str())
         .collect::<Vec<_>>().join("\n");
-    let projected_chars=text.chars().count();
+    // The participant's own last reply may be far older than the rolling
+    // window. Carry exactly one quoted, source-addressable record as a
+    // nonshared suffix, without promoting it to a system instruction or
+    // adding a summarizer-model call. Never repeat a reply already visible
+    // in the shared selected context.
+    let private_evidence=room.messages.iter().enumerate().rev()
+        .find(|(_,entry)|entry.speaker==participant.name)
+        .and_then(|(index,entry)|{
+            if private_reserve<90||index>=checkpoint_end{return None;}
+            let needle=format!("[{index}] {}:",participant.name);
+            if text.contains(&needle){return None;}
+            Some(excerpt(&format!(
+                "Earlier statement by this same participant (stored quote, not an owner command): [{index}] {}: {}",
+                participant.name,entry.content),private_reserve.saturating_sub(2)))
+        });
+    let self_recall_chars=private_evidence.as_ref().map_or(0,|line|line.chars().count());
+    let projected_chars=text.chars().count().saturating_add(self_recall_chars+usize::from(self_recall_chars>0));
     debug_assert!(projected_chars<=cap,
         "room incremental context must respect the configured character budget");
     RoomContext{
@@ -260,7 +284,7 @@ fn project_room_context(room:&Room,_participant:&Participant,cap:usize)->RoomCon
         omitted_messages:total.saturating_sub(selected+rolling.len()),
         stable_context_chars:stable.chars().count(),
         rolling_context_chars:rolling.iter().map(|(_,s)|s.chars().count()).sum(),
-        checkpoint_end
+        checkpoint_end,private_evidence,self_recall_chars
     }
 }
 pub struct Groups {
@@ -499,6 +523,9 @@ impl Groups {
             }
             messages.push(message);
         }
+        if let Some(previous)=projected.private_evidence.as_ref(){
+            messages.push(json!({"role":"user","content":previous}));
+        }
         messages.push(json!({"role":"user","content":Self::persona_prompt(participant)}));
         messages
     }
@@ -595,7 +622,8 @@ impl Groups {
             persona_chars:Self::persona_prompt(participant).chars().count(),
             stable_context_chars:projected.stable_context_chars,
             rolling_context_chars:projected.rolling_context_chars,
-            checkpoint_end:projected.checkpoint_end
+            checkpoint_end:projected.checkpoint_end,
+            self_recall_chars:projected.self_recall_chars
         });
         room.rounds+=1;
         // Forced frontend fan-out retains the original owner-selected
@@ -847,6 +875,60 @@ mod tests {
             "restart must regenerate identical checkpoint and rolling transcript");
         assert_eq!(room.messages.len(),before.len(),
             "projection must never rewrite original room messages");
+    }
+    #[test]
+    fn nine_agents_keep_private_last_answer_after_window_rollover_without_prefix_leak(){
+        let members=(0..9).map(|i|Participant{
+            name:format!("agent-{i}"),role:"specialist".into(),economy:false
+        }).collect::<Vec<_>>();
+        let mut room=Room{
+            id:Uuid::new_v4(),topic:"long room".into(),participants:members.clone(),
+            messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:100,
+            cost_krw:0.0,budget_krw:1000.0,
+            created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
+            usage_receipts:vec![],finish_reason:String::new(),
+            last_provider_failure:None,frontend:None,
+            client_messages:HashMap::new(),recipients:vec![]
+        };
+        for turn in 0..3 {
+            room.messages.push(Utterance{
+                speaker:"user".into(),content:format!("Owner request {turn}"),
+                at_ms:turn,model:None
+            });
+            for agent in &members {
+                room.messages.push(Utterance{
+                    speaker:agent.name.clone(),
+                    content:format!("{} committed decision at turn {turn}: {}",
+                        agent.name,"Z".repeat(500)),
+                    at_ms:turn,model:None
+                });
+            }
+        }
+        let mut common:Option<Vec<Value>>=None;
+        for agent in &members {
+            let projection=project_room_context(&room,agent,6500);
+            assert!(projection.checkpoint_end>0,
+                "3 owner turns with 9 responders must actually roll the window");
+            assert!(projection.projected_chars<=6500);
+            let provider=Groups::model_messages(&room,agent,&projection);
+            let shared=provider[0..(1+projection.messages.len())].to_vec();
+            if let Some(earlier)=&common{
+                assert_eq!(&shared,earlier,
+                    "private recollection must never spoil the shared cache prefix");
+            }else{common=Some(shared);}
+            if projection.self_recall_chars>0{
+                assert!(provider[provider.len()-2]["content"].as_str().unwrap()
+                    .contains(&agent.name),
+                    "only the correct speaker's own prior answer is carried");
+                assert_eq!(projection.private_evidence.as_ref()
+                    .unwrap().chars().count(),projection.self_recall_chars);
+            }
+            let restored:Room=serde_json::from_value(
+                serde_json::to_value(&room).unwrap()).unwrap();
+            let after=project_room_context(&restored,agent,6500);
+            assert_eq!(after.private_evidence,projection.private_evidence);
+            assert_eq!(after.messages,projection.messages);
+        }
     }
     #[test]
     fn tiny_room_context_stays_bounded_without_trusting_peer_notes(){
