@@ -88,11 +88,11 @@ fn speakers_for_owner_turn(room:&Room)->Vec<String>{
         .filter(|speaker|selected.insert(speaker.clone())&&!spoken.contains(speaker))
         .collect()
 }
-fn owner_turn_progress(room:&Room,index:usize)->(usize,usize){
+fn owner_turn_progress(room:&Room,index:usize,requested:&[String])->(usize,usize){
     let config=config_of(room);
-    let wanted=if config.routing_mode=="discussion"{
-        room.participants.len()
-    }else if config.routing_mode=="round_robin"{1}
+    let wanted=if config.routing_mode=="round_robin"{1}
+    else if !requested.is_empty(){requested.iter().collect::<HashSet<_>>().len()}
+    else if config.routing_mode=="discussion"{room.participants.len()}
     else{
         // Mention-only rounds are intentionally scoped to named targets.
         room.messages.get(index).map(|m|m.content.to_lowercase()).map_or(0,|content|
@@ -398,6 +398,7 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
     return Err(bad("unsupported reasoning language"));
   }
   let mut recipients=input.agent_ids;
+  let requested_initial=recipients.clone();
   if recipients.is_empty() {
     // Main RoomsPage accepts plain @DisplayName mentions as well as
     // explicit selected agent IDs. Resolve them against real room members.
@@ -414,16 +415,16 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   let (before,inserted,index)=engine.groups.say_once(
     id,input.input.trim().to_owned(),&input.client_message_id,recipients
   ).await.map_err(bad)?;
-  // A retry with the same clientMessageId must not add another user message.
-  // If a prior provider failure left speakers unfinished, resume only those
-  // unserved speakers; completed turns never invoke the model twice.
-  let (room,_new_turns,_new_expected)=if (inserted||
-      before.status==RoomStatus::Open && !speakers_for_owner_turn(&before).is_empty())
-      &&before.status==RoomStatus::Open{
-    if speakers_for_owner_turn(&before).is_empty(){(before,0,0)}
-    else{generate(&engine,id).await?}
+  // Retry only the original owner turn; stale clientMessageIds may never
+  // schedule replies for a newer user message.
+  let newest=before.messages.iter().rposition(|m|m.speaker=="user")==Some(index);
+  let (room,_new_turns,_new_expected)=if newest
+      &&before.status==RoomStatus::Open
+      &&!speakers_for_owner_turn(&before).is_empty(){
+    generate(&engine,id).await?
   }else{(before,0,0)};
-  let (expected,turns)=owner_turn_progress(&room,index);
+  let (expected,turns)=owner_turn_progress(&room,index,
+      if requested_initial.is_empty(){&room.recipients}else{&requested_initial});
   if inserted{crate::frontend_channels::dispatch_room(&engine,&room).await;}
   let message=message_rows(&room).get(index).cloned().ok_or_else(||failed("stored message disappeared".into()))?;
   Ok(Json(json!({

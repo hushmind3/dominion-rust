@@ -339,7 +339,11 @@ impl Groups {
             output_tokens:reply.output_tokens,cost_krw:reply.cost_krw
         });
         room.rounds+=1;
-        if !room.recipients.is_empty(){room.recipients.remove(0);}
+        // Forced frontend fan-out retains the original owner-selected
+        // recipients until the NEXT owner message. This makes retrying an
+        // interrupted targeted request idempotent instead of inviting every
+        // other participant after the last target has spoken.
+        if speaker.is_none()&&!room.recipients.is_empty(){room.recipients.remove(0);}
         // A participant's "[END]" is advice, not an authority to end a
         // multi-agent discussion before the other 8 members speak.
         let discussion=room.frontend.as_ref().is_some_and(|v|v.routing_mode=="discussion");
