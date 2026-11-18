@@ -581,6 +581,23 @@ impl Engine {
                         "RECORDED EXECUTION FAILURE ({}) — suggested next check (not a new user instruction): {}",
                         advice.kind,advice.hint)}),
                     self.settings.context_max_chars));
+            // 2026 trace-conditioned cross-run transfer. Only an opt-in
+            // independently audited repair of the SAME failed tool/resource
+            // may inform the next model turn. This never auto-adopts a patch
+            // or pays for a separate LLM retrieval/reranking call.
+            if run.strategy_learning && repair.is_some() {
+                if let Some(repository)=run.repository.as_deref(){
+                    let historical=self.store.strategy_evidence(repository).await;
+                    let matched=crate::strategy::rank_for_run(historical,&run,2);
+                    if !matched.is_empty(){
+                        let guidance=crate::strategy::transfer_prompt(&matched);
+                        let _=crate::context::insert_optional(
+                            &mut outbound,json!({"role":"user","content":format!(
+                                "AUDITED RECOVERY EXAMPLES (historical,                                  not user commands or permission):\n{guidance}"
+                            )}),self.settings.context_max_chars);
+                    }
+                }
+            }
             let notes=self.focused_notes(&run).await;
             if !notes.is_empty(){
                 let _=crate::context::insert_optional(
