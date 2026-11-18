@@ -26,6 +26,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Native SDK UI progress and cost view (dev profile)
         run: cargo test --lib program_view_tests
+      - name: Nine-agent three-turn fanout, per-speaker metering and incomplete round status
+        run: cargo test --lib frontend_rooms::fanout_tests
       - name: Model-authored program cursor, typed receipts, policy and crash recovery (dev profile)
         run: cargo test --lib program_session::tests
       - name: Programmatic native shell remains approval-gated (dev profile)

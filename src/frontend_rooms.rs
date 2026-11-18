@@ -491,3 +491,6 @@ async fn system_prompt(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
     "estimated":true
   })))
 }
+
+#[cfg(test)]
+mod fanout_tests;
