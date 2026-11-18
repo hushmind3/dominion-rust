@@ -6,7 +6,8 @@ pub(super) fn public_session(session:&UiSession)->Value{
         "id":session.id,"title":session.title,"agentId":session.agent_id,
         "providerId":session.provider_id,"model":session.model,
         "createdAt":session.created_at,"updatedAt":session.updated_at,
-        "roomId":session.room_id,"archived":false
+        "roomId":session.room_id,"pendingRun":session.pending_run,
+        "archived":false
     })
 }
 pub(super) async fn sync_session(engine:&Arc<Engine>,id:&str)->Result<(),String>{
@@ -40,7 +41,16 @@ pub(super) async fn sync_session(engine:&Arc<Engine>,id:&str)->Result<(),String>
         })),
     });
     // No assistant message is fabricated on failure/cancellation.
-    engine.frontend.finish_turn(id,run_id,message).await?;
+    // Cancel SSE finalizer and cancel API can race. A second finalizer is
+    // harmless only if the exact run was already settled; an unrelated newer
+    // turn must never be overwritten or cleared.
+    if let Err(error)=engine.frontend.finish_turn(id,run_id,message).await{
+        if engine.frontend.session(id).await.is_some_and(|current|
+            current.pending_run!=Some(run_id)){
+            return Ok(());
+        }
+        return Err(error);
+    }
     Ok(())
 }
 pub(super) async fn sessions(State(engine):State<Arc<Engine>>)->Json<Value>{
@@ -190,16 +200,32 @@ pub(super) async fn cancel_session(State(engine):State<Arc<Engine>>,Path(id):Pat
     if let Some(room_id)=record.room_id{
         let rid=Uuid::parse_str(&room_id).map_err(|_|bad("bound room invalid"))?;
         engine.groups.stop(rid).await.map_err(bad)?;
-        return Ok(Json(json!({"cancelled":true})));
+        return Ok(Json(json!({"cancelled":true,"status":"stopped","pending":false})));
     }
-    let Some(run_id)=record.pending_run else{return Ok(Json(json!({"cancelled":false})));};
-    let run=engine.store.get(run_id).await.ok_or_else(||missing("bound native run missing"))?;
-    if run.terminal(){
+    let Some(run_id)=record.pending_run else{
+        return Ok(Json(json!({"cancelled":false,"status":"idle","pending":false})));
+    };
+    let original=engine.store.get(run_id).await
+        .ok_or_else(||missing("bound native run missing"))?;
+    if original.terminal(){
         sync_session(&engine,&id).await.map_err(broken)?;
-        return Ok(Json(json!({"cancelled":false})));
+        return Ok(Json(json!({"cancelled":original.status==RunStatus::Cancelled,
+            "status":original.status,"pending":false,"runId":run_id})));
     }
-    engine.cancel(run_id).await.map_err(bad)?;
-    Ok(Json(json!({"cancelled":true})))
+    // This records the cancellation before notifying the selected provider
+    // HTTP future. A started write keeps its in-flight journal receipt; do
+    // not falsely claim it is safely aborted.
+    let updated=engine.cancel(run_id).await.map_err(bad)?;
+    let cancelled=updated.status==RunStatus::Cancelled;
+    if cancelled {
+        // The same session can accept the next message immediately, even if
+        // its background SSE finalizer has not yet observed the terminal Run.
+        sync_session(&engine,&id).await.map_err(broken)?;
+    }
+    Ok(Json(json!({"cancelled":cancelled,"status":updated.status,
+        "pending":!cancelled,"runId":run_id,
+        "message":if cancelled{"native model cancellation committed"}
+            else{"started tool must settle before this session can continue"}})))
 }
 
 
