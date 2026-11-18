@@ -574,6 +574,8 @@ use super::*;
 
 #[cfg(test)]
 mod recovery_tests;
+#[cfg(test)]
+mod artifact_completion;
 
     #[tokio::test]
     async fn fresh_failure_class_retargets_existing_run_memory_without_extra_model_calls(){
