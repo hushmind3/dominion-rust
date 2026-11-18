@@ -101,6 +101,19 @@ async fn stop_preempts_silent_model_http_and_allows_next_same_session_message(){
     let second_id=engine.frontend.session(&id).await.unwrap()
         .pending_run.expect("second chat did not start");
     assert_ne!(first_id,second_id);
+    let first_state=engine.store.get(first_id).await.unwrap();
+    let second_state=engine.store.get(second_id).await.unwrap();
+    assert!(!first_state.provider_session_affinity.is_empty());
+    assert_eq!(first_state.provider_session_affinity,
+        second_state.provider_session_affinity,
+        "separate native Runs in the same chat must reuse one stable cache session");
+    assert_ne!(first_state.provider_session_affinity,
+        format!("dominion-run-{first_id}"));
+    let recovered:Run=serde_json::from_value(
+        serde_json::to_value(&second_state).unwrap()).unwrap();
+    assert_eq!(recovered.provider_session_affinity,
+        second_state.provider_session_affinity,
+        "provider session affinity must survive a durable journal restart");
     timeout(Duration::from_secs(5),async{
         loop{
             let _=sync_session(&engine,&id).await;

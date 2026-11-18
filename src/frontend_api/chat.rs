@@ -57,6 +57,16 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
                 provider_id:selected_provider,model:selected_model,
                 strategy_learning:input.auto_learning,model_only
             }).await.map_err(bad)?;
+    // Each UI message is a new isolated native Run, but all messages in the
+    // same UI chat must retain ONE provider cache/routing session. Hash the
+    // stable frontend session ID before it ever leaves the local runtime.
+    use sha2::Digest;
+    let identity=sha2::Sha256::digest(record.id.as_bytes());
+    let suffix=identity[..16].iter().map(|v|format!("{v:02x}")).collect::<String>();
+    engine.store.mutate(run.id,|current|{
+        current.provider_session_affinity=format!("dominion-chat-{suffix}");
+        Ok(())
+    }).await.map_err(broken)?;
     engine.frontend.begin_turn(&record.id,input.input.trim(),run.id).await.map_err(broken)?;
     // Both tool agents and tool-free chat now launch through the same native
     // worker/cancellation lifecycle. No independent model-only executor.

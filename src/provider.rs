@@ -78,6 +78,14 @@ impl ModelClient {
     /// Route by conversation, never by branch-wide shared constant.
     /// Exact first-party HTTPS origin/path checks prevent leaking a session
     /// identifier to arbitrary OpenAI-compatible gateways or lookalike hosts.
+    /// Only the official OpenAI endpoint receives prompt_cache_key. The
+    /// operator's configured key has priority; otherwise the persisted
+    /// native chat/Run affinity is stable across calls and model retries.
+    fn openai_cache_key_for(&self,settings:&ModelSettings)->Option<&str>{
+        if settings.base_url=="https://api.openai.com/v1"{
+            settings.cache_key.as_deref().or(self.session_affinity.as_deref())
+        }else{None}
+    }
     fn opencode_session_for(&self,settings:&ModelSettings)->Option<&str>{
         let url=reqwest::Url::parse(&settings.base_url).ok()?;
         if url.scheme()=="https" && url.host_str()==Some("opencode.ai")
@@ -134,7 +142,9 @@ impl ModelClient {
         // endpoint so OpenAI-compatible third-party servers are not broken.
         if settings.base_url=="https://api.openai.com/v1"{
             if let Some(ttl)=&settings.cache_ttl{body["prompt_cache_options"]=json!({"ttl":ttl});}
-            if let Some(key)=&settings.cache_key{body["prompt_cache_key"]=json!(key);}
+            if let Some(key)=self.openai_cache_key_for(settings){
+                body["prompt_cache_key"]=json!(key);
+            }
         }
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
@@ -674,6 +684,24 @@ mod tests {
         assert_eq!(openai_compatible_usage(&json!({"usage":{}})),(0,0,0,0,false));
         assert_eq!(openai_compatible_usage(&json!({"usage":{"input_tokens":67}})),
             (67,0,0,0,false));
+    }
+    #[test]
+    fn first_party_openai_cache_key_inherits_stable_session_or_explicit_operator_key(){
+        let mut config=Settings::from_env().unwrap();
+        config.main.base_url="https://api.openai.com/v1".into();
+        config.main.cache_key=None;
+        let base=ModelClient::new(&config).unwrap();
+        let selected=base.with_session_affinity("dominion-chat-stable");
+        assert_eq!(selected.openai_cache_key_for(&config.main),
+            Some("dominion-chat-stable"));
+        assert_eq!(base.openai_cache_key_for(&config.main),None);
+        let mut proxied=config.main.clone();
+        proxied.base_url="https://api.openai.com.attacker.test/v1".into();
+        assert_eq!(selected.openai_cache_key_for(&proxied),None);
+        proxied.base_url="https://api.openai.com/v1".into();
+        proxied.cache_key=Some("operator-owned-key".into());
+        assert_eq!(selected.openai_cache_key_for(&proxied),
+            Some("operator-owned-key"));
     }
     #[test]
     fn opencode_affinity_uses_durable_run_identity_and_never_leaks_to_other_hosts(){

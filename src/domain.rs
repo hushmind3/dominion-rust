@@ -109,6 +109,10 @@ pub struct Run {
     /// Frozen model identity; credentials are never written to run journals.
     #[serde(default)] pub provider_id:String,
     #[serde(default)] pub model_name:String,
+    /// Stable hashed frontend session routing identity across separate native
+    /// Runs of one chat. Old journals remain compatible via serde(default).
+    #[serde(default,skip_serializing_if="String::is_empty")]
+    pub provider_session_affinity:String,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -158,7 +162,7 @@ impl Run {
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             strategy_learning:false,model_only:false,
             provider_id:String::new(),model_name:String::new(),
-            created_at_ms: time, updated_at_ms: time,
+            provider_session_affinity:String::new(),created_at_ms: time, updated_at_ms: time,
         };
         run.event("created", "New execution created", None);
         Ok(run)
