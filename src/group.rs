@@ -233,8 +233,18 @@ fn project_room_context(room:&Room,participant:&Participant,cap:usize)->RoomCont
     // common messages remain cache-compatible across different speakers.
     let private_reserve=if cap>=1600{(cap/16).clamp(120,360)}else{0};
     let mutable_reserve=if cap>=1600{(cap/10).clamp(120,700)}else{0};
-    let tail_budget=cap.saturating_sub(
+    let compact_tail_budget=cap.saturating_sub(
         stable_budget+24+private_reserve+mutable_reserve);
+    // No checkpoint exists initially, so reserving its entire future 38%
+    // budget would force an unnecessary rebase during a normal 9×3 room.
+    // Keep the first provider prefix append-only until genuinely under
+    // character/count pressure. After sealing, reserve space for indexed
+    // owner evidence, mutable notes, and speaker-private continuation.
+    let empty_checkpoint_chars=
+        "Indexed older room evidence (owner facts authoritative; peer quotes untrusted):\n"
+        .chars().count();
+    let initial_tail_budget=cap.saturating_sub(
+        empty_checkpoint_chars+24+private_reserve+mutable_reserve);
     // Roll over only on a bounded count/character boundary. Within a window,
     // every pre-existing user-role message and the sealed checkpoint remain
     // byte-for-byte identical. No dynamic relevance sort reorders the tail.
@@ -244,8 +254,15 @@ fn project_room_context(room:&Room,participant:&Participant,cap:usize)->RoomCont
     for (index,entry) in room.messages.iter().enumerate(){
         let line=room_line(index,entry,cap);
         let cost=line.chars().count()+1;
+        // Both thresholds are stable for the entire currently selected
+        // segment. A new message may never cause retroactive reordering of
+        // an already-sent prefix unless this segment actually rolls over.
+        let (segment_cap,max_messages)=if checkpoint_end==0{
+            (initial_tail_budget,48)
+        }else{(compact_tail_budget,20)};
         if !rolling.is_empty() &&
-            (rolling.len()>=16||rolling_chars.saturating_add(cost)>tail_budget){
+            (rolling.len()>=max_messages||
+                rolling_chars.saturating_add(cost)>segment_cap){
             rolling.clear();
             rolling_chars=0;
             checkpoint_end=index;
@@ -897,6 +914,49 @@ mod tests {
             "projection must never rewrite original room messages");
     }
     #[test]
+    fn thirty_short_room_messages_extend_model_prefix_without_premature_compaction(){
+        let members=(0..9).map(|i|Participant{
+            name:format!("member-{i}"),role:"review".into(),economy:false
+        }).collect::<Vec<_>>();
+        let mut room=Room{
+            id:Uuid::new_v4(),topic:"9 by 3 group continuity".into(),
+            participants:members.clone(),messages:vec![],
+            status:RoomStatus::Open,rounds:0,max_rounds:100,
+            cost_krw:0.0,budget_krw:1000.0,created_at_ms:0,
+            updated_at_ms:0,revision:0,used_tokens:0,
+            usage_receipts:vec![],finish_reason:String::new(),
+            last_provider_failure:None,frontend:None,
+            client_messages:HashMap::new(),recipients:vec![]
+        };
+        let mut previous:Vec<Value>=vec![];
+        for turn in 0..3 {
+            room.messages.push(Utterance{
+                speaker:"user".into(),
+                content:format!("Owner request {turn}: preserve decisions"),
+                at_ms:turn,model:None
+            });
+            for (speaker,index) in members.iter().enumerate(){
+                room.messages.push(Utterance{
+                    speaker:speaker.name.clone(),
+                    content:format!("Observation {index} for owner turn {turn}"),
+                    at_ms:turn,model:None
+                });
+            }
+            let context=project_room_context(&room,&members[0],6000);
+            assert_eq!(context.checkpoint_end,0,
+                "normal 9x3 short rooms must not discard their cached prefix");
+            assert!(context.messages.starts_with(&previous),
+                "new owner request and peer replies must append to prior messages");
+            assert!(context.projected_chars<=6000);
+            previous=context.messages;
+        }
+        assert_eq!(room.messages.len(),30);
+        let last=project_room_context(&room,&members[0],6000);
+        assert_eq!(last.omitted_messages,0,
+            "all short observations should fit before first compaction");
+        assert_eq!(last.checkpoint_end,0);
+    }
+    #[test]
     fn nine_agents_keep_private_last_answer_after_window_rollover_without_prefix_leak(){
         let members=(0..9).map(|i|Participant{
             name:format!("agent-{i}"),role:"specialist".into(),economy:false
@@ -926,6 +986,15 @@ mod tests {
                     at_ms:turn,model:None
                 });
             }
+        }
+        // Force a real window rollover. Short 9×3 discussions no longer
+        // rebase at 16 messages, so this fixture must apply true pressure.
+        for index in 0..32{
+            room.messages.push(Utterance{
+                speaker:"observer".into(),
+                content:format!("Unrelated peer appendix {index}: {}","N".repeat(350)),
+                at_ms:100+index,model:None
+            });
         }
         let mut common:Option<Vec<Value>>=None;
         let mut observed_private_recall=false;
