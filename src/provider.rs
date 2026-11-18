@@ -98,6 +98,10 @@ impl ModelClient {
         }
         let mut req = self.http.post(format!("{}/chat/completions", settings.base_url)).json(&body);
         if !settings.api_key.is_empty() { req = req.bearer_auth(&settings.api_key); }
+        // OpenCode Go requires a routing session header on every request.
+        if settings.base_url.contains("opencode.ai") {
+            req = req.header("x-opencode-session", "dominion-sub4");
+        }
         let response = req.send().await.map_err(|e| format!("provider transport: {e}"))?;
         let status = response.status();
         let bytes = bounded_body(response).await?;
@@ -149,6 +153,9 @@ impl ModelClient {
         let root=root.strip_suffix("/v1").unwrap_or(root);
         let mut request=self.http.post(format!("{root}/api/chat")).json(&body);
         if !settings.api_key.is_empty(){request=request.bearer_auth(&settings.api_key);}
+        if settings.base_url.contains("opencode.ai"){
+            request=request.header("x-opencode-session","dominion-sub4");
+        }
         let response=request.send().await.map_err(|e|format!("provider transport: {e}"))?;
         let status=response.status();
         let bytes=bounded_body(response).await?;

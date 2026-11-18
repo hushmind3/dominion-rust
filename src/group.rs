@@ -111,10 +111,10 @@ impl Groups {
         Ok(room)
     }
     pub async fn create(&self,req:NewRoom)->Result<Room,String>{
-        if req.topic.trim().is_empty() || req.topic.len()>10_000 {return Err("invalid room topic".into());}
+        if req.topic.trim().is_empty() || req.topic.chars().count()>10_000 {return Err("invalid room topic".into());}
         if !(1..=32).contains(&req.participants.len()) {return Err("a room needs 1..32 participants".into());}
         for p in &req.participants {
-            if p.name.trim().is_empty() || p.name.len()>40 || p.role.trim().is_empty() || p.role.len()>3000 {
+            if p.name.trim().is_empty() || p.name.chars().count()>40 || p.role.trim().is_empty() || p.role.chars().count()>3000 {
                 return Err("invalid participant".into());
             }
         }
