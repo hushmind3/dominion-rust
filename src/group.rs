@@ -364,13 +364,34 @@ fn project_room_context(room:&Room,participant:&Participant,cap:usize)->RoomCont
         mutable_notes,mutable_memory_chars
     }
 }
+/// Covers the full multi-speaker frontend fan-out, not just one model call.
+/// Its Drop also releases a reservation when a request is cancelled or panics.
+pub struct FrontendTurnLease{
+    id:Uuid,
+    active:Arc<std::sync::Mutex<HashSet<Uuid>>>,
+}
+impl Drop for FrontendTurnLease{
+    fn drop(&mut self){
+        self.active.lock().unwrap_or_else(|e|e.into_inner()).remove(&self.id);
+    }
+}
 pub struct Groups {
     root: PathBuf,
     rooms: Mutex<HashMap<Uuid,Room>>,
     write_gates: Mutex<HashMap<Uuid,Arc<Mutex<()>>>>,
     active: Mutex<HashSet<Uuid>>,
+    frontend_turns:Arc<std::sync::Mutex<HashSet<Uuid>>>,
 }
 impl Groups {
+    pub fn try_frontend_turn(&self,id:Uuid)->Option<FrontendTurnLease>{
+        let mut active=self.frontend_turns.lock().unwrap_or_else(|e|e.into_inner());
+        if !active.insert(id){return None;}
+        Some(FrontendTurnLease{id,active:Arc::clone(&self.frontend_turns)})
+    }
+    pub fn frontend_turn_active(&self,id:Uuid)->bool{
+        self.frontend_turns.lock().unwrap_or_else(|e|e.into_inner()).contains(&id)
+    }
+
     pub async fn open(root:PathBuf) -> Result<Self,String> {
         fs::create_dir_all(&root).await.map_err(|e|e.to_string())?;
         let mut rooms=HashMap::new();
@@ -381,7 +402,8 @@ impl Groups {
             rooms.insert(room.id,room);
         }
         Ok(Self{root,rooms:Mutex::new(rooms),write_gates:Mutex::new(HashMap::new()),
-            active:Mutex::new(HashSet::new())})
+            active:Mutex::new(HashSet::new()),
+            frontend_turns:Arc::new(std::sync::Mutex::new(HashSet::new()))})
     }
     async fn write_gate(&self,id:Uuid)->Arc<Mutex<()>>{
         let mut gates=self.write_gates.lock().await;
