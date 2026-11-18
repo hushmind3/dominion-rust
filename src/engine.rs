@@ -992,7 +992,7 @@ impl Engine {
         self.store.mutate(id,|run|{
             journal::finish(run,&call,&output,false)?;
             if let Some(names)=&newly_discovered{
-                crate::tool_discovery::remember(run,names);
+                crate::tool_discovery::remember_if_current(run,&snapshot,names);
             }
             Ok(())
         }).await?;
