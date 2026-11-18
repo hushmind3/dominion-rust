@@ -565,10 +565,18 @@ impl Engine {
                 available_tools.retain(|tool|
                     tool.pointer("/function/name").and_then(Value::as_str)!=Some("compare_strategies"));
             }
-            available_tools.extend(self.mcp.definitions().await);
-            available_tools.extend(crate::connected_tools::definitions(&self.settings));
+            let mut external=self.mcp.definitions().await;
+            external.extend(crate::connected_tools::definitions(&self.settings));
+            let (external,deferred_schema_chars,discovery_active)=
+                crate::tool_discovery::for_turn(&run,external,&self.settings.denied_tools);
+            if !discovery_active {
+                available_tools.retain(|tool|tool.pointer("/function/name")
+                    .and_then(Value::as_str)!=Some("tool_search"));
+            }
+            available_tools.extend(external);
             let has_children=self.store.has_children(id).await;
-            let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
+            let (catalog,policy_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
+            let schema_chars_saved=policy_saved.saturating_add(deferred_schema_chars);
             let projection=crate::context::compact_strict(&run.messages,self.settings.context_max_chars)?;
             let mut outbound=projection.messages.clone();
             // The source is a durable tool/verifier receipt, not model or
@@ -920,6 +928,13 @@ impl Engine {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
                 let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;
                 self.check_subagent(id,child).await
+            } else if call.name == "tool_search" {
+                let query=call.arguments.get("query").and_then(Value::as_str)
+                    .ok_or("tool_search query required")?;
+                let limit=call.arguments.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
+                let mut external=self.mcp.definitions().await;
+                external.extend(crate::connected_tools::definitions(&self.settings));
+                crate::tool_discovery::search(&snapshot,external,&self.settings.denied_tools,query,limit)
             } else if call.name == "list_skills" {
                 let found=crate::skills::list(&self.settings,id).await?;
                 Ok(json!(found).to_string())
@@ -971,7 +986,16 @@ impl Engine {
         }
         chain.after(&snapshot,&call,&mut output);
         // Receipt + dequeuing + cancellation are one durable Store mutation.
-        self.store.mutate(id,|run|journal::finish(run,&call,&output,false)).await?;
+        let newly_discovered=if call.name=="tool_search" {
+            output.as_ref().ok().map(|body|crate::tool_discovery::names_from_receipt(body))
+        }else{None};
+        self.store.mutate(id,|run|{
+            journal::finish(run,&call,&output,false)?;
+            if let Some(names)=&newly_discovered{
+                crate::tool_discovery::remember(run,names);
+            }
+            Ok(())
+        }).await?;
         Ok(())
     }
     /// Records observed outcomes; never re-executes an interrupted tool.
@@ -1058,6 +1082,7 @@ impl Engine {
             // higher-priority owner correction. Keep started external effects
             // intact until a durable observation or manual reconciliation.
             program_session::supersede(run)?;
+            run.discovered_tools.clear();
             run.event("directive","User updated instructions",Some(json!({"text":content})));
             Ok(())
         }).await?;

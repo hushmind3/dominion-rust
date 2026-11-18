@@ -57,6 +57,10 @@ The SDK's wait contract and browser chat transports share the Store's post-fsync
 
 The model-facing tool set is selected in `src/policy.rs`, validated against its actual advertised JSON schema and protected by the operator tool hook. External MCP mutations remain behind the same durable approval and crash-reconciliation contract.
 
+## On-demand external tool discovery
+
+The native model-facing tool catalog uses `tool_search({"query":"create github issue", "limit":5})` when more than 8 permitted MCP/GitHub/Google external tools exist. The result is a receipt containing only names, brief descriptions and required argument keys. On the next model turn Rust advertises the original schemas of the chosen tools, bounded to 16 remembered names in the durable Run. Models then call those exact original tool names. There is **no tool_call shortcut**: every remote call runs through the original `tool_schema::admit`, operator policy, hooks, explicit approval for MCP and remote mutation, journal and uncertain-effect recovery. Discovery cannot expose revoked, unconnected or read-only-denied capabilities. Small catalogs are sent eagerly. `Run.discovered_tools` uses backward-compatible serde defaults.
+
 ## No mandatory background learning
 
 `DOMINION_STRATEGY_LEARNING=false` is the default. The ordinary Chat interface sends `autoLearning:false`. Storing a note is explicit, and historical Run receipts remain available. There is no SDK method for creating a recursive RSI campaign, self-evaluating candidate generations, promoting source revisions, built-in video generation or uploading finished video.

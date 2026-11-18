@@ -25,7 +25,7 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
     matches!(name,"list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"read_program"|"github_list_repositories"|"github_read_file"|"github_list_branches"|"github_list_issues"
         |"github_get_issue"|"github_list_pull_requests"|"github_get_pull_request"
         |"google_drive_search"|"google_drive_read_text"|"google_docs_get"|"google_sheets_get"
-        |"check_subagent"|"read_subagent_file"|"spawn_subagent"|"memory_search"|"list_skills"|"load_skill")
+        |"check_subagent"|"read_subagent_file"|"spawn_subagent"|"memory_search"|"tool_search"|"list_skills"|"load_skill")
 }
 
 /// This same admission check must run before each actual tool dispatch.

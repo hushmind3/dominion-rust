@@ -21,7 +21,7 @@ pub fn replay_safe(name:&str)->bool {
         |"github_list_branches"|"github_list_issues"|"github_get_issue"|"github_list_pull_requests"
         |"github_get_pull_request"|"google_drive_search"|"google_drive_read_text"
         |"google_docs_get"|"google_sheets_get"
-        |"list_skills"|"load_skill"
+        |"list_skills"|"load_skill"|"tool_search"
     )
 }
 

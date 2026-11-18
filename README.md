@@ -11,7 +11,7 @@ Dominion is a user-directed autonomous work platform, not a recursive self-modif
 | Execution kernel | `src/engine.rs`, `src/engine/delegation.rs`, `src/domain.rs`, `src/journal.rs` | Plan, execute, pause, approve, cancel, delegate, reconcile, verify |
 | Durable state | `src/store.rs` | Fsync-backed Run records; commit only recovery-changed snapshots on restart, scoped descendant lookup and post-commit event notifications |
 | Model adapters | `src/provider.rs`, `src/provider_registry.rs` | OpenAI-compatible, Anthropic Messages and local model endpoints |
-| Tools and MCP | `src/tools.rs`, `src/mcp.rs`, `src/tool_batch.rs`, `src/tool_schema.rs` | Native workspace tools and external MCP, capability checks, bounded parallel reads |
+| Tools and MCP | `src/tools.rs`, `src/mcp.rs`, `src/tool_batch.rs`, `src/tool_schema.rs`, `src/tool_discovery.rs` | Native workspace tools, permission-scoped progressive external tool discovery, bounded parallel reads |
 | Reasoning constraints | `src/context.rs`, `src/policy.rs`, `src/verification.rs`, `src/loop_guard.rs` | Pinned user requirements, budgets, evidence checks, stuck-loop protection |
 | Memory and collaboration | `src/knowledge.rs`, `src/group.rs`, `src/strategy.rs` | User-controlled project notes, explicit groups, retrieval of opted-in verified runs |
 | Product adapters | `src/sdk.rs`, `src/api.rs`, `src/frontend_api.rs`, `sdk/typescript/`, `web/` | Single Rust engine reached through SDK, HTTP, web UI |
@@ -52,6 +52,10 @@ Key settings:
 - `DOMINION_STRATEGY_LEARNING=false`: no default strategy learning or repeated background RSI.
 - `DOMINION_INPUT_KRW_PER_MTOK`, `DOMINION_OUTPUT_KRW_PER_MTOK`: owner's actual KRW token prices. Zero/unconfigured is **unknown**, not free usage.
 - `DOMINION_ACCESS_TOKEN`: mandatory on non-loopback binding.
+
+## Progressive external tool discovery (2026-11-18)
+
+When more than 8 MCP/connected-account tools are eligible, Dominion keeps native tools eager but advertises **tool_search** instead of every large external JSON schema. Search returns a bounded ranking of authorized names; a successful tool receipt durably unlocks matching original schemas on the next model turn. The original MCP/GitHub/Google name goes through the existing Rust schema admission, human approval, hook, write-ahead receipt and crash-recovery pathway. No second harness, hidden direct executor, shell escape, or unconditional external permission is added. Small catalogs remain eager to avoid unnecessary model calls; disabling tool_search leaves permitted external tools visible. Discovery state is bounded to 16 names per Run, rechecked against live registry/policy, and cleared on owner-directed changes. There is no external ACP runtime adapter yet.
 
 ## Native Rust SDK
 
