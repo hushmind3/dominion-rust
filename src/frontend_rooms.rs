@@ -48,6 +48,83 @@ fn config_of(room:&Room)->FrontendRoom{
     reasoning_effort:String::new(),learned_context:String::new(),
   })
 }
+fn room_status(room:&Room)->&'static str{
+    if room.status==RoomStatus::Open{return "idle";}
+    match room.finish_reason.as_str(){
+        "stopped"=>"stopped",
+        "max_turns_reached"=>"interrupted",
+        "cost_budget_exceeded"|"token_budget_exceeded"=>"failed",
+        _=>"completed"
+    }
+}
+/// A discussion response is a full set of distinct registered speakers,
+/// not one model step. Non-discussion routing retains its explicit target.
+fn speakers_for_owner_turn(room:&Room)->Vec<String>{
+    let config=config_of(room);
+    let candidates=match config.routing_mode.as_str(){
+        "discussion"=>{
+            if room.recipients.is_empty(){
+                room.participants.iter().map(|p|p.name.clone()).collect::<Vec<_>>()
+            }else{room.recipients.clone()}
+        },
+        "mentioned"=>{
+            if !room.recipients.is_empty(){room.recipients.clone()}
+            else{
+                let content=room.messages.iter().rev().find(|m|m.speaker=="user")
+                    .map_or("",|m|m.content.as_str()).to_lowercase();
+                room.participants.iter().filter(|p|
+                    content.contains(&format!("@{}",p.name.to_lowercase())))
+                    .map(|p|p.name.clone()).collect()
+            }
+        },
+        _=>vec![room.participants[crate::group::Groups::select(room)].name.clone()]
+    };
+    let last_user=room.messages.iter().rposition(|m|m.speaker=="user");
+    let spoken=last_user.map_or_else(HashSet::new,|index|
+        room.messages[index+1..].iter().filter(|m|m.speaker!="user")
+            .map(|m|m.speaker.clone()).collect::<HashSet<_>>());
+    let mut selected=HashSet::new();
+    candidates.into_iter()
+        .filter(|speaker|selected.insert(speaker.clone())&&!spoken.contains(speaker))
+        .collect()
+}
+fn owner_turn_progress(room:&Room,index:usize)->(usize,usize){
+    let config=config_of(room);
+    let wanted=if config.routing_mode=="discussion"{
+        room.participants.len()
+    }else if config.routing_mode=="round_robin"{1}
+    else{
+        // Mention-only rounds are intentionally scoped to named targets.
+        room.messages.get(index).map(|m|m.content.to_lowercase()).map_or(0,|content|
+            room.participants.iter().filter(|p|
+                content.contains(&format!("@{}",p.name.to_lowercase()))).count())
+            .max(room.recipients.len())
+    };
+    let produced=room.messages.iter().skip(index+1)
+        .take_while(|m|m.speaker!="user")
+        .filter(|m|m.speaker!="user").count();
+    (wanted,produced)
+}
+fn room_usage(room:&Room)->Value{
+    let prompt=room.usage_receipts.iter().map(|m|m.input_tokens).sum::<u64>();
+    let output=room.usage_receipts.iter().map(|m|m.output_tokens).sum::<u64>();
+    let cached=room.usage_receipts.iter().map(|m|m.cached_input_tokens).sum::<u64>();
+    let writes=room.usage_receipts.iter().map(|m|m.cache_write_tokens).sum::<u64>();
+    let by_agent=room.participants.iter().map(|p|{
+        let receipts=room.usage_receipts.iter().filter(|m|m.participant==p.name)
+            .collect::<Vec<_>>();
+        json!({"agentId":p.name,"calls":receipts.len(),
+            "promptTokens":receipts.iter().map(|r|r.input_tokens).sum::<u64>(),
+            "completionTokens":receipts.iter().map(|r|r.output_tokens).sum::<u64>(),
+            "cachedPromptTokens":receipts.iter().map(|r|r.cached_input_tokens).sum::<u64>(),
+            "costKrw":receipts.iter().map(|r|r.cost_krw).sum::<f64>()})
+    }).collect::<Vec<_>>();
+    json!({"totalTokens":room.used_tokens,
+        "promptTokens":prompt,"completionTokens":output,
+        "cachedPromptTokens":cached,"cacheWriteTokens":writes,
+        "calls":room.usage_receipts.len(),"estimatedCalls":0,
+        "costKrw":room.cost_krw,"byAgent":by_agent})
+}
 pub fn room_view(room:&Room)->Value{
   let conf=config_of(room);
   json!({
@@ -59,14 +136,24 @@ pub fn room_view(room:&Room)->Value{
     "toolsEnabled":conf.tools_enabled,"autoLearning":conf.auto_learning,
     "autoModels":conf.auto_models,"models":conf.models,
     "reasoningEffort":conf.reasoning_effort,"sessionId":room_session(room.id),
-    "status":if room.status==RoomStatus::Finished{"completed"}else{"idle"},
+    "status":room_status(room),"finishReason":room.finish_reason,
     "updatedAt":timestamp(room.updated_at_ms)
   })
 }
 pub fn message_rows(room:&Room)->Vec<UiMessage>{
   let session_id=room_session(room.id);
+  let receipts=room.usage_receipts.iter()
+    .map(|r|(r.message_index,r)).collect::<std::collections::HashMap<_,_>>();
   room.messages.iter().enumerate().map(|(i,m)|{
     let user=m.speaker=="user";
+    let usage=receipts.get(&i).map(|receipt|json!({
+        "promptTokens":receipt.input_tokens,
+        "completionTokens":receipt.output_tokens,
+        "cachedPromptTokens":receipt.cached_input_tokens,
+        "cacheWriteTokens":receipt.cache_write_tokens,
+        "totalTokens":receipt.input_tokens.saturating_add(receipt.output_tokens),
+        "costKrw":receipt.cost_krw
+    }));
     UiMessage{
       id:format!("{}:{i}",room.id),
       session_id:session_id.clone(),
@@ -77,7 +164,7 @@ pub fn message_rows(room:&Room)->Vec<UiMessage>{
       metadata:Some(json!({
         "roomId":room.id.to_string(),
         "authorKind":if user{"user"}else{"agent"},
-        "model":m.model
+        "model":m.model,"usage":usage
       }))
     }
   }).collect()
@@ -227,13 +314,16 @@ async fn messages(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   engine.groups.get(id).await.map(|room|Json(message_rows(&room)))
     .ok_or_else(missing)
 }
-fn completed_job(room:&Room,turns:usize,receipt:&str)->Value{
+fn completed_job(room:&Room,turns:usize,expected:usize,receipt:&str)->Value{
+  let complete=expected>0&&turns==expected;
   json!({
     "id":receipt,
-    "kind":"room_turn","status":if turns>0{"completed"}else{"skipped"},
+    "kind":"room_turn","status":if complete{"completed"}else if expected==0{"skipped"}else{"interrupted"},
     "createdAt":timestamp(room.updated_at_ms),
     "input":{"roomId":room.id.to_string(),"sessionId":room_session(room.id)},
-    "result":{"rounds":turns,"totalTokens":room.used_tokens}
+    "result":{"rounds":turns,"expectedResponses":expected,
+        "actualResponses":turns,"missingResponses":expected.saturating_sub(turns),
+        "totalTokens":room.used_tokens,"usage":room_usage(room)}
   })
 }
 async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
@@ -242,9 +332,9 @@ async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   Ok(Json(json!({
     "room":room_view(&room),"sessionId":room_session(id),
     "jobs":[],"executions":[],"learningJobs":[],"operations":[],"approvals":[],
-    "status":if room.status==RoomStatus::Finished{"completed"}else{"idle"},
+    "status":room_status(&room),
     "queueDepth":0,
-    "usage":{"totalTokens":room.used_tokens,"estimatedCalls":0,"calls":room.rounds}
+    "usage":room_usage(&room)
   })))
 }
 #[derive(Deserialize)]
@@ -255,12 +345,14 @@ struct SayInput{
   client_message_id:String,
   #[serde(default)]reasoning_language:Option<String>,
 }
-pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),Fault>{
+pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,usize),Fault>{
   let before=engine.groups.get(id).await.ok_or_else(missing)?;
   let config=config_of(&before);
+  let scheduled=speakers_for_owner_turn(&before);
+  let expected=scheduled.len();
   let mut room=before;
   let mut turns=0;
-  for _ in 0..config.rounds{
+  for agent_id in scheduled{
     if room.status==RoomStatus::Finished{break;}
     // Read exact-scope durable notes. They influence subsequent turns as
     // explicitly lower-trust task context, never as system instructions.
@@ -271,9 +363,6 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),F
         excerpts.chars().take(1250).collect::<String>()
     }else{excerpts};
     engine.groups.set_knowledge_context(id,excerpt).await.map_err(bad)?;
-    let index=crate::group::Groups::select(&room);
-    let agent_id=room.participants.get(index)
-        .ok_or_else(||bad("room speaker missing"))?.name.as_str();
     let (provider,model)=if !config.auto_models && !config.models.is_empty(){
         let selected=&config.models[room.rounds%config.models.len()];
         (selected.get("providerId").and_then(Value::as_str).unwrap_or("").to_owned(),
@@ -286,7 +375,7 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),F
     };
     let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?;
     engine.providers.throttle(&provider).await;
-    room=engine.groups.next(&selected_model,id).await.map_err(bad)?;
+    room=engine.groups.next_for(&selected_model,id,Some(&agent_id)).await.map_err(bad)?;
     turns+=1;
     if config.auto_learning{
       if let Some(last)=room.messages.last().filter(|m|m.speaker!="user"){
@@ -300,7 +389,7 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),F
     }
   }
   crate::frontend_channels::dispatch_room(engine,&room).await;
-  Ok((room,turns))
+  Ok((room,turns,expected))
 }
 async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   Json(input):Json<SayInput>)->Result<Json<Value>,Fault>{
@@ -325,25 +414,27 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   let (before,inserted,index)=engine.groups.say_once(
     id,input.input.trim().to_owned(),&input.client_message_id,recipients
   ).await.map_err(bad)?;
-  let (room,turns)=if inserted{
-    let mode=config_of(&before).routing_mode;
-    // Mention-only rooms don't create an unsolicited model answer.
-    let addressed=before.recipients.len()>0 ||
-      before.participants.iter().any(|p|input.input.contains(&format!("@{}",p.name)));
-    if mode=="mentioned"&&!addressed{(before,0)}
+  // A retry with the same clientMessageId must not add another user message.
+  // If a prior provider failure left speakers unfinished, resume only those
+  // unserved speakers; completed turns never invoke the model twice.
+  let (room,_new_turns,_new_expected)=if (inserted||
+      before.status==RoomStatus::Open && !speakers_for_owner_turn(&before).is_empty())
+      &&before.status==RoomStatus::Open{
+    if speakers_for_owner_turn(&before).is_empty(){(before,0,0)}
     else{generate(&engine,id).await?}
-  }else{(before,0)};
+  }else{(before,0,0)};
+  let (expected,turns)=owner_turn_progress(&room,index);
   if inserted{crate::frontend_channels::dispatch_room(&engine,&room).await;}
   let message=message_rows(&room).get(index).cloned().ok_or_else(||failed("stored message disappeared".into()))?;
   Ok(Json(json!({
     "room":room_view(&room),"message":message,
-    "job":completed_job(&room,turns,&input.client_message_id),"sessionId":room_session(id)
+    "job":completed_job(&room,turns,expected,&input.client_message_id),"sessionId":room_session(id)
   })))
 }
 async fn run(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Value>,Fault>{
-  let (room,turns)=generate(&engine,id).await?;
-  Ok(Json(json!({"room":room_view(&room),"job":completed_job(&room,turns,&format!("manual-{}-{}",id,room.rounds)),
+  let (room,turns,expected)=generate(&engine,id).await?;
+  Ok(Json(json!({"room":room_view(&room),"job":completed_job(&room,turns,expected,&format!("manual-{}-{}",id,room.rounds)),
     "sessionId":room_session(id)})))
 }
 async fn reset(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
