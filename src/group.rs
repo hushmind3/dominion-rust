@@ -12,6 +12,17 @@ pub struct Utterance { pub speaker: String, pub content: String, pub at_ms: u64,
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="snake_case")]
 pub enum RoomStatus { Open, Finished }
+#[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct RoomUsageReceipt {
+    pub message_index:usize,
+    pub participant:String,
+    pub model:String,
+    pub input_tokens:u64,
+    pub cached_input_tokens:u64,
+    pub cache_write_tokens:u64,
+    pub output_tokens:u64,
+    pub cost_krw:f64,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Room {
     pub id: Uuid, pub topic: String, pub participants: Vec<Participant>,
@@ -20,6 +31,12 @@ pub struct Room {
     pub created_at_ms: u64, pub updated_at_ms: u64,
     #[serde(default)] pub revision:u64,
     #[serde(default)] pub used_tokens:u64,
+    /// One durable observed provider usage receipt per generated agent message.
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    pub usage_receipts:Vec<RoomUsageReceipt>,
+    /// Exceeding a limit or stopping is not successful completion.
+    #[serde(default,skip_serializing_if="String::is_empty")]
+    pub finish_reason:String,
     #[serde(default)] pub frontend:Option<FrontendRoom>,
     #[serde(default)] pub client_messages:HashMap<String,usize>,
     #[serde(default)] pub recipients:Vec<String>,
@@ -123,7 +140,7 @@ impl Groups {
         let budget=req.budget_krw.unwrap_or(5000.0);
         if !budget.is_finite() || !(0.0..=1_000_000.0).contains(&budget) {return Err("invalid budget_krw".into());}
         let now=now_ms();
-        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
+        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),finish_reason:String::new(),frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
         self.save(room).await
     }
     pub async fn get(&self,id:Uuid)->Option<Room>{self.rooms.lock().await.get(&id).cloned()}
@@ -167,12 +184,13 @@ impl Groups {
         if self.active.lock().await.contains(&id){return Err("wait for the ongoing group turn to finish".into());}
         let mut room=self.get(id).await.ok_or("room not found")?;
         room.messages.clear();room.client_messages.clear();room.recipients.clear();room.rounds=0;room.cost_krw=0.0;room.used_tokens=0;
+        room.usage_receipts.clear();room.finish_reason.clear();
         room.status=RoomStatus::Open;room.updated_at_ms=now_ms();
         self.save(room).await
     }
     pub async fn stop(&self,id:Uuid)->Result<Room,String>{
         let mut room=self.get(id).await.ok_or("room not found")?;
-        room.status=RoomStatus::Finished;room.updated_at_ms=now_ms();
+        room.status=RoomStatus::Finished;room.finish_reason="stopped".into();room.updated_at_ms=now_ms();
         self.save(room).await
     }
     pub async fn remove(&self,id:Uuid)->Result<(),String>{
@@ -260,16 +278,26 @@ impl Groups {
             participant.name,participant.role,room.topic)
     }
     pub async fn next(&self,model:&ModelClient,id:Uuid)->Result<Room,String>{
+        self.next_for(model,id,None).await
+    }
+    /// The frontend fan-out preselects each registered participant exactly once
+    /// per owner message. This is still the original Groups provider+store path.
+    pub async fn next_for(&self,model:&ModelClient,id:Uuid,
+        speaker:Option<&str>)->Result<Room,String>{
         {let mut busy=self.active.lock().await;if !busy.insert(id){return Err("room turn already running".into());}}
-        let result=self.generate(model,id).await;
+        let result=self.generate(model,id,speaker).await;
         self.active.lock().await.remove(&id);
         result
     }
-    async fn generate(&self,model:&ModelClient,id:Uuid)->Result<Room,String>{
+    async fn generate(&self,model:&ModelClient,id:Uuid,
+        speaker:Option<&str>)->Result<Room,String>{
         let mut room=self.get(id).await.ok_or("room not found")?;
         if !matches!(room.status,RoomStatus::Open){return Err("room is closed".into());}
         if room.rounds>=room.max_rounds || room.cost_krw>=room.budget_krw{return Err("group turn or budget limit reached".into());}
-        let index=Self::select(&room);
+        let index=if let Some(speaker)=speaker{
+            room.participants.iter().position(|p|p.name==speaker)
+                .ok_or("requested room speaker is not a configured participant")?
+        }else{Self::select(&room)};
         let participant=&room.participants[index];
         let context=room.messages.iter().rev().take(14).cloned().collect::<Vec<_>>();
         let conversation=context.into_iter().rev().map(|m|format!("{}: {}",m.speaker,m.content)).collect::<Vec<_>>().join("\n\n");
@@ -295,16 +323,34 @@ impl Groups {
         room.cost_krw+=reply.cost_krw;
         room.used_tokens=room.used_tokens.saturating_add(tokens);
         if exceeded_cost||exceeded_tokens{
-            room.status=RoomStatus::Finished;room.updated_at_ms=now_ms();
+            room.status=RoomStatus::Finished;
+            room.finish_reason=if exceeded_cost{"cost_budget_exceeded"}else{"token_budget_exceeded"}.into();
+            room.updated_at_ms=now_ms();
             self.save(room).await?;
             return Err(if exceeded_cost{"group budget exhausted after billed model request"}
                 else{"group token budget exhausted after billed model request"}.into());
         }
+        let message_index=room.messages.len();
+        room.usage_receipts.push(RoomUsageReceipt{
+            message_index,participant:participant.name.clone(),model:reply.model.clone(),
+            input_tokens:reply.input_tokens,
+            cached_input_tokens:reply.cached_input_tokens,
+            cache_write_tokens:reply.cache_write_tokens,
+            output_tokens:reply.output_tokens,cost_krw:reply.cost_krw
+        });
         room.rounds+=1;
         if !room.recipients.is_empty(){room.recipients.remove(0);}
-        let done=reply.text.trim_start().starts_with("[END]") || room.rounds>=room.max_rounds;
+        // A participant's "[END]" is advice, not an authority to end a
+        // multi-agent discussion before the other 8 members speak.
+        let discussion=room.frontend.as_ref().is_some_and(|v|v.routing_mode=="discussion");
+        let done=(!discussion && reply.text.trim_start().starts_with("[END]"))
+            ||room.rounds>=room.max_rounds;
         room.messages.push(Utterance{speaker:participant.name.clone(),content:reply.text,at_ms:now_ms(),model:Some(reply.model)});
-        if done {room.status=RoomStatus::Finished;}
+        if done {
+            room.status=RoomStatus::Finished;
+            room.finish_reason=if room.rounds>=room.max_rounds{"max_turns_reached"}
+                else{"participant_suggested_end"}.into();
+        }
         room.updated_at_ms=now_ms();
         self.save(room).await
     }
