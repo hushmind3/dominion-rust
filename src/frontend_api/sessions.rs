@@ -230,6 +230,9 @@ pub(super) async fn cancel_session(State(engine):State<Arc<Engine>>,Path(id):Pat
 
 
 #[cfg(test)]
+mod chat_cancellation_tests;
+
+#[cfg(test)]
 mod selected_model_receipt_tests{
  use super::*;
  use crate::{group::Groups,store::Store};
