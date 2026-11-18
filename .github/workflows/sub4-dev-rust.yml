@@ -59,6 +59,8 @@ jobs:
         run: 'cargo test --lib context::'
       - name: Evidence-driven next-step repair and observation regressions (dev profile)
         run: 'cargo test --lib repair_guidance::'
+      - name: Permission-scoped progressive tool discovery and durable resume (dev profile)
+        run: 'cargo test --lib tool_discovery::tests'
       - name: Operator tool admission and budget policy regressions (dev profile)
         run: 'cargo test --lib policy::'
       - name: Common workspace path regression (dev profile)
