@@ -304,6 +304,26 @@ async fn named_member_selection_remains_scoped_without_broadcasting_to_all_nine(
 
 
 #[tokio::test]
+async fn plain_participant_name_inside_owner_prompt_does_not_silence_other_speakers(){
+    let (engine,id,requests,server,root)=setup(10,"discussion").await;
+    let response=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Compare agent-2's earlier finding with the overall plan".into(),
+        agent_ids:vec![],client_message_id:"plain-name-all-nine".into(),
+        reasoning_language:None
+    })).await.unwrap().0;
+    assert_eq!(response["job"]["result"]["actualResponses"],9);
+    assert_eq!(requests.load(Ordering::SeqCst),9);
+    let room=engine.groups.get(id).await.unwrap();
+    let distinct=room.messages.iter().filter(|m|m.speaker!="user")
+        .map(|m|m.speaker.as_str()).collect::<HashSet<_>>();
+    assert_eq!(distinct.len(),9,
+        "mentioning a speaker in ordinary task text is not targeting");
+    server.abort();
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
 async fn background_nine_agent_room_returns_before_fanout_and_preserves_same_id_retry(){
     let (engine,id,requests,server,root)=setup(10,"discussion").await;
     let first=send_background(State(engine.clone()),Path(id),Json(SayInput{
