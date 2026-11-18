@@ -156,8 +156,17 @@ fn room_line(index:usize,message:&Utterance,cap:usize)->String{
     let label=if message.speaker=="user"{"owner"}else{message.speaker.as_str()};
     // This budget never depends on the number or content of future turns.
     // A previously seen message cannot mutate on ordinary append.
+    let priority=message.content.chars().take(160).collect::<String>().to_lowercase();
+    // Preserve genuine source evidence instead of spending the same per-turn
+    // budget on irrelevant peer chatter. This is deterministic classification
+    // over the original quote, not an LLM-authored synthetic fact.
+    let is_evidence=["decision","evidence","confirmed","failure","failed",
+        "unresolved","decision:","결정","근거","실패","검증","확인","합의"]
+        .iter().any(|marker|priority.contains(marker));
     let limit=if message.speaker=="user"{
         (cap.saturating_mul(35)/100).clamp(160,3500)
+    }else if is_evidence{
+        (cap/12).clamp(100,700)
     }else{
         (cap/30).clamp(40,400)
     };
@@ -912,6 +921,27 @@ mod tests {
             "restart must regenerate identical checkpoint and rolling transcript");
         assert_eq!(room.messages.len(),before.len(),
             "projection must never rewrite original room messages");
+    }
+    #[test]
+    fn source_evidence_gets_a_larger_exact_excerpt_than_ordinary_peer_chatter(){
+        let decision=Utterance{
+            speaker:"auditor".into(),
+            content:"Decision: keep the durable cancellation journal before signaling workers".into(),
+            at_ms:1,model:None,
+        };
+        let failure=Utterance{
+            speaker:"critic".into(),
+            content:"Earlier API concurrency failure diagnosis".into(),
+            at_ms:2,model:None
+        };
+        let irrelevant=Utterance{
+            speaker:"other".into(),
+            content:format!("Unrelated peer filler {}", "Z".repeat(700)),
+            at_ms:3,model:None,
+        };
+        assert!(room_line(0,&decision,1800).contains("durable cancellation journal"));
+        assert!(room_line(1,&failure,1800).contains("failure diagnosis"));
+        assert!(room_line(2,&irrelevant,1800).chars().count()<=60);
     }
     #[test]
     fn thirty_short_room_messages_extend_model_prefix_without_premature_compaction(){
