@@ -31,11 +31,7 @@ pub fn for_turn(run:&Run,tools:Vec<Value>,denied:&[String])->(Vec<Value>,usize,b
     // Search remains available for everything else, and lexically unrelated
     // tools stay hidden. This avoids a mandatory paid discovery round.
     let docs=documents(eligible.clone());
-    let goal=run.messages.iter().rev().filter_map(|message|
-        message.get("content").and_then(Value::as_str)
-            .filter(|_|message.get("role").and_then(Value::as_str)==Some("user"))
-            .and_then(|s|s.strip_prefix("New user instruction: ")))
-        .next().unwrap_or(&run.instruction);
+    let goal=owner_directive(run).unwrap_or(&run.instruction);
     let prefetch=ranked(&docs,goal).into_iter().take(MAX_PREFETCH)
         .filter_map(|idx|name(docs[idx].tool)).collect::<BTreeSet<_>>();
     let visible=eligible.into_iter().filter(|tool|name(tool)
@@ -44,6 +40,15 @@ pub fn for_turn(run:&Run,tools:Vec<Value>,denied:&[String])->(Vec<Value>,usize,b
         .cloned().collect::<Vec<_>>();
     let retained=visible.iter().map(|t|t.to_string().len()).sum::<usize>();
     (visible,original.saturating_sub(retained),true)
+}
+/// Only authentic owner amendments retarget tool prefetch and can supersede
+/// a concurrent lookup. Tool receipts and model-authored text are not directives.
+fn owner_directive(run:&Run)->Option<&str>{
+    run.messages.iter().rev().filter_map(|message|
+        message.get("content").and_then(Value::as_str)
+            .filter(|_|message.get("role").and_then(Value::as_str)==Some("user"))
+            .and_then(|content|content.strip_prefix("New user instruction: ")))
+        .next()
 }
 fn words(s:&str)->BTreeSet<String>{
     s.to_lowercase().split(|c:char|!c.is_alphanumeric())
@@ -160,6 +165,12 @@ pub fn remember(run:&mut Run,names:&[String]){
             Some(json!({"names":changed})));
     }
 }
+/// A search may finish after an owner amendment/cancellation. Its old
+/// receipt is preserved for audit, but must never restore a superseded view.
+pub fn remember_if_current(run:&mut Run,at_dispatch:&Run,names:&[String]){
+    if run.terminal() || owner_directive(run)!=owner_directive(at_dispatch){return;}
+    remember(run,names);
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -247,6 +258,21 @@ mod tests{
         v.as_object_mut().unwrap().remove("discovered_tools");
         let restored:Run=serde_json::from_value(v).unwrap();
         assert!(restored.discovered_tools.is_empty());
+    }
+    #[test]
+    fn concurrent_owner_directive_and_cancel_block_stale_tool_disclosure(){
+        let mut run=run();
+        let snapshot=run.clone();
+        run.messages.push(json!({"role":"user","content":
+            "New user instruction: Stop researching and edit documentation"}));
+        remember_if_current(&mut run,&snapshot,&["mcp__repo__create_issue".into()]);
+        assert!(run.discovered_tools.is_empty());
+        let new_snapshot=run.clone();
+        remember_if_current(&mut run,&new_snapshot,&["mcp__repo__get_issue".into()]);
+        assert_eq!(run.discovered_tools,vec!["mcp__repo__get_issue"]);
+        run.status=crate::domain::RunStatus::Cancelled;
+        remember_if_current(&mut run,&new_snapshot,&["mcp__repo__create_issue".into()]);
+        assert_eq!(run.discovered_tools,vec!["mcp__repo__get_issue"]);
     }
     #[test]
     fn repeated_search_receipts_are_bounded_and_do_not_duplicate_names(){
