@@ -81,7 +81,7 @@ impl ModelClient {
     /// Only the official OpenAI endpoint receives prompt_cache_key. The
     /// operator's configured key has priority; otherwise the persisted
     /// native chat/Run affinity is stable across calls and model retries.
-    fn openai_cache_key_for(&self,settings:&ModelSettings)->Option<&str>{
+    fn openai_cache_key_for<'a>(&'a self,settings:&'a ModelSettings)->Option<&'a str>{
         if settings.base_url=="https://api.openai.com/v1"{
             settings.cache_key.as_deref().or(self.session_affinity.as_deref())
         }else{None}
