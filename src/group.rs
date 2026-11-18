@@ -49,6 +49,10 @@ pub struct RoomUsageReceipt {
     pub input_tokens:u64,
     pub cached_input_tokens:u64,
     pub cache_write_tokens:u64,
+    /// None = older receipt without provider metering metadata.
+    /// Some(false) = provider returned text with no complete usage report.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub provider_usage_reported:Option<bool>,
     pub output_tokens:u64,
     pub cost_krw:f64,
     /// Character accounting for context composition. Provider token usage
@@ -628,6 +632,7 @@ impl Groups {
             input_tokens:reply.input_tokens,
             cached_input_tokens:reply.cached_input_tokens,
             cache_write_tokens:reply.cache_write_tokens,
+            provider_usage_reported:Some(reply.usage_reported),
             output_tokens:reply.output_tokens,cost_krw:reply.cost_krw,
             source_context_chars:projected.source_chars,
             projected_context_chars:projected.projected_chars,

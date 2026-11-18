@@ -113,10 +113,16 @@ pub(crate) fn room_usage(room:&Room)->Value{
     let output=room.usage_receipts.iter().map(|m|m.output_tokens).sum::<u64>();
     let cached=room.usage_receipts.iter().map(|m|m.cached_input_tokens).sum::<u64>();
     let writes=room.usage_receipts.iter().map(|m|m.cache_write_tokens).sum::<u64>();
+    let unmetered=room.usage_receipts.iter().filter(|m|
+        m.provider_usage_reported!=Some(true)).count();
     let by_agent=room.participants.iter().map(|p|{
         let receipts=room.usage_receipts.iter().filter(|m|m.participant==p.name)
             .collect::<Vec<_>>();
+        let not_reported=receipts.iter().filter(|r|
+            r.provider_usage_reported!=Some(true)).count();
         json!({"agentId":p.name,"calls":receipts.len(),
+            "unmeteredCalls":not_reported,
+            "providerUsageReported":!receipts.is_empty() && not_reported==0,
             "promptTokens":receipts.iter().map(|r|r.input_tokens).sum::<u64>(),
             "completionTokens":receipts.iter().map(|r|r.output_tokens).sum::<u64>(),
             "cachedPromptTokens":receipts.iter().map(|r|r.cached_input_tokens).sum::<u64>(),
@@ -134,6 +140,10 @@ pub(crate) fn room_usage(room:&Room)->Value{
         "uncachedPromptTokens":prompt.saturating_sub(cached),
         "cacheHitRate":if prompt>0{cached as f64/prompt as f64}else{0.0},
         "calls":room.usage_receipts.len(),"estimatedCalls":0,
+        "unmeteredCalls":unmetered,
+        "providerUsageReported":!room.usage_receipts.is_empty()&&unmetered==0,
+        "usageStatus":if room.usage_receipts.is_empty(){"not_started"}
+            else if unmetered>0{"partial_or_unreported"}else{"reported"},
         "costKrw":room.cost_krw,
         "contextSourceChars":room.usage_receipts.iter()
             .map(|r|r.source_context_chars).sum::<usize>(),
@@ -173,6 +183,7 @@ pub fn message_rows(room:&Room)->Vec<UiMessage>{
         "completionTokens":receipt.output_tokens,
         "cachedPromptTokens":receipt.cached_input_tokens,
         "cacheWriteTokens":receipt.cache_write_tokens,
+        "providerUsageReported":receipt.provider_usage_reported,
         "totalTokens":receipt.input_tokens.saturating_add(receipt.output_tokens),
         "costKrw":receipt.cost_krw,
         "contextComposition":{

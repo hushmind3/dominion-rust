@@ -121,6 +121,9 @@ async fn nine_agents_three_owner_turns_produce_exactly_thirty_messages_and_durab
     assert_eq!(requests.load(Ordering::SeqCst),27);
     let report=state(State(engine.clone()),Path(id)).await.unwrap().0;
     assert_eq!(report["usage"]["calls"],27);
+    assert_eq!(report["usage"]["providerUsageReported"],true);
+    assert_eq!(report["usage"]["unmeteredCalls"],0);
+    assert_eq!(report["usage"]["usageStatus"],"reported");
     assert_eq!(report["usage"]["promptTokens"],2430);
     assert_eq!(report["usage"]["cachedPromptTokens"],270,
         "only the upstream-reported cache hits are counted");
@@ -133,6 +136,15 @@ async fn nine_agents_three_owner_turns_produce_exactly_thirty_messages_and_durab
     let rows=message_rows(&room);
     assert_eq!(rows.len(),30);
     assert_eq!(rows[1].metadata.as_ref().unwrap()["usage"]["totalTokens"],100);
+    assert_eq!(rows[1].metadata.as_ref().unwrap()["usage"]["providerUsageReported"],true);
+    // Old journal receipts and providers omitting usage are explicitly
+    // "unreported", never presented as zero-cost requests.
+    let mut legacy=room.clone();
+    legacy.usage_receipts[0].provider_usage_reported=None;
+    let usage=room_usage(&legacy);
+    assert_eq!(usage["unmeteredCalls"],1);
+    assert_eq!(usage["usageStatus"],"partial_or_unreported");
+    assert_eq!(usage["providerUsageReported"],false);
 
     // Re-delivery of the same owner message ID cannot start another group.
     let duplicate=send(State(engine.clone()),Path(id),Json(SayInput{
