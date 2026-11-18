@@ -84,6 +84,8 @@ jobs:
         run: 'cargo test --lib local_task_catalog::tests'
       - name: MCP JSON Schema unions, maps and fail-closed admission (dev profile)
         run: 'cargo test --lib tool_schema::tests'
+      - name: Credential rotation cannot leak old provider keys to changed endpoints
+        run: 'cargo test --lib provider_registry::tests'
       - name: Native Ollama and Anthropic provider protocol normalization
         run: 'cargo test --lib provider::tests'
       - name: Registered Ollama provider through full native tool-capable Run
