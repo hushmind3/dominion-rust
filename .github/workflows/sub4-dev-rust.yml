@@ -73,5 +73,7 @@ jobs:
         run: 'cargo test --lib policy::'
       - name: Common workspace path regression (dev profile)
         run: cargo test --lib paginates_large_repository_and_searches_beyond_first_200
+      - name: Live benchmark CLI manifest and durable trace accounting
+        run: cargo test --bin dominion_coding_eval
 # Full macOS / Windows builds, frontend checks, packaging, E2E and soak
 # intentionally stay in manually dispatched release workflows only.
