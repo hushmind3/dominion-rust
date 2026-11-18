@@ -35,6 +35,8 @@ jobs:
         run: cargo test --lib read_program_fuses_planning_and_skips_duplicate_model_audit
       - name: Money domain and implementation approval regressions (dev profile)
         run: 'cargo test --lib money::'
+      - name: 2026 HTIR-style recovery certificate and same-failure transfer regressions (dev profile)
+        run: cargo test --lib strategy::transfer::tests
       - name: Evidence-only isolated strategy comparison invariants (dev profile)
         run: cargo test --lib runtime_trials_tests
       - name: Candidate policy, budget and cancellation regressions (dev profile)
