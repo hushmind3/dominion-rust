@@ -183,7 +183,8 @@ pub fn message_rows(room:&Room)->Vec<UiMessage>{
             "personaChars":receipt.persona_chars,
             "stableContextChars":receipt.stable_context_chars,
             "rollingContextChars":receipt.rolling_context_chars,
-            "checkpointedMessages":receipt.checkpoint_end
+            "checkpointedMessages":receipt.checkpoint_end,
+            "selfRecallChars":receipt.self_recall_chars
         }
     }));
     UiMessage{

@@ -24,9 +24,13 @@ async fn model(MockState((requests,reject_at)):MockState<(Arc<AtomicUsize>,Optio
     }else{
         format!("Agent reply {index}")
     };
+    // Mock measured cache-hit receipts. The counters are provider-supplied,
+    // not predicted from context character counts or local heuristics.
+    let cached=if index>=9{15}else{0};
     (StatusCode::OK,Json(json!({"choices":[{"finish_reason":"stop",
         "message":{"role":"assistant","content":content}}],
-        "usage":{"prompt_tokens":90,"completion_tokens":10}})))
+        "usage":{"prompt_tokens":90,"completion_tokens":10,
+            "prompt_tokens_details":{"cached_tokens":cached}}})))
 }
 async fn setup(max_turns:usize,routing_mode:&str)
     ->(Arc<Engine>,Uuid,Arc<AtomicUsize>,tokio::task::JoinHandle<()>,std::path::PathBuf){
@@ -118,6 +122,10 @@ async fn nine_agents_three_owner_turns_produce_exactly_thirty_messages_and_durab
     let report=state(State(engine.clone()),Path(id)).await.unwrap().0;
     assert_eq!(report["usage"]["calls"],27);
     assert_eq!(report["usage"]["promptTokens"],2430);
+    assert_eq!(report["usage"]["cachedPromptTokens"],270,
+        "only the upstream-reported cache hits are counted");
+    assert_eq!(report["usage"]["uncachedPromptTokens"],2160,
+        "new input tokens exclude the measured cached prefix");
     assert_eq!(report["usage"]["completionTokens"],270);
     assert_eq!(report["usage"]["byAgent"].as_array().unwrap().len(),9);
     assert!(report["usage"]["byAgent"].as_array().unwrap().iter()

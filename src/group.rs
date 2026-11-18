@@ -276,7 +276,8 @@ fn project_room_context(room:&Room,participant:&Participant,cap:usize)->RoomCont
                 participant.name,entry.content),private_reserve.saturating_sub(2)))
         });
     let self_recall_chars=private_evidence.as_ref().map_or(0,|line|line.chars().count());
-    let projected_chars=text.chars().count().saturating_add(self_recall_chars+usize::from(self_recall_chars>0));
+    let projected_chars=text.chars().count().saturating_add(self_recall_chars)
+        .saturating_add(if self_recall_chars>0{1}else{0});
     debug_assert!(projected_chars<=cap,
         "room incremental context must respect the configured character budget");
     RoomContext{
@@ -895,6 +896,9 @@ mod tests {
                 speaker:"user".into(),content:format!("Owner request {turn}"),
                 at_ms:turn,model:None
             });
+            // Snapshot just before responding to the third owner turn.
+            // Speaker 0's last answer has aged out of the shared window.
+            if turn==2 {continue;}
             for agent in &members {
                 room.messages.push(Utterance{
                     speaker:agent.name.clone(),
@@ -905,6 +909,7 @@ mod tests {
             }
         }
         let mut common:Option<Vec<Value>>=None;
+        let mut observed_private_recall=false;
         for agent in &members {
             let projection=project_room_context(&room,agent,6500);
             assert!(projection.checkpoint_end>0,
@@ -917,6 +922,7 @@ mod tests {
                     "private recollection must never spoil the shared cache prefix");
             }else{common=Some(shared);}
             if projection.self_recall_chars>0{
+                observed_private_recall=true;
                 assert!(provider[provider.len()-2]["content"].as_str().unwrap()
                     .contains(&agent.name),
                     "only the correct speaker's own prior answer is carried");
@@ -929,6 +935,8 @@ mod tests {
             assert_eq!(after.private_evidence,projection.private_evidence);
             assert_eq!(after.messages,projection.messages);
         }
+        assert!(observed_private_recall,
+            "historical self-continuity test must actually exercise an aged-out answer");
     }
     #[test]
     fn tiny_room_context_stays_bounded_without_trusting_peer_notes(){
