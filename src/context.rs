@@ -180,12 +180,15 @@ Re-read exact files and tool receipts before relying on old observations.")});
  })
 }
 
-/// Optional reference context must never evict the pinned task contract.
-/// Returns false when a reminder/skill would exceed the actual prompt cap.
+/// Optional material is turn-scoped, not a new system instruction. Append it
+/// AFTER the already-sent durable transcript so model prompt caches retain
+/// their longest unchanged prefix. Inserting at index two invalidated every
+/// subsequent historical message whenever a memory or repair hint changed.
+/// Tool exchanges stay adjacent; provider-side caching remains best-effort.
 pub fn insert_optional(messages:&mut Vec<Value>,value:Value,max_chars:usize)->bool{
  let used=messages.iter().map(size).sum::<usize>();
  if used.saturating_add(size(&value))>max_chars{return false}
- messages.insert(2.min(messages.len()),value);
+ messages.push(value);
  true
 }
 
@@ -355,6 +358,26 @@ mod tests {
         assert!(!plan.contains("injected model phrase"));
         assert!(!plan.contains("secret tool output"));
         assert!(planning_directives(&messages,20).is_err());
+    }
+    #[test]
+    fn optional_memory_is_a_suffix_and_does_not_rebase_unchanged_history(){
+        let mut messages=vec![json!({"role":"system","content":"stable shared instructions"}),
+            json!({"role":"user","content":"original owner goal"}),
+            json!({"role":"assistant","tool_calls":[{"id":"tool-1","type":"function",
+                "function":{"name":"read_file","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"tool-1","content":"verified result"})];
+        let initial=messages.clone();
+        assert!(insert_optional(&mut messages,json!({"role":"user",
+            "content":"Current scoped memory from a recorded owner note"}),10000));
+        assert_eq!(&messages[..initial.len()],initial.as_slice(),
+            "new optional context must not rewrite the cacheable transcript prefix");
+        assert_eq!(messages[2]["tool_calls"][0]["id"],"tool-1");
+        assert_eq!(messages[3]["tool_call_id"],"tool-1");
+        assert_eq!(messages.last().unwrap()["role"],"user");
+        let snapshot=messages.clone();
+        assert!(!insert_optional(&mut messages,json!({"role":"user",
+            "content":"x".repeat(10_000)}),10000));
+        assert_eq!(messages,snapshot,"rejected hints must not mutate the model view");
     }
     #[test]
     fn unchanged_when_under_limit(){

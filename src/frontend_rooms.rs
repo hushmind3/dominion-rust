@@ -119,6 +119,9 @@ fn room_usage(room:&Room)->Value{
             "promptTokens":receipts.iter().map(|r|r.input_tokens).sum::<u64>(),
             "completionTokens":receipts.iter().map(|r|r.output_tokens).sum::<u64>(),
             "cachedPromptTokens":receipts.iter().map(|r|r.cached_input_tokens).sum::<u64>(),
+            "uncachedPromptTokens":receipts.iter().map(|r|
+                r.input_tokens.saturating_sub(r.cached_input_tokens)).sum::<u64>(),
+            "cacheWriteTokens":receipts.iter().map(|r|r.cache_write_tokens).sum::<u64>(),
             "costKrw":receipts.iter().map(|r|r.cost_krw).sum::<f64>(),
             "contextSourceChars":receipts.iter().map(|r|r.source_context_chars).sum::<usize>(),
             "contextSelectedChars":receipts.iter().map(|r|r.projected_context_chars).sum::<usize>(),
@@ -127,6 +130,8 @@ fn room_usage(room:&Room)->Value{
     json!({"totalTokens":room.used_tokens,
         "promptTokens":prompt,"completionTokens":output,
         "cachedPromptTokens":cached,"cacheWriteTokens":writes,
+        "uncachedPromptTokens":prompt.saturating_sub(cached),
+        "cacheHitRate":if prompt>0{cached as f64/prompt as f64}else{0.0},
         "calls":room.usage_receipts.len(),"estimatedCalls":0,
         "costKrw":room.cost_krw,
         "contextSourceChars":room.usage_receipts.iter()

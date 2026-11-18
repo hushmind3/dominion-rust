@@ -318,7 +318,12 @@ impl Engine {
         run.cache_write_tokens=run.cache_write_tokens.saturating_add(reply.cache_write_tokens);
         run.output_tokens = run.output_tokens.saturating_add(reply.output_tokens);
         run.cost_krw += reply.cost_krw;
-        run.event("model", format!("{} · in {} / out {} tokens · {:.4} KRW", reply.model, reply.input_tokens, reply.output_tokens, reply.cost_krw), Some(json!({"cached_input_tokens":reply.cached_input_tokens,"cache_write_tokens":reply.cache_write_tokens})));
+        run.event("model", format!("{} · in {} / out {} tokens · {:.4} KRW", reply.model, reply.input_tokens, reply.output_tokens, reply.cost_krw), Some(json!({"input_tokens":reply.input_tokens,
+            "uncached_input_tokens":reply.input_tokens.saturating_sub(reply.cached_input_tokens),
+            "cached_input_tokens":reply.cached_input_tokens,
+            "cache_write_tokens":reply.cache_write_tokens,
+            "output_tokens":reply.output_tokens,
+            "cost_krw":reply.cost_krw,"model":reply.model})));
         if run.cost_krw > policy::effective_budget_krw(run) {
             run.status = RunStatus::Failed;
             run.event("budget_exceeded", "Own model charges exceed budget remaining after delegated worker reservations", Some(json!({"cost_krw":run.cost_krw,"reserved_krw":run.reserved_budget_krw,"budget_krw":run.budget_krw})));

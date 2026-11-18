@@ -245,6 +245,13 @@ impl ModelClient {
             "max_tokens":4096,"stream":false
         });
         if !system.is_empty(){body["system"]=json!(system);}
+        // Anthropic first-party 2026 automatic caching is explicit opt-in.
+        // Gated to the canonical host so protocol-compatible proxies are not
+        // sent a vendor-specific extension. Provider receipts, not the flag,
+        // remain the source of truth for cached-token accounting.
+        if anthropic_native_cache(&settings.base_url){
+            body["cache_control"]=json!({"type":"ephemeral"});
+        }
         if !tools.is_empty(){
             let mut supported=Vec::new();
             for tool in tools{
@@ -389,6 +396,11 @@ fn ollama_messages(original:&[Value])->Result<Vec<Value>,String>{
         }
     }
     Ok(converted)
+}
+fn anthropic_native_cache(base_url:&str)->bool{
+    reqwest::Url::parse(base_url).ok().is_some_and(|url|
+        url.scheme()=="https"&&url.host_str()==Some("api.anthropic.com")
+            &&url.port_or_known_default()==Some(443))
 }
 fn anthropic_messages(original:&[Value])->Result<(String,Vec<Value>),String>{
     let mut system=Vec::<String>::new();
@@ -693,6 +705,14 @@ mod tests {
         assert!(error.contains("already be billed"));
         assert_eq!(count.load(Ordering::SeqCst),1);
         server.abort();
+    }
+    #[test]
+    fn automatic_anthropic_cache_is_first_party_only(){
+        assert!(anthropic_native_cache("https://api.anthropic.com/v1"));
+        assert!(!anthropic_native_cache("http://api.anthropic.com/v1"));
+        assert!(!anthropic_native_cache("https://api.anthropic.com.evil.test/v1"));
+        assert!(!anthropic_native_cache("https://proxy.example.org/anthropic"));
+        assert!(!anthropic_native_cache("http://localhost:8111/v1"));
     }
     #[test]
     fn billed_usage_splits_cached_and_uncached_tokens(){
