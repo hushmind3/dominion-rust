@@ -9,20 +9,30 @@ use crate::{
 use axum::{extract::State as MockState,routing::post,Json,Router};
 use std::sync::atomic::{AtomicUsize,Ordering};
 
-async fn model(MockState(requests):MockState<Arc<AtomicUsize>>,
-    Json(_input):Json<Value>)->Json<Value>{
+async fn model(MockState((requests,reject_at)):MockState<(Arc<AtomicUsize>,Option<usize>)>,
+    Json(_input):Json<Value>)->(StatusCode,Json<Value>){
     let index=requests.fetch_add(1,Ordering::SeqCst);
+    if reject_at==Some(index){
+        return (StatusCode::BAD_REQUEST,Json(json!({
+            "success":false,"errors":[{"code":5004,
+                "message":"synthetic provider rejected the request"}]
+        })));
+    }
     // A single agent should not end a 9-speaker group early by emitting [END].
     let content=if index%9==0 {
         format!("[END] First participant said finished in turn {}",index/9+1)
     }else{
         format!("Agent reply {index}")
     };
-    Json(json!({"choices":[{"finish_reason":"stop",
+    (StatusCode::OK,Json(json!({"choices":[{"finish_reason":"stop",
         "message":{"role":"assistant","content":content}}],
-        "usage":{"prompt_tokens":90,"completion_tokens":10}}))
+        "usage":{"prompt_tokens":90,"completion_tokens":10}})))
 }
 async fn setup(max_turns:usize,routing_mode:&str)
+    ->(Arc<Engine>,Uuid,Arc<AtomicUsize>,tokio::task::JoinHandle<()>,std::path::PathBuf){
+    setup_with_failure(max_turns,routing_mode,None).await
+}
+async fn setup_with_failure(max_turns:usize,routing_mode:&str,reject_at:Option<usize>)
     ->(Arc<Engine>,Uuid,Arc<AtomicUsize>,tokio::task::JoinHandle<()>,std::path::PathBuf){
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address=listener.local_addr().unwrap();
@@ -31,7 +41,7 @@ async fn setup(max_turns:usize,routing_mode:&str)
         let counter=requests.clone();
         async move{
             axum::serve(listener,Router::new()
-                .route("/chat/completions",post(model)).with_state(counter))
+                .route("/chat/completions",post(model)).with_state((counter,reject_at)))
                 .await.unwrap();
         }
     });
@@ -167,6 +177,65 @@ async fn named_member_selection_remains_scoped_without_broadcasting_to_all_nine(
     })).await.unwrap().0;
     assert_eq!(retry["job"]["status"],"completed");
     assert_eq!(requests.load(Ordering::SeqCst),1);
+    server.abort();
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+
+#[tokio::test]
+async fn third_owner_turn_upstream_400_retains_exact_failed_speaker_and_resumes_to_30_messages(){
+    let (engine,id,requests,server,root)=setup_with_failure(100,"discussion",Some(18)).await;
+    for round in 0..2{
+        let receipt=send(State(engine.clone()),Path(id),Json(SayInput{
+            input:format!("Please review stage {}",round+1),
+            agent_ids:vec![],client_message_id:format!("round-{}",round+1),
+            reasoning_language:None
+        })).await.unwrap().0;
+        assert_eq!(receipt["job"]["status"],"completed");
+        assert_eq!(receipt["job"]["result"]["actualResponses"],9);
+    }
+    let rejected=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Third owner request: every agent must contribute".into(),
+        agent_ids:vec![],client_message_id:"round-3".into(),
+        reasoning_language:None
+    })).await.err().expect("synthetic Cloudflare 400 must not look completed");
+    assert_eq!(rejected.0,StatusCode::BAD_GATEWAY,
+        "upstream 400 cannot be reported as an invalid owner input");
+    assert_eq!(rejected.1.0["providerStatus"],400);
+    assert_eq!(rejected.1.0["providerCode"],5004);
+    assert_eq!(rejected.1.0["errorCode"],"upstream_bad_request");
+    assert_eq!(rejected.1.0["failedSpeaker"],"agent-0");
+    assert_eq!(rejected.1.0["actualResponses"],0);
+    assert_eq!(rejected.1.0["expectedResponses"],9);
+    let interrupted=engine.groups.get(id).await.unwrap();
+    assert_eq!(interrupted.messages.len(),21);
+    assert_eq!(interrupted.usage_receipts.len(),18);
+    assert_eq!(interrupted.used_tokens,1800);
+    assert_eq!(interrupted.last_provider_failure.as_ref().unwrap().participant,
+        "agent-0");
+    let meta=state(State(engine.clone()),Path(id)).await.unwrap().0;
+    assert_eq!(meta["status"],"interrupted");
+    assert_eq!(meta["usage"]["calls"],18);
+    assert_eq!(meta["lastProviderFailure"]["providerStatus"],Value::Null,
+        "status field is named http_status for a durable Rust receipt");
+    assert_eq!(meta["lastProviderFailure"]["http_status"],400);
+    let resumed=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Third owner request: every agent must contribute".into(),
+        agent_ids:vec![],client_message_id:"round-3".into(),
+        reasoning_language:None
+    })).await.unwrap().0;
+    assert_eq!(resumed["job"]["status"],"completed");
+    assert_eq!(resumed["job"]["result"]["expectedResponses"],9);
+    assert_eq!(resumed["job"]["result"]["actualResponses"],9);
+    let finished=engine.groups.get(id).await.unwrap();
+    assert_eq!(finished.messages.len(),30);
+    assert_eq!(finished.usage_receipts.len(),27);
+    assert_eq!(finished.used_tokens,2700);
+    assert!(finished.last_provider_failure.is_none());
+    assert_eq!(finished.messages.iter().filter(|m|m.speaker=="user").count(),3);
+    assert_eq!(requests.load(Ordering::SeqCst),28,
+        "27 observed completions plus exactly one rejected provider attempt");
     server.abort();
     drop(engine);
     tokio::fs::remove_dir_all(root).await.unwrap();
