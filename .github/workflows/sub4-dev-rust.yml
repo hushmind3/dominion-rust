@@ -63,6 +63,10 @@ jobs:
         run: 'cargo test --lib tool_discovery::tests'
       - name: MCP JSON Schema unions, maps and fail-closed admission (dev profile)
         run: 'cargo test --lib tool_schema::tests'
+      - name: Durable owner directive supersession and stale queue barriers (dev profile)
+        run: 'cargo test --lib journal::tests'
+      - name: Live Engine correction with waiting approval and started write (dev profile)
+        run: 'cargo test --lib owner_correction'
       - name: Operator tool admission and budget policy regressions (dev profile)
         run: 'cargo test --lib policy::'
       - name: Common workspace path regression (dev profile)
