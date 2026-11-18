@@ -108,6 +108,9 @@ impl ModelClient {
             return self.request_ollama(settings,messages,tools).await;
         }
         let mut body = json!({"model": settings.name, "messages": messages, "stream": false});
+        // Internal group-only markers are Anthropic content-block controls.
+        // Never leak them as unknown JSON keys to OpenAI-compatible gateways.
+        strip_internal_cache_markers(&mut body);
         // OpenAI-specific cache controls are explicitly gated to the native
         // endpoint so OpenAI-compatible third-party servers are not broken.
         if settings.base_url=="https://api.openai.com/v1"{
@@ -239,7 +242,8 @@ impl ModelClient {
 
     async fn request_anthropic(&self,settings:&ModelSettings,messages:&[Value],tools:&[Value])
         ->Result<Reply,String>{
-        let (system,conversation)=anthropic_messages(messages)?;
+        let native_cache=anthropic_native_cache(&settings.base_url);
+        let (system,conversation)=anthropic_messages(messages,native_cache)?;
         let mut body=json!({
             "model":settings.name,"messages":conversation,
             "max_tokens":4096,"stream":false
@@ -249,7 +253,7 @@ impl ModelClient {
         // Gated to the canonical host so protocol-compatible proxies are not
         // sent a vendor-specific extension. Provider receipts, not the flag,
         // remain the source of truth for cached-token accounting.
-        if anthropic_native_cache(&settings.base_url){
+        if native_cache{
             body["cache_control"]=json!({"type":"ephemeral"});
         }
         if !tools.is_empty(){
@@ -397,12 +401,21 @@ fn ollama_messages(original:&[Value])->Result<Vec<Value>,String>{
     }
     Ok(converted)
 }
+fn strip_internal_cache_markers(body:&mut Value){
+    if let Some(list)=body["messages"].as_array_mut(){
+        for message in list{
+            if let Some(object)=message.as_object_mut(){
+                object.remove("dominion_cache_anchor");
+            }
+        }
+    }
+}
 fn anthropic_native_cache(base_url:&str)->bool{
     reqwest::Url::parse(base_url).ok().is_some_and(|url|
         url.scheme()=="https"&&url.host_str()==Some("api.anthropic.com")
             &&url.port_or_known_default()==Some(443))
 }
-fn anthropic_messages(original:&[Value])->Result<(String,Vec<Value>),String>{
+fn anthropic_messages(original:&[Value],native_cache:bool)->Result<(String,Vec<Value>),String>{
     let mut system=Vec::<String>::new();
     let mut messages=Vec::<Value>::new();
     for record in original{
@@ -415,9 +428,13 @@ fn anthropic_messages(original:&[Value])->Result<(String,Vec<Value>),String>{
         };
         match role{
             "system"|"developer"=>{if !content.is_empty(){system.push(content.to_owned());}},
-            "user"=>messages.push(json!({"role":"user","content":[
-                {"type":"text","text":content}
-            ]})),
+            "user"=>{
+                let mut block=json!({"type":"text","text":content});
+                if native_cache && record.get("dominion_cache_anchor")==Some(&Value::Bool(true)){
+                    block["cache_control"]=json!({"type":"ephemeral"});
+                }
+                messages.push(json!({"role":"user","content":[block]}));
+            },
             "assistant"=>{
                 let mut blocks=Vec::<Value>::new();
                 if !content.is_empty(){blocks.push(json!({"type":"text","text":content}));}
@@ -580,6 +597,34 @@ mod tests {
         assert_eq!(received.lock().unwrap()[1]["messages"][2]["tool_name"],"read_file");
         assert_eq!(received.lock().unwrap()[0]["tools"][0]["function"]["name"],"read_file");
         server.abort();
+    }
+    #[test]
+    fn explicit_anthropic_group_anchor_is_first_party_only(){
+        let history=vec![
+            json!({"role":"system","content":"shared"}),
+            json!({"role":"user","content":"indexed owner decisions",
+                "dominion_cache_anchor":true}),
+            json!({"role":"user","content":"operator-selected identity"}),
+        ];
+        let (system,native)=anthropic_messages(&history,true).unwrap();
+        assert_eq!(system,"shared");
+        assert_eq!(native[0]["content"][0]["cache_control"]["type"],"ephemeral");
+        assert!(native[1]["content"][0].get("cache_control").is_none());
+        let (_,proxy)=anthropic_messages(&history,false).unwrap();
+        assert!(proxy[0]["content"][0].get("cache_control").is_none());
+    }
+    #[test]
+    fn annotated_group_messages_never_reach_openai_or_ollama_json_schemas(){
+        let original=vec![
+            json!({"role":"system","content":"common"}),
+            json!({"role":"user","content":"facts","dominion_cache_anchor":true}),
+            json!({"role":"user","content":"persona"})
+        ];
+        let mut openai=json!({"model":"mock","messages":original});
+        strip_internal_cache_markers(&mut openai);
+        assert!(openai["messages"][1].get("dominion_cache_anchor").is_none());
+        assert!(ollama_messages(&original).unwrap().iter()
+            .all(|entry|entry.get("dominion_cache_anchor").is_none()));
     }
     #[test]
     fn cloudflare_room_affinity_is_explicit_scoped_and_not_sent_to_other_providers(){

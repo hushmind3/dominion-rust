@@ -543,15 +543,16 @@ async fn system_prompt(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   let participant=room.participants.iter()
     .find(|p|Some(p.name.as_str())==q.agent_id.as_deref())
     .or_else(||room.participants.first()).ok_or_else(||bad("room has no agents"))?;
-  let common=format!("Room topic: {}. Participant: {}.",room.topic,participant.name);
-  let persona=participant.role.clone();
-  let prompt=crate::group::Groups::system_prompt(&room,participant);
+  let common=crate::group::Groups::shared_prefix(&room);
+  let persona=crate::group::Groups::persona_prompt(participant);
+  let prompt=format!("{common}\n\n[Final operator-selected participant metadata follows shared room evidence]\n{persona}");
   let chars=prompt.chars().count();
   Ok(Json(json!({
     "common":common,"persona":persona,"prompt":prompt,
     "chars":chars,"tokens":chars.div_ceil(3),
     "commonChars":common.chars().count(),"commonTokens":common.chars().count().div_ceil(3),
     "personaChars":persona.chars().count(),"personaTokens":persona.chars().count().div_ceil(3),
+    "cacheLayout":"shared_system_and_room_evidence_before_participant_identity",
     "estimated":true
   })))
 }
