@@ -1064,6 +1064,10 @@ impl Engine {
         }).await
     }
 
+    #[cfg(test)]
+    pub(crate) async fn worker_active_for_test(&self,id:Uuid)->bool{
+        self.active.lock().await.contains(&id)
+    }
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
         // Serialize with child creation. If a comparison is cancelled during
         // the first candidate's startup, the next candidate cannot start and

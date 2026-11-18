@@ -126,10 +126,10 @@ async fn stop_preempts_silent_model_http_and_allows_next_same_session_message(){
     assert!(engine.store.get(first_id).await.unwrap().answer.is_none());
     assert_eq!(remote.calls.load(Ordering::SeqCst),2);
     for _ in 0..100{
-        if engine.active.lock().await.is_empty(){break;}
+        if !engine.worker_active_for_test(first_id).await && !engine.worker_active_for_test(second_id).await{break;}
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(engine.active.lock().await.is_empty(),
+    assert!(!engine.worker_active_for_test(first_id).await && !engine.worker_active_for_test(second_id).await,
         "in-flight provider future must exit the native worker after cancellation");
     server.abort();
     drop(engine);
