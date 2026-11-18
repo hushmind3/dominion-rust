@@ -29,6 +29,7 @@ pub fn routes()->Router<Arc<Engine>>{
     .route("/rooms",get(list).post(save))
     .route("/rooms/{id}",get(one).post(update).delete(remove))
     .route("/rooms/{id}/messages",get(messages).post(send))
+    .route("/rooms/{id}/messages/background",post(send_background))
     .route("/rooms/{id}/state",get(state))
     .route("/rooms/{id}/reset",post(reset))
     .route("/rooms/{id}/stop",post(stop))
@@ -403,11 +404,24 @@ fn completed_job(room:&Room,turns:usize,expected:usize,receipt:&str)->Value{
 async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Value>,Fault>{
   let room=engine.groups.get(id).await.ok_or_else(missing)?;
+  let running=engine.groups.frontend_turn_active(id);
+  let pending=if running{speakers_for_owner_turn(&room)}else{Vec::new()};
+  let owner=room.messages.iter().rposition(|m|m.speaker=="user");
+  let (wanted,actual)=owner.map_or((0,0),|index|
+    owner_turn_progress(&room,index,&room.recipients));
+  let last_message_id=owner.and_then(|index|
+    room.client_messages.iter().find(|(_,position)|**position==index)
+        .map(|(key,_)|key.clone())).unwrap_or_default();
+  let jobs=if running{vec![json!({
+    "id":last_message_id,"kind":"room_turn","status":"running",
+    "stepIndex":actual,"stepTotal":wanted,
+    "input":{"roomId":id.to_string(),"sessionId":room_session(id)}
+  })]}else{vec![]};
   Ok(Json(json!({
     "room":room_view(&room),"sessionId":room_session(id),
-    "jobs":[],"executions":[],"learningJobs":[],"operations":[],"approvals":[],
-    "status":room_status(&room),
-    "queueDepth":0,
+    "jobs":jobs,"executions":[],"learningJobs":[],"operations":[],"approvals":[],
+    "status":if running{"running"}else{room_status(&room)},
+    "activeAgentId":pending.first(),"queueDepth":pending.len(),
     "lastProviderFailure":room.last_provider_failure,
     "usage":room_usage(&room)
   })))
@@ -509,6 +523,11 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
 }
 async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   Json(input):Json<SayInput>)->Result<Json<Value>,Fault>{
+  // One full owner turn must have one execution owner, not a separate
+  // lock for each speaker. A dropped HTTP future releases this lease.
+  let _lease=engine.groups.try_frontend_turn(id).ok_or_else(||(
+    StatusCode::CONFLICT,Json(json!({"error":
+      "room turn already running; inspect /state before resending"}))))?;
   if input.input.trim().is_empty(){return Err(bad("room message cannot be empty"));}
   if input.reasoning_language.as_deref().is_some_and(|v|!matches!(v,"ko"|"default"|"original")){
     return Err(bad("unsupported reasoning language"));
@@ -548,8 +567,70 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
     "job":completed_job(&room,turns,expected,&input.client_message_id),"sessionId":room_session(id)
   })))
 }
+/// Accept a nine-speaker owner turn without holding the browser/edge HTTP
+/// request open for nine sequential paid model calls. The durable Room is
+/// updated after each speaker. A process restart releases the in-memory lease
+/// and the original clientMessageId can resume remaining speakers.
+async fn send_background(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
+  Json(input):Json<SayInput>)->Result<(StatusCode,Json<Value>),Fault>{
+  let lease=engine.groups.try_frontend_turn(id).ok_or_else(||(
+    StatusCode::CONFLICT,Json(json!({"error":
+      "room turn already running; inspect /state before resending"}))))?;
+  if input.input.trim().is_empty(){return Err(bad("room message cannot be empty"));}
+  if input.reasoning_language.as_deref().is_some_and(|v|
+    !matches!(v,"ko"|"default"|"original")){
+    return Err(bad("unsupported reasoning language"));
+  }
+  let mut recipients=input.agent_ids;
+  let requested_initial=recipients.clone();
+  if recipients.is_empty(){
+    let room=engine.groups.get(id).await.ok_or_else(missing)?;
+    let content=input.input.to_lowercase();
+    for agent in engine.frontend.agents().await{
+      if room.participants.iter().any(|p|p.name==agent.id)
+        &&!agent.name.is_empty()
+        &&content.contains(&format!("@{}",agent.name.to_lowercase())){
+        recipients.push(agent.id);
+      }
+    }
+  }
+  let (room,inserted,index)=engine.groups.say_once(id,
+    input.input.trim().to_owned(),&input.client_message_id,recipients)
+    .await.map_err(bad)?;
+  let newest=room.messages.iter().rposition(|m|m.speaker=="user")==Some(index);
+  let started=newest&&room.status==RoomStatus::Open
+    &&!speakers_for_owner_turn(&room).is_empty();
+  let (expected,actual)=owner_turn_progress(&room,index,
+    if requested_initial.is_empty(){&room.recipients}else{&requested_initial});
+  if started {
+    let worker=Arc::clone(&engine);
+    tokio::spawn(async move {
+      let _lease=lease;
+      if let Err((status,_))=generate(&worker,id).await{
+        tracing::warn!(room=%id,status=?status,
+          "background room fanout interrupted; durable partial replies retained");
+      }
+    });
+  }else{drop(lease);}
+  if inserted{crate::frontend_channels::dispatch_room(&engine,&room).await;}
+  let message=message_rows(&room).get(index).cloned()
+    .ok_or_else(||failed("stored message disappeared".into()))?;
+  let job=if started{json!({
+    "id":input.client_message_id,"kind":"room_turn","status":"running",
+    "createdAt":timestamp(room.updated_at_ms),
+    "stepIndex":actual,"stepTotal":expected,
+    "input":{"roomId":id.to_string(),"sessionId":room_session(id)}
+  })}else{completed_job(&room,actual,expected,&input.client_message_id)};
+  Ok((if started{StatusCode::ACCEPTED}else{StatusCode::OK},
+    Json(json!({
+      "room":room_view(&room),"message":message,"job":job,
+      "sessionId":room_session(id)
+    }))))
+}
 async fn run(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Value>,Fault>{
+  let _lease=engine.groups.try_frontend_turn(id).ok_or_else(||(
+    StatusCode::CONFLICT,Json(json!({"error":"room turn already running"}))))?;
   let (room,turns,expected)=generate(&engine,id).await?;
   Ok(Json(json!({"room":room_view(&room),"job":completed_job(&room,turns,expected,&format!("manual-{}-{}",id,room.rounds)),
     "sessionId":room_session(id)})))
