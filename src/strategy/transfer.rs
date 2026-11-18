@@ -18,6 +18,9 @@ pub struct RecoveryProof {
     pub repair_seq:u64,
     pub postflight_seq:u64,
     pub verification_seq:u64,
+    /// Distinguish a separate auditor verdict from a deterministic exact-file
+    /// postcondition so no assistant claims model-audit results that never ran.
+    pub verification_basis:String,
     pub claim:String,
 }
 #[derive(Clone)]
@@ -51,15 +54,18 @@ fn success<'a>(r:&'a Run,before:u64)->impl Iterator<Item=&'a TimelineEvent>{
 /// subsequent verifier PASS. This is associated evidence, not causal proof
 /// or a held-out task score; no successful narrative becomes provenance.
 pub fn recovery_proof(r:&Run)->Option<RecoveryProof>{
-    let audit=r.events.iter().rev().find(|e|e.kind=="verification")?;
-    if !crate::verification::strict_pass(&audit.message){return None;}
-    let repairs=success(r,audit.seq).filter(|e|e.detail.as_ref()
+    let audit=r.events.iter().rev().find(|e|e.kind=="verification");
+    if audit.is_some_and(|e|!crate::verification::strict_pass(&e.message)){
+        return None;
+    }
+    let until=audit.map(|e|e.seq).unwrap_or(u64::MAX);
+    let repairs=success(r,until).filter(|e|e.detail.as_ref()
         .is_some_and(|d|matches!(d["name"].as_str(),
             Some("write_file"|"edit_file")))).collect::<Vec<_>>();
     for edit in repairs.into_iter().rev(){
         let edit_id=edit.detail.as_ref()?["call_id"].as_str()?;
         let resource=path(started(r,edit_id,edit.seq)?)?;
-        let post=success(r,audit.seq).find(|e|{
+        let post=success(r,until).find(|e|{
             if e.seq<=edit.seq||e.detail.as_ref()
                 .is_none_or(|d|d["name"]!="read_file"){return false;}
             e.detail.as_ref().and_then(|d|d["call_id"].as_str())
@@ -68,13 +74,44 @@ pub fn recovery_proof(r:&Run)->Option<RecoveryProof>{
         });
         let Some(post)=post else{continue};
         let post_id=post.detail.as_ref()?["call_id"].as_str()?;
+        let post_intent=started(r,post_id,post.seq)?;
+        if post_intent.detail.as_ref().is_some_and(|d|
+            d["arguments"].get("start_line").is_some()
+                || d["arguments"].get("end_line").is_some()) {
+            continue; // A line-window excerpt is not a full artifact postflight.
+        }
+        let direct_postflight=||->bool{
+            let expected=edit_id;
+            let Some(receipt)=r.messages.iter().rev().find(|m|
+                m["role"]=="tool" && m["tool_call_id"]==post_id)
+                .and_then(|m|m["content"].as_str()) else{return false};
+            let Some(intent)=started(r,expected,edit.seq)else{return false};
+            let args=&intent.detail.as_ref().map(|d|&d["arguments"]);
+            let Some(args)=args else{return false};
+            match edit.detail.as_ref().and_then(|d|d["name"].as_str()){
+                Some("write_file")=>args["content"].as_str()
+                    .is_some_and(|content|!content.is_empty()&&receipt==content),
+                Some("edit_file")=>{
+                    let new=args["new_text"].as_str().unwrap_or("");
+                    let old=args["old_text"].as_str().unwrap_or("");
+                    !new.is_empty()&&!old.is_empty()&&receipt.contains(new)
+                        &&!receipt.contains(old)
+                },
+                _=>false
+            }
+        };
+        let exact=direct_postflight();
+        // Without a paid model auditor, content equality is the only
+        // accepted source of an artifact-level claim. It is not equivalent
+        // to correctness of the complete user instruction.
+        if audit.is_none() && !exact {continue;}
         let bad=r.events.iter().rev().filter(|e|e.seq<edit.seq)
             .filter_map(|e|failure(r,e)).find(|f|f.path==resource);
         let Some(bad)=bad else{continue};
-        if r.events.iter().any(|e|e.seq>audit.seq &&
-            (e.kind=="tool_error"||(e.kind=="tool_result"
-                &&e.detail.as_ref().is_some_and(|d|matches!(
-                    d["name"].as_str(),Some("write_file"|"edit_file")))))){
+        if r.events.iter().any(|e|e.seq>post.seq &&
+            (e.kind=="tool_error" || e.kind=="tool_result"
+                && e.detail.as_ref().is_some_and(|d|
+                    matches!(d["name"].as_str(),Some("write_file"|"edit_file"))))){
             return None;
         }
         return Some(RecoveryProof{
@@ -82,14 +119,21 @@ pub fn recovery_proof(r:&Run)->Option<RecoveryProof>{
             affected_path:resource,failed_call_id:bad.call_id,
             repair_call_id:edit_id.into(),postflight_call_id:post_id.into(),
             failure_seq:bad.seq,repair_seq:edit.seq,postflight_seq:post.seq,
-            verification_seq:audit.seq,
-            claim:"linked failure and same-file mutation/read before auditor PASS; transfer not independently proven".into()
+            verification_seq:audit.map(|e|e.seq).unwrap_or(post.seq),
+            verification_basis:if audit.is_some(){
+                "auditor_pass_with_postflight".into()
+            }else{"deterministic_exact_artifact".into()},
+            claim:if audit.is_some(){
+                "linked failure and same-file mutation/read before auditor PASS; held-out transfer unmeasured".into()
+            }else{
+                "actual same-path failed tool, repair and exact content postcondition; no auditor or full-task proof".into()
+            }
         });
     }
     None
 }
 fn valid(record:&StrategyEvidence,repo:&str)->bool{
-    record.repository==repo&&matches!(record.outcome.as_str(),"verified"|"adopted")
+    record.repository==repo&&matches!(record.outcome.as_str(),"verified"|"artifact_verified"|"adopted")
         &&record.recovery.is_some()&&record.cost_krw.is_finite()
         &&record.cost_krw>=0.0
 }
@@ -154,13 +198,13 @@ pub fn prompt(records:&[StrategyEvidence])->String{
         let p=e.recovery.as_ref()?;
         Some(format!("Past run {}: observed {} of {} at {} (failure call {} seq {}), \
             subsequent repair call {} seq {}, same-file postflight call {} seq {}, \
-            auditor PASS seq {}; observed cost KRW {:.2}, model rounds {}. \
+            verification basis {} at seq {}; observed cost KRW {:.2}, model rounds {}. \
             Reference only. Inspect the current file and approvals; do not \
             adopt or repeat any past effect without current evidence.",
             e.source_id,p.failure_kind,p.failed_tool,p.affected_path,
             p.failed_call_id,p.failure_seq,p.repair_call_id,p.repair_seq,
-            p.postflight_call_id,p.postflight_seq,p.verification_seq,
-            e.cost_krw,e.attempts))
+            p.postflight_call_id,p.postflight_seq,p.verification_basis,
+            p.verification_seq,e.cost_krw,e.attempts))
     }).take(3).collect::<Vec<_>>().join("\n")
 }
 
