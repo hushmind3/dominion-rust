@@ -167,7 +167,12 @@ impl Engine {
         }
     }
     pub fn model_for_run(&self,run:&Run)->Result<ModelClient,String>{
+        // Every native Run receives a durable UUID-bound routing identity.
+        // Retries and resumed requests keep the same provider affinity;
+        // unrelated jobs never compete for one shared OpenCode Go session.
         self.model_for_selection(&run.provider_id,&run.model_name)
+            .map(|model|model.with_session_affinity(
+                &format!("dominion-run-{}",run.id)))
     }
     /// An optional domain can reserve a normal, inert Run while it commits
     /// its own durable approval reference. Only the caller that observed that
