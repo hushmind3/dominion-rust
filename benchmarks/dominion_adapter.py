@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -76,6 +77,66 @@ def apply_worktree_changes(worktree, destination):
     return count
 
 
+def safe_required_paths(raw):
+    values = json.loads(raw)
+    if not isinstance(values,list) or len(values)>24:
+        raise ValueError("required_changed_paths must be a bounded list")
+    unique = set()
+    for path in values:
+        if (not isinstance(path,str) or not path or len(path)>512
+                or "\\\\" in path or Path(path).is_absolute()
+                or any(segment in (".","..","") for segment in path.split("/"))
+                or path in unique):
+            raise ValueError("invalid required_changed_paths entry")
+        unique.add(path)
+    return values
+
+
+def observed_usage(run):
+    events = run.get("events",[])
+    if not isinstance(events,list):events=[]
+    messages = run.get("messages",[])
+    if not isinstance(messages,list):messages=[]
+    return {
+        "run_id":run.get("id"),
+        "status":run.get("status","unknown"),
+        "model_requests":sum(event.get("kind")=="model" for event in events
+            if isinstance(event,dict)),
+        "tool_started":sum(event.get("kind")=="tool_started" for event in events
+            if isinstance(event,dict)),
+        "tool_calls":sum(len(message.get("tool_calls",[]))
+            for message in messages if isinstance(message,dict)
+            and isinstance(message.get("tool_calls"),list)),
+        "input_tokens":run.get("input_tokens"),
+        "cached_input_tokens":run.get("cached_input_tokens"),
+        "cache_write_tokens":run.get("cache_write_tokens"),
+        "output_tokens":run.get("output_tokens"),
+        "cost_krw":run.get("cost_krw",0)+run.get("delegated_spent_krw",0),
+    }
+
+
+def write_evidence(file,run,changed):
+    # Do not leak model messages, provider credentials or tool arguments to a ZIP.
+    events = run.get("events",[])
+    timeline=[]
+    for event in events if isinstance(events,list) else []:
+        if not isinstance(event,dict):continue
+        details=event.get("detail")
+        safe={}
+        if isinstance(details,dict):
+            safe={key:details[key] for key in
+                ("name","call_id","id","code","succeeded","observed")
+                if key in details}
+        timeline.append({"seq":event.get("seq"),"kind":event.get("kind"),
+            "at_ms":event.get("at_ms"),"tool":safe})
+    file.write_text(json.dumps({
+        "run_id":run.get("id"),"base_commit":run.get("base_commit"),
+        "repository":run.get("repository"),
+        "changed_files_exported":changed,"usage":observed_usage(run),
+        "events":timeline
+    },ensure_ascii=False,indent=2),encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace",type=Path,required=True)
@@ -86,6 +147,8 @@ def main():
     parser.add_argument("--telemetry-file",type=Path,required=True)
     parser.add_argument("--timeout",type=int,default=270)
     args = parser.parse_args()
+    required = safe_required_paths(
+        os.getenv("DOMINION_BENCH_REQUIRED_CHANGED_PATHS","[]"))
     workspace = args.workspace.resolve()
     prompt = args.prompt_file.resolve().read_text(encoding="utf-8")
     root = os.getenv("DOMINION_WORKSPACE_DIR")
@@ -103,40 +166,71 @@ def main():
         "instruction":prompt,
         "repository":workspace.name,
         "budget_krw":args.budget_krw,
-        "max_steps":args.max_steps
+        "max_steps":args.max_steps,
+        "required_changed_paths":required,
     })
     run_id = run["id"]
+    # Publish the real run identity before waiting so the parent runner can
+    # cancel a still-running server job even if this CLI is killed at timeout.
+    args.telemetry_file.write_text(json.dumps({
+        "run_id":run_id,"status":"running","model_requests":None,
+        "input_tokens":None,"output_tokens":None
+    },indent=2),encoding="utf-8")
     started = time.monotonic()
-    while time.monotonic()-started < args.timeout:
-        run = api("GET","/api/v1/runs/"+run_id)
-        if run["status"] in ("completed","failed","cancelled","awaiting_approval"):
-            break
-        if run["status"]=="paused" and not run.get("waiting_for_children"):
-            break
-        time.sleep(0.25)
-    else:
-        api("POST","/api/v1/runs/"+run_id+"/cancel",{})
-        raise RuntimeError("Dominion run reached benchmark time limit")
-    isolated = Path(root).resolve()/run_id
-    if run["status"] != "completed":
-        raise RuntimeError("Dominion run did not complete: "+run["status"])
-    changed = apply_worktree_changes(isolated,workspace)
-    details = run.get("messages",[])
-    events = run.get("events",[])
-    telemetry = {
-        "tool_calls":sum(len(m.get("tool_calls",[]))
-            for m in details if isinstance(m,dict) and isinstance(m.get("tool_calls"),list)),
-        "input_tokens":run.get("input_tokens",0),
-        "cached_input_tokens":run.get("cached_input_tokens",0),
-        "output_tokens":run.get("output_tokens",0),
-        "cost_krw":run.get("cost_krw",0)+run.get("delegated_spent_krw",0)
-    }
-    args.telemetry_file.write_text(json.dumps(telemetry,indent=2),encoding="utf-8")
-    print(json.dumps({
-        "run_id":run_id,"status":run["status"],
-        "changed_files_exported":changed,"events":len(events),
-        "measured_usage":telemetry
-    }))
+    terminal = False
+    original_sigterm = signal.getsignal(signal.SIGTERM)
+    def stop_on_signal(_signal,_frame):
+        raise SystemExit(143)
+    signal.signal(signal.SIGTERM,stop_on_signal)
+    try:
+        while time.monotonic()-started < args.timeout:
+            run = api("GET","/api/v1/runs/"+run_id)
+            args.telemetry_file.write_text(
+                json.dumps(observed_usage(run),indent=2),encoding="utf-8")
+            if run["status"] in ("completed","failed","cancelled","awaiting_approval"):
+                break
+            if run["status"]=="paused" and not run.get("waiting_for_children"):
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("Dominion run reached benchmark time limit")
+        if run["status"] != "completed":
+            raise RuntimeError("Dominion run did not complete: "+run["status"])
+        isolated = Path(root).resolve()/run_id
+        changed_paths = exported_paths(isolated)
+        # A claimed-complete agent with unchanged required files is still a
+        # failed benchmark, even if another file was produced somewhere else.
+        unmet = [path for path in required
+            if path not in changed_paths or not (isolated/path).is_file()]
+        if unmet:
+            raise RuntimeError("required artifact files not changed in the Run worktree: "+
+                ", ".join(unmet))
+        changed = apply_worktree_changes(isolated,workspace)
+        terminal = True
+        write_evidence(args.telemetry_file.with_suffix(".evidence.json"),run,changed_paths)
+        telemetry=observed_usage(run)
+        args.telemetry_file.write_text(json.dumps(telemetry,indent=2),encoding="utf-8")
+        print(json.dumps({
+            "run_id":run_id,"status":run["status"],
+            "changed_files_exported":changed,"changed_paths":changed_paths,
+            "events":len(run.get("events",[])),
+            "measured_usage":telemetry
+        }))
+    finally:
+        signal.signal(signal.SIGTERM,original_sigterm)
+        if not terminal:
+            try:
+                api("POST","/api/v1/runs/"+run_id+"/cancel",{})
+            except (OSError,RuntimeError):
+                pass
+            try:
+                snapshot=api("GET","/api/v1/runs/"+run_id)
+                args.telemetry_file.write_text(
+                    json.dumps(observed_usage(snapshot),indent=2),encoding="utf-8")
+                write_evidence(args.telemetry_file.with_suffix(".evidence.json"),
+                    snapshot,[])
+            except (OSError,RuntimeError):
+                pass
 
 
 if __name__ == "__main__":

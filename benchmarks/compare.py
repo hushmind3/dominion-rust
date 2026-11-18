@@ -11,6 +11,31 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.request import Request, urlopen
+
+
+
+def cancel_remote_benchmark(env):
+    """Best effort: the server Run outlives the local CLI process group."""
+    record = env.get("DOMINION_BENCH_TELEMETRY_FILE")
+    if not record:
+        return False
+    try:
+        state = json.loads(pathlib.Path(record).read_text(encoding="utf-8"))
+        run_id = state.get("run_id")
+        if not isinstance(run_id,str) or not run_id:
+            return False
+        root = env.get("DOMINION_BENCH_API_URL",
+            "http://127.0.0.1:8787").rstrip("/")
+        token = env.get("DOMINION_ACCESS_TOKEN","")
+        headers={"Content-Type":"application/json"}
+        if token:headers["Authorization"]="Bearer "+token
+        request = Request(root+"/api/v1/runs/"+run_id+"/cancel",
+            method="POST",headers=headers,data=b"{}")
+        with urlopen(request,timeout=3):
+            return True
+    except (OSError,ValueError,TimeoutError):
+        return False
 
 
 def run_command(argv, cwd, timeout, env):
@@ -28,15 +53,25 @@ def run_command(argv, cwd, timeout, env):
                 "seconds":round(time.monotonic()-start,3),
                 "stderr":stderr[-1200:],"timeout":False}
     except subprocess.TimeoutExpired:
+        # First stop the durable server-side Run; killing this CLI alone
+        # leaves a model/tool job executing after the benchmark clock stops.
+        cancelled=cancel_remote_benchmark(env)
         if os.name != "nt":
-            try:os.killpg(proc.pid,signal.SIGKILL)
+            try:os.killpg(proc.pid,signal.SIGTERM)
             except ProcessLookupError:pass
+            try:proc.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:os.killpg(proc.pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+                proc.communicate()
         else:
             proc.kill()
-        proc.communicate()
+            proc.communicate()
         return {"returncode":None,
                 "seconds":round(time.monotonic()-start,3),
-                "stderr":"time limit exceeded, process group terminated",
+                "stderr":"time limit exceeded; server cancellation "+
+                    ("requested" if cancelled else "not confirmed")+
+                    "; process group terminated",
                 "timeout":True}
 
 
@@ -98,6 +133,8 @@ def compare(manifest, directory, attempts, result_root):
                     "DOMINION_BENCH_WORKSPACE":str(workspace),
                     "DOMINION_BENCH_BUDGET_KRW":str(budget),
                     "DOMINION_BENCH_MAX_STEPS":str(limit),
+                    "DOMINION_BENCH_REQUIRED_CHANGED_PATHS":
+                        json.dumps(task.get("artifacts",[])),
                     "DOMINION_BENCH_TELEMETRY_FILE":str(telemetry)
                 })
                 ran = run_command(expand(argv),workspace,timeout,env)
