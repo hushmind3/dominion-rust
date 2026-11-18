@@ -304,6 +304,66 @@ async fn named_member_selection_remains_scoped_without_broadcasting_to_all_nine(
 
 
 #[tokio::test]
+async fn background_nine_agent_room_returns_before_fanout_and_preserves_same_id_retry(){
+    let (engine,id,requests,server,root)=setup(10,"discussion").await;
+    let first=send_background(State(engine.clone()),Path(id),Json(SayInput{
+        input:"All nine agents: give an independent result".into(),
+        agent_ids:vec![],client_message_id:"background-round-1".into(),
+        reasoning_language:None
+    })).await.unwrap();
+    assert_eq!(first.0,StatusCode::ACCEPTED);
+    assert_eq!(first.1.0["job"]["status"],"running");
+    assert_eq!(first.1.0["job"]["stepTotal"],9);
+    // HTTP acceptance must not depend on waiting for nine paid model calls.
+    let mut finished=None;
+    for _ in 0..150{
+        let room=engine.groups.get(id).await.unwrap();
+        if room.messages.len()==10 && !engine.groups.frontend_turn_active(id){
+            finished=Some(room);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let room=finished.expect("background fanout failed to finish all nine speakers");
+    assert_eq!(room.usage_receipts.len(),9);
+    assert_eq!(room.messages.iter().filter(|m|m.speaker=="user").count(),1);
+    assert_eq!(requests.load(Ordering::SeqCst),9);
+    let state_snapshot=state(State(engine.clone()),Path(id)).await.unwrap().0;
+    assert_eq!(state_snapshot["status"],"idle");
+    assert!(state_snapshot["jobs"].as_array().unwrap().is_empty());
+    let repeated=send_background(State(engine.clone()),Path(id),Json(SayInput{
+        input:"All nine agents: give an independent result".into(),
+        agent_ids:vec![],client_message_id:"background-round-1".into(),
+        reasoning_language:None
+    })).await.unwrap();
+    assert_eq!(repeated.0,StatusCode::OK);
+    assert_eq!(requests.load(Ordering::SeqCst),9,
+        "repeating the original clientMessageId must not double-bill inference");
+    server.abort();
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
+async fn background_room_lease_rejects_overlapping_sends_and_exposes_running_state(){
+    let (engine,id,requests,server,root)=setup(10,"discussion").await;
+    let lease=engine.groups.try_frontend_turn(id).unwrap();
+    let overlapping=send_background(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Overlapping owner request".into(),agent_ids:vec![],
+        client_message_id:"overlap-1".into(),reasoning_language:None
+    })).await.unwrap_err();
+    assert_eq!(overlapping.0,StatusCode::CONFLICT);
+    let snapshot=state(State(engine.clone()),Path(id)).await.unwrap().0;
+    assert_eq!(snapshot["status"],"running");
+    assert_eq!(requests.load(Ordering::SeqCst),0);
+    drop(lease);
+    assert_eq!(state(State(engine.clone()),Path(id)).await.unwrap().0["status"],"idle");
+    server.abort();
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
 async fn third_owner_turn_upstream_400_retains_exact_failed_speaker_and_resumes_to_30_messages(){
     let (engine,id,requests,server,root)=setup_with_failure(100,"discussion",Some(18)).await;
     for round in 0..2{
