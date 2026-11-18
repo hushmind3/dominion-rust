@@ -373,14 +373,18 @@ impl ModelClient {
             !text.trim().is_empty(),!calls.is_empty())?;
         let input_tokens=raw.get("prompt_eval_count").and_then(Value::as_u64)
             .ok_or("Ollama response missing prompt_eval_count")?;
+        // Ollama 2026 returns cache-inclusive prompt_eval_count. This is
+        // provider-measured KV prefix reuse, not a prompt-length estimate.
+        let cached_input_tokens=raw.get("prompt_eval_cached_count")
+            .and_then(Value::as_u64).unwrap_or(0).min(input_tokens);
         let output_tokens=raw.get("eval_count").and_then(Value::as_u64)
             .ok_or("Ollama response missing eval_count")?;
         let mut message=json!({"role":"assistant","content":text});
         if !normalized_calls.is_empty(){message["tool_calls"]=json!(normalized_calls);}
         Ok(Reply{
-            message,text,calls,input_tokens,cached_input_tokens:0,cache_write_tokens:0,
+            message,text,calls,input_tokens,cached_input_tokens,cache_write_tokens:0,
             output_tokens,usage_reported:true,
-            cost_krw:estimate_cost(settings,input_tokens,0,0,output_tokens),
+            cost_krw:estimate_cost(settings,input_tokens,cached_input_tokens,0,output_tokens),
             model:raw.get("model").and_then(Value::as_str)
                 .unwrap_or(&settings.name).to_owned()
         })
@@ -729,7 +733,8 @@ mod tests {
             }else{
                 Json(json!({"model":"qwen-local","done":true,
                     "message":{"role":"assistant","content":"Artifact inspected"},
-                    "prompt_eval_count":155,"eval_count":8}))
+                    "prompt_eval_count":155,"prompt_eval_cached_count":115,
+                    "eval_count":8}))
             }
         }
         let received=Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -760,6 +765,10 @@ mod tests {
             "content":"file text"}));
         let final_reply=client.complete(&history,&[],false).await.unwrap();
         assert_eq!(final_reply.text,"Artifact inspected");
+        assert_eq!(final_reply.input_tokens,155);
+        assert_eq!(final_reply.cached_input_tokens,115,
+            "cached prefix must come from Ollama KV-cache usage receipt");
+        assert_eq!(final_reply.input_tokens-final_reply.cached_input_tokens,40);
         assert_eq!(received.lock().unwrap()[1]["messages"][2]["tool_name"],"read_file");
         assert_eq!(received.lock().unwrap()[0]["tools"][0]["function"]["name"],"read_file");
         server.abort();
