@@ -70,9 +70,18 @@ impl Engine {
         self.spawn_subagent_with_policy(parent,input,false).await
     }
     pub async fn spawn_subagent_with_policy(self:&Arc<Self>,parent:Uuid,input:CreateRun,read_only:bool)->Result<Run,String>{
-        self.spawn_subagent_with_capability(parent,input,read_only,false).await
+        self.spawn_subagent_with_capability(parent,input,read_only,false,"general").await
     }
-    async fn spawn_subagent_with_capability(self:&Arc<Self>,parent:Uuid,input:CreateRun,read_only:bool,strategy_candidate:bool)->Result<Run,String>{
+    /// Task-specific child profiles share the same Run journal and native
+    /// model executor. This is a tool capability filter, not a second harness.
+    pub async fn spawn_subagent_with_profile(self:&Arc<Self>,parent:Uuid,input:CreateRun,profile:&str)->Result<Run,String>{
+        if !matches!(profile,"general"|"inspection"|"implementation"|"verification"){
+            return Err("unknown delegation profile".into());
+        }
+        self.spawn_subagent_with_capability(parent,input,profile=="inspection",false,profile).await
+    }
+    async fn spawn_subagent_with_capability(self:&Arc<Self>,parent:Uuid,input:CreateRun,
+        read_only:bool,strategy_candidate:bool,profile:&str)->Result<Run,String>{
         let _guard=self.delegate_lock.lock().await;
         let root=self.store.get(parent).await.ok_or("parent execution not found")?;
         if root.terminal() || root.status!=RunStatus::Running || root.cancel_after_tool {
@@ -97,6 +106,12 @@ impl Engine {
         child.model_name=root.model_name.clone();
         child.read_only=read_only||root.read_only;
         child.strategy_candidate=strategy_candidate;
+        child.delegation_profile=if profile=="general"{String::new()}else{profile.to_owned()};
+        if !child.delegation_profile.is_empty(){
+            child.event("delegation_profile",
+                format!("Task-scoped tool admission profile: {profile}"),
+                Some(json!({"profile":profile,"read_only":child.read_only})));
+        }
         if strategy_candidate {
             if root.parent_run_id.is_some() || root.strategy_candidate {
                 return Err("nested strategy workers are not permitted".into());
@@ -124,7 +139,8 @@ impl Engine {
                 return Err("parent budget changed before child reservation".into());
             }
             run.reserved_budget_krw+=budget;
-            run.event("budget_reserved",format!("Reserved {budget:.4} KRW for delegated child {}",child.id),Some(json!({"child_id":child.id,"read_only":child.read_only})));
+            run.event("budget_reserved",format!("Reserved {budget:.4} KRW for delegated child {}",child.id),Some(json!({"child_id":child.id,"read_only":child.read_only,
+                "profile":child.delegation_profile})));
             Ok(())
         }).await?;
         child.event("delegated",format!("Delegated by parent {parent} with {budget} KRW reserved"),None);
@@ -249,7 +265,7 @@ impl Engine {
                 root.instruction,label,approach);
             let attempt=self.spawn_subagent_with_capability(parent,CreateRun{
                 instruction,budget_krw:Some(amount),max_steps:Some(steps),
-            },false,true).await;
+            },false,true,"general").await;
             match attempt {
                 Ok(child)=>launched.push(json!({"run_id":child.id,"label":label,
                     "budget_krw":amount,"max_steps":steps,

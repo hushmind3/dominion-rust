@@ -19,6 +19,27 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
             &&(!run.read_only||matches!(name,
                 "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"read_program"));
     }
+    // Task-oriented children share the parent model/runtime but expose only
+    // task-relevant tool classes. Unknown tools never bypass this scope.
+    if run.parent_run_id.is_some(){
+        match run.delegation_profile.as_str(){
+            "inspection"=>return matches!(name,
+                "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"read_program"
+                |"github_list_repositories"|"github_read_file"|"github_list_branches"
+                |"github_list_issues"|"github_get_issue"|"github_list_pull_requests"
+                |"github_get_pull_request"|"google_drive_search"|"google_drive_read_text"
+                |"google_docs_get"|"google_sheets_get"|"memory_search"
+                |"list_skills"|"load_skill"),
+            "implementation"=>return !run.read_only&&matches!(name,
+                "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"
+                |"read_program"|"run_program"|"write_file"|"edit_file"|"shell"
+                |"memory_search"|"list_skills"|"load_skill"),
+            "verification"=>return !run.read_only&&matches!(name,
+                "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"
+                |"read_program"|"shell"|"memory_search"|"list_skills"|"load_skill"),
+            _=>{}
+        }
+    }
     if !run.read_only{return true}
     // Unknown and MCP tools are denied: a read-only investigator cannot
     // escalate through dynamically registered extensions.
@@ -61,6 +82,44 @@ mod tests{
     use super::*;
     use crate::{domain::{CreateRun,ToolCall},tools};
     use serde_json::json;
+    #[test]
+    fn role_scoped_child_uses_original_policy_for_prompt_and_dispatch(){
+        let mut child=Run::new(CreateRun{instruction:"Verify patch".into(),
+            budget_krw:Some(10.0),max_steps:Some(5)},5).unwrap();
+        child.parent_run_id=Some(uuid::Uuid::new_v4());
+        child.delegation_profile="verification".into();
+        assert!(allowed_tool(&child,"read_file"));
+        assert!(allowed_tool(&child,"shell"),
+            "verification may run owner-approved shell checks");
+        for name in ["write_file","edit_file","run_program","spawn_subagent",
+            "mcp__remote__write","google_docs_create"]{
+            assert!(!allowed_tool(&child,name),
+                "{name} must not escape verifier scope");
+        }
+        let (catalog,_)=select_catalog(&child,tools::definitions(true),false,&[]);
+        assert!(catalog.iter().all(|t|t.pointer("/function/name")
+            .and_then(Value::as_str).is_some_and(|n|allowed_tool(&child,n))));
+        child.delegation_profile="implementation".into();
+        assert!(allowed_tool(&child,"edit_file"));
+        assert!(!allowed_tool(&child,"mcp__remote__write"));
+        assert!(!allowed_tool(&child,"spawn_subagent"));
+        child.delegation_profile="inspection".into();
+        child.read_only=true;
+        assert!(allowed_tool(&child,"google_drive_search"));
+        assert!(!allowed_tool(&child,"shell"));
+        assert!(!allowed_tool(&child,"write_file"));
+        assert!(!allowed_tool(&child,"spawn_subagent"));
+        let serialized=serde_json::to_value(&child).unwrap();
+        let recovered:Run=serde_json::from_value(serialized).unwrap();
+        assert_eq!(recovered.delegation_profile,"inspection");
+        let mut legacy=Run::new(CreateRun{instruction:"old".into(),budget_krw:None,
+            max_steps:None},5).unwrap();
+        legacy.parent_run_id=Some(uuid::Uuid::new_v4());
+        assert!(allowed_tool(&legacy,"spawn_subagent"),
+            "ordinary legacy delegation must retain its previous capabilities");
+        legacy.read_only=true;
+        assert!(!allowed_tool(&legacy,"write_file"));
+    }
     #[test]
     fn reserved_child_budgets_reduce_parent_effective_limit(){
         let mut run=Run::new(CreateRun{instruction:"x".into(),budget_krw:Some(100.0),max_steps:None},5).unwrap();

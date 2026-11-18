@@ -936,8 +936,18 @@ impl Engine {
                 let budget=call.arguments.get("budget_krw").and_then(Value::as_f64);
                 let steps=call.arguments.get("max_steps").and_then(Value::as_u64).map(|n|n as usize);
                 let read_only=call.arguments.get("read_only").and_then(Value::as_bool).unwrap_or(false);
-                self.spawn_subagent_with_policy(id,CreateRun{instruction:instruction.into(),budget_krw:budget,max_steps:steps},read_only)
-                    .await.map(|run|json!({"id":run.id,"status":run.status,"budget_krw":run.budget_krw}).to_string())
+                let profile=call.arguments.get("profile").and_then(Value::as_str).unwrap_or("general");
+                let request=CreateRun{instruction:instruction.into(),budget_krw:budget,max_steps:steps};
+                let child=if profile=="general"{
+                    self.spawn_subagent_with_policy(id,request,read_only).await
+                }else{
+                    if read_only && profile!="inspection"{
+                        return Err("explicit read_only child requires inspection profile".into());
+                    }
+                    self.spawn_subagent_with_profile(id,request,profile).await
+                };
+                child.map(|run|json!({"id":run.id,"status":run.status,
+                    "budget_krw":run.budget_krw,"profile":run.delegation_profile}).to_string())
             } else if call.name == "check_subagent" {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
                 let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;

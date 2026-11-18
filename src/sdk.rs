@@ -163,6 +163,11 @@ impl Dominion {
     pub async fn delegate(&self,parent:Uuid,input:CreateRun)->Result<Run,String>{
         self.engine.spawn_subagent(parent,input).await
     }
+    /// Optional task-specific child tool scope; defaults remain compatible
+    /// with preexisting general-purpose delegation.
+    pub async fn delegate_profile(&self,parent:Uuid,input:CreateRun,profile:&str)->Result<Run,String>{
+        self.engine.spawn_subagent_with_profile(parent,input,profile).await
+    }
     pub async fn delegate_read_only(&self,parent:Uuid,input:CreateRun)->Result<Run,String>{
         self.engine.spawn_subagent_with_policy(parent,input,true).await
     }
