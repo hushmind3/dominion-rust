@@ -17,6 +17,33 @@ fn money(amount:f64,currency:&str,fx:Option<f64>)->Option<f64>{
     (converted.is_finite()&&converted<=1e16).then_some(converted)
 }
 fn round(v:f64)->f64{(v*100.0).round()/100.0}
+/// Compare an owner-entered unit/total price against numeric tokens in
+/// the *exact saved citation*, not a separate model-generated summary.
+/// Quotation membership is not evidence of a transaction or market demand.
+fn cited_amount_matches(quote:&str,amount:f64)->bool{
+    if !amount.is_finite()||amount<0.0||quote.chars().count()>600{return false;}
+    let mut token=String::new();
+    let matches=|token:&str|{
+        let clean=token.replace(',',"");
+        clean.parse::<f64>().ok().is_some_and(|v|
+            v.is_finite() && (v-amount).abs()<=0.000001_f64.max(amount*1e-10))
+    };
+    for ch in quote.chars(){
+        if ch.is_ascii_digit()||ch==','||ch=='.' {
+            token.push(ch);
+        } else if !token.is_empty(){
+            if matches(&token){return true;}
+            token.clear();
+        }
+    }
+    !token.is_empty()&&matches(&token)
+}
+fn source_host(value:&Value)->String{
+    value["url"].as_str().unwrap_or("")
+        .split_once("://").map(|(_,rest)|rest).unwrap_or("")
+        .split(|ch:char|ch=='/'||ch=='?'||ch=='#').next().unwrap_or("")
+        .trim_start_matches("www.").to_lowercase()
+}
 /// A complete, comparable assumption set yields a mathematical spread, not
 /// proof that a real buyer or vendor offered/accepted either value.
 pub fn evaluate(input:&Value)->Value{
@@ -172,11 +199,20 @@ fn linked_quote(conn:&rusqlite::Connection,candidate:&Value,side:&Value)->Result
             "tradeVerified":false}));
     }
     let status=super::provenance::citation_status(&selected,quote);
+    let saved=matches!(status,
+        "exact_saved_feed_field_not_primary_document"|
+        "exact_saved_page_field_not_transaction");
+    let amount_aligned=if saved{
+        side["amount"].as_f64().filter(|a|a.is_finite()&&*a>=0.0)
+            .map(|amount|cited_amount_matches(quote,amount))
+    }else{None};
     Ok(json!({"sourceId":source,"revisionId":selected_id,
         "currentRevisionId":current_id,"revisionStatus":revision_status,
         "revisionChangedSinceQuote":selected_id!=current_id,
         "quote":quote.chars().take(600).collect::<String>(),
-        "status":status,"tradeVerified":false}))
+        "status":status,"sourceHost":source_host(&selected),
+        "quotedAmountMatchesInput":amount_aligned,
+        "tradeVerified":false}))
 }
 /// Same domain database and owner audit history; does not start any Run.
 pub fn compare_and_store(root:&Path,id:&str,input:&Value)->Result<Value,String>{
@@ -207,6 +243,27 @@ pub fn compare_and_store(root:&Path,id:&str,input:&Value)->Result<Value,String>{
     record["supplier"]=input["supplier"].clone();
     record["costs"]=input["costs"].clone();
     record["fxAsOf"]=input["fxAsOf"].clone();
+    // The prices may be mathematically comparable without any archived
+    // quote backing them. Keep those two distinct evidence dimensions.
+    let amount_support=[&buyer_check,&supplier_check];
+    let supported=amount_support.iter().all(|v|
+        v["quotedAmountMatchesInput"]==true);
+    let any_mismatch=amount_support.iter().any(|v|
+        v["quotedAmountMatchesInput"]==false);
+    let buyer_host=buyer_check["sourceHost"].as_str().unwrap_or("");
+    let supplier_host=supplier_check["sourceHost"].as_str().unwrap_or("");
+    let independent=!buyer_host.is_empty()&&!supplier_host.is_empty()
+        &&buyer_host!=supplier_host;
+    record["priceEvidenceStatus"]=json!(if supported&&independent {
+        "independent_saved_quotes_match_entered_amounts_not_verified_sale"
+    }else if any_mismatch{
+        "entered_price_disagrees_with_saved_quote"
+    }else if supported {
+        "saved_quotes_match_but_sources_not_independent"
+    }else{
+        "insufficient_independent_numeric_quote_evidence"
+    });
+    record["sourceHostIndependent"]=json!(independent);
     record["sourceChecks"]=json!({"buyer":buyer_check,"supplier":supplier_check});
     record["inputStatus"]=json!("user_supplied_not_primary_source_verified");
     record["createdAt"]=json!(
@@ -264,11 +321,51 @@ mod tests{
         "exact_saved_feed_field_not_primary_document");
     assert_eq!(first["sourceChecks"]["supplier"]["status"],
         "exact_saved_feed_field_not_primary_document");
+    assert_eq!(first["sourceChecks"]["buyer"]["quotedAmountMatchesInput"],true);
+    assert_eq!(first["sourceChecks"]["supplier"]["quotedAmountMatchesInput"],true);
+    assert_eq!(first["sourceHostIndependent"],true);
+    assert_eq!(first["priceEvidenceStatus"],
+        "independent_saved_quotes_match_entered_amounts_not_verified_sale");
     assert_eq!(first["tradeVerified"],false);
     assert_eq!(compare_and_store(&root,"lead-1",&input).unwrap()["id"],first["id"]);
     assert_eq!(comparisons(&root,"lead-1").unwrap().len(),1);
     let saved=super::super::candidate(&root,"lead-1").unwrap().unwrap();
     assert_eq!(saved["lastPriceComparisonId"],first["id"]);
+    std::fs::remove_dir_all(root).unwrap();
+ }
+ #[test]fn saved_quote_number_matching_refuses_false_price_equivalence(){
+    assert!(cited_amount_matches("Price 120,000 KRW per pack",120000.0));
+    assert!(cited_amount_matches("Unit price 4.75 USD",4.75));
+    assert!(!cited_amount_matches("Price 120000 KRW",12000.0));
+    assert!(!cited_amount_matches("Price 120,000 KRW",1200000.0));
+    assert!(!cited_amount_matches("No numeric amount supplied",120000.0));
+ }
+ #[test]fn mismatched_quote_is_not_marked_as_supported_even_if_source_text_exists(){
+    let root=std::env::temp_dir().join(format!(
+        "dominion-source-price-mismatch-{}",uuid::Uuid::new_v4()));
+    let buyer=json!({"id":"buyer-e","url":"https://buyer.example/request",
+        "description":"Budget estimate 120000 won","sourceName":"Buyer",
+        "contentStatus":"headline_observed"});
+    let seller=json!({"id":"seller-e","url":"https://seller.example/quote",
+        "description":"Supplier quote 85000 won","sourceName":"Seller",
+        "contentStatus":"headline_observed"});
+    super::super::save_signals(&root,&[buyer,seller]).unwrap();
+    super::super::save_report(&root,&[json!({"id":"lead-mismatch",
+        "status":"draft","sourceIds":["buyer-e","seller-e"]})],
+        &json!({"candidateIds":["lead-mismatch"]})).unwrap();
+    let mut input=example();
+    input["buyer"]["sourceId"]=json!("buyer-e");
+    input["buyer"]["quote"]=json!("Budget estimate 120000 won");
+    input["buyer"]["amount"]=json!(1200000.0);
+    input["supplier"]["sourceId"]=json!("seller-e");
+    input["supplier"]["quote"]=json!("Supplier quote 85000 won");
+    let result=compare_and_store(&root,"lead-mismatch",&input).unwrap();
+    assert_eq!(result["sourceChecks"]["buyer"]["status"],
+        "exact_saved_feed_field_not_primary_document");
+    assert_eq!(result["sourceChecks"]["buyer"]["quotedAmountMatchesInput"],false);
+    assert_eq!(result["sourceChecks"]["supplier"]["quotedAmountMatchesInput"],true);
+    assert_eq!(result["priceEvidenceStatus"],"entered_price_disagrees_with_saved_quote");
+    assert_eq!(result["tradeVerified"],false);
     std::fs::remove_dir_all(root).unwrap();
  }
  #[test]fn comparable_prices_account_for_every_declared_cost(){
