@@ -11,6 +11,15 @@ async fn false_then_repair_model(State((steps,repair)):State<ModelState>,
     let correction_seen=input["messages"].as_array().is_some_and(|messages|
         messages.iter().any(|m|m["role"]=="user"&&m["content"].as_str()
             .is_some_and(|s|s.contains("No changed source or artifact files"))));
+    if step==0{
+        let names=input["tools"].as_array().unwrap().iter()
+            .filter_map(|t|t.pointer("/function/name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"edit_file"));
+        assert!(!names.contains(&"run_program"),
+            "one-file benchmark should not burn context on 12-step DAG schemas");
+    }
     let reply=if repair && step==1 && correction_seen{
         json!({"role":"assistant","content":null,"tool_calls":[{
             "id":"real-edit-1","type":"function","function":{

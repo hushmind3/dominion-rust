@@ -78,6 +78,8 @@ jobs:
         run: 'cargo test --lib repair_guidance::'
       - name: Permission-scoped progressive tool discovery and durable resume (dev profile)
         run: 'cargo test --lib tool_discovery::tests'
+      - name: One-file task-aware minimal tool schemas with full failure recovery
+        run: 'cargo test --lib local_task_catalog::tests'
       - name: MCP JSON Schema unions, maps and fail-closed admission (dev profile)
         run: 'cargo test --lib tool_schema::tests'
       - name: Native Ollama and Anthropic provider protocol normalization

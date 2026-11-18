@@ -19,6 +19,7 @@ mod tests;
 mod benchmark_tests;
 #[cfg(test)]
 mod model_only_tests;
+mod local_task_catalog;
 
 const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. Choose the simplest sufficient tool path: read_program is optional for parallel inspection; run_program is optional for dependent native steps without intermediate model turns. The latter must be the only call in its turn, and never bypasses shell approval. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests and examine actual receipts before reporting completion. Finish only when the request is materially done, explaining remaining limitations.";
 pub struct Engine {
@@ -583,7 +584,9 @@ impl Engine {
             available_tools.extend(external);
             let has_children=self.store.has_children(id).await;
             let (catalog,policy_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
-            let schema_chars_saved=policy_saved.saturating_add(deferred_schema_chars);
+            let (catalog,local_profile_saved)=local_task_catalog::project(&run,catalog);
+            let schema_chars_saved=policy_saved.saturating_add(deferred_schema_chars)
+                .saturating_add(local_profile_saved);
             let projection=crate::context::compact_strict(&run.messages,self.settings.context_max_chars)?;
             let mut outbound=projection.messages.clone();
             // The source is a durable tool/verifier receipt, not model or
