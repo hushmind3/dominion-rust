@@ -633,3 +633,95 @@ async fn programmatic_shell_step_cannot_skip_existing_human_approval(){
     fixture.abort();
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+
+#[tokio::test]
+async fn registered_native_ollama_provider_completes_original_agent_tool_loop(){
+    use std::sync::Mutex as StdMutex;
+    let requests=Arc::new(StdMutex::new(Vec::<Value>::new()));
+    async fn ollama(State(requests):State<Arc<StdMutex<Vec<Value>>>>,
+        Json(body):Json<Value>)->Json<Value>{
+        let mut all=requests.lock().unwrap();
+        all.push(body);
+        if all.len()==1 {
+            Json(json!({"done":true,"model":"qwen-local",
+                "message":{"role":"assistant","content":"",
+                    "tool_calls":[{"function":{"name":"list_files",
+                        "arguments":{"path":""}}}]},
+                "prompt_eval_count":75,"eval_count":12}))
+        }else {
+            Json(json!({"done":true,"model":"qwen-local",
+                "message":{"role":"assistant","content":"Workspace inspected"},
+                "prompt_eval_count":100,"eval_count":9}))
+        }
+    }
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address=listener.local_addr().unwrap();
+    let server=tokio::spawn({
+        let received=Arc::clone(&requests);
+        async move {
+            axum::serve(listener,Router::new().route("/api/chat",post(ollama))
+                .with_state(received)).await.unwrap();
+        }
+    });
+    let root=std::env::temp_dir().join(format!("dominion-native-ollama-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    settings.separate_plan_model_call=false;
+    settings.separate_model_audit_enabled=false;
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(
+        settings.data_dir.join("groups")).await.unwrap());
+    let engine=Engine::new(settings.clone(),store.clone(),groups).unwrap();
+    let provider=engine.providers.upsert(crate::provider_registry::Draft{
+        id:None,name:"Local Qwen".into(),
+        base_url:format!("http://{address}"),kind:"ollama".into(),
+        model:"qwen-local".into(),api_key:None,enabled:true,local:true,
+        reflection:false,reflection_model:None,requests_per_minute:0
+    }).unwrap();
+    let mut run=Run::new(CreateRun{
+        instruction:"List local files and report observed workspace".into(),
+        budget_krw:Some(50.0),max_steps:Some(6)
+    },6).unwrap();
+    run.provider_id=provider.id;
+    run.model_name=provider.model;
+    let id=run.id;
+    let workspace=settings.workspace_dir.join(id.to_string());
+    tokio::fs::create_dir_all(&workspace).await.unwrap();
+    tokio::fs::write(workspace.join("readme.txt"),"local fixture").await.unwrap();
+    store.put(run).await.unwrap();
+    engine.launch(id).await.unwrap();
+    let terminal=tokio::time::timeout(std::time::Duration::from_secs(8),async{
+        loop {
+            let state=store.get(id).await.unwrap();
+            if state.terminal(){break state;}
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(terminal.status,RunStatus::Completed,"events: {:?}",terminal.events);
+    assert_eq!(terminal.answer.as_deref(),Some("Workspace inspected"));
+    assert_eq!(terminal.input_tokens,175);
+    assert_eq!(terminal.output_tokens,21);
+    assert_eq!(terminal.events.iter().filter(|e|e.kind=="model").count(),2);
+    assert_eq!(terminal.events.iter().filter(|e|e.kind=="tool_started").count(),1);
+    assert_eq!(terminal.events.iter().filter(|e|e.kind=="tool_result").count(),1);
+    let messages=terminal.messages.iter().filter(|m|m["role"]=="tool")
+        .collect::<Vec<_>>();
+    assert_eq!(messages.len(),1);
+    assert!(messages[0]["content"].as_str().unwrap().contains("readme.txt"));
+    let recorded=requests.lock().unwrap().clone();
+    assert_eq!(recorded.len(),2);
+    assert_eq!(recorded[0]["tools"].as_array().unwrap().iter()
+        .filter(|t|t["function"]["name"]=="list_files").count(),1);
+    assert!(recorded[1]["messages"].as_array().unwrap().iter().any(|m|
+        m["role"]=="tool"&&m["tool_name"]=="list_files"
+        &&m["content"].as_str().is_some_and(|s|s.contains("readme.txt"))));
+    for _ in 0..120 {
+        if !engine.active.lock().await.contains(&id){break;}
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    server.abort();
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
