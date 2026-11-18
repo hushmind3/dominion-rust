@@ -76,6 +76,9 @@ def run_command(argv, cwd, timeout, env):
 
 
 def safe_child(root, relative):
+    # macOS /var aliases /private/var. Compare canonical roots, never raw
+    # spellings, while continuing to block symlink and ../ escapes.
+    root = root.resolve()
     candidate = (root/relative).resolve()
     if candidate == root or root not in candidate.parents:
         raise ValueError("path escapes evaluation workspace")
