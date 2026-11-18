@@ -13,6 +13,35 @@ pub struct Utterance { pub speaker: String, pub content: String, pub at_ms: u64,
 #[serde(rename_all="snake_case")]
 pub enum RoomStatus { Open, Finished }
 #[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct RoomProviderFailure {
+    pub occurred_at_ms:u64,
+    pub participant:String,
+    pub model:String,
+    /// The provider HTTP status and JSON error code, not user prompt text
+    /// or a raw upstream response that might echo private data.
+    pub http_status:Option<u16>,
+    pub upstream_code:Option<i64>,
+    pub category:String,
+    pub completed_messages:usize,
+    pub system_chars:usize,
+    pub context_chars:usize,
+}
+fn classified_provider_failure(error:&str)->(Option<u16>,Option<i64>,String){
+    let http=error.strip_prefix("provider HTTP ")
+        .and_then(|tail|tail.split_whitespace().next())
+        .and_then(|raw|raw.parse::<u16>().ok());
+    let code=error.find('{').and_then(|index|
+        serde_json::from_str::<Value>(&error[index..]).ok())
+        .and_then(|v|v.pointer("/errors/0/code").or_else(||v.pointer("/error/code"))
+            .or_else(||v.get("code")).and_then(Value::as_i64));
+    let category=if http==Some(400){"upstream_bad_request"}
+        else if http==Some(429){"upstream_rate_limited"}
+        else if http.is_some(){"upstream_http_error"}
+        else if error.starts_with("provider transport:"){"upstream_transport"}
+        else{"upstream_protocol_or_runtime"};
+    (http,code,category.into())
+}
+#[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct RoomUsageReceipt {
     pub message_index:usize,
     pub participant:String,
@@ -44,6 +73,8 @@ pub struct Room {
     /// Exceeding a limit or stopping is not successful completion.
     #[serde(default,skip_serializing_if="String::is_empty")]
     pub finish_reason:String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub last_provider_failure:Option<RoomProviderFailure>,
     #[serde(default)] pub frontend:Option<FrontendRoom>,
     #[serde(default)] pub client_messages:HashMap<String,usize>,
     #[serde(default)] pub recipients:Vec<String>,
@@ -251,7 +282,7 @@ impl Groups {
         let budget=req.budget_krw.unwrap_or(5000.0);
         if !budget.is_finite() || !(0.0..=1_000_000.0).contains(&budget) {return Err("invalid budget_krw".into());}
         let now=now_ms();
-        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),finish_reason:String::new(),frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
+        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),finish_reason:String::new(),last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
         self.save(room).await
     }
     pub async fn get(&self,id:Uuid)->Option<Room>{self.rooms.lock().await.get(&id).cloned()}
@@ -296,6 +327,7 @@ impl Groups {
         let mut room=self.get(id).await.ok_or("room not found")?;
         room.messages.clear();room.client_messages.clear();room.recipients.clear();room.rounds=0;room.cost_krw=0.0;room.used_tokens=0;
         room.usage_receipts.clear();room.finish_reason.clear();
+        room.last_provider_failure=None;
         room.status=RoomStatus::Open;room.updated_at_ms=now_ms();
         self.save(room).await
     }
@@ -424,7 +456,30 @@ impl Groups {
             json!({"role":"system","content":Self::system_prompt(&room,participant)}),
             json!({"role":"user","content":projected.text})
         ];
-        let reply=model.complete(&messages,&[],participant.economy).await?;
+        let reply=match model.complete(&messages,&[],participant.economy).await{
+            Ok(reply)=>reply,
+            Err(error)=>{
+                let (http_status,upstream_code,category)=classified_provider_failure(&error);
+                room.last_provider_failure=Some(RoomProviderFailure{
+                    occurred_at_ms:now_ms(),participant:participant.name.clone(),
+                    model:room.frontend.as_ref().and_then(|view|view.models.first())
+                        .and_then(|value|value.get("model")).and_then(Value::as_str)
+                        .unwrap_or("selected-provider-model").to_owned(),
+                    http_status,upstream_code,category,
+                    completed_messages:room.messages.len(),
+                    system_chars:messages[0]["content"].as_str()
+                        .map_or(0,|s|s.chars().count()),
+                    context_chars:projected.projected_chars,
+                });
+                room.updated_at_ms=now_ms();
+                // Preserve the completed speaker receipts and the exact
+                // failed speaker before surfacing 400. No synthetic answer,
+                // new owner turn or unmetered retry is inserted.
+                self.save(room).await?;
+                return Err(error);
+            }
+        };
+        room.last_provider_failure=None;
         let tokens=reply.input_tokens.saturating_add(reply.output_tokens);
         let exceeded_cost=room.cost_krw+reply.cost_krw > room.budget_krw;
         let exceeded_tokens=room.frontend.as_ref().is_some_and(|v|
@@ -530,7 +585,7 @@ mod tests {
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],finish_reason:String::new(),
-            frontend:None,client_messages:HashMap::new(),recipients:vec![]
+            last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:vec![]
         };
         let common=Groups::shared_prefix(&room);
         for participant in &roles{
@@ -551,7 +606,7 @@ mod tests {
             cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],finish_reason:String::new(),
-            frontend:None,client_messages:HashMap::new(),recipients:vec![]
+            last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:vec![]
         };
         for i in 0..17 {
             let content=if i==2{
