@@ -177,7 +177,10 @@ pub fn message_rows(room:&Room)->Vec<UiMessage>{
             "selectedChars":receipt.projected_context_chars,
             "omittedMessages":receipt.omitted_context_messages,
             "commonPrefixChars":receipt.common_prefix_chars,
-            "personaChars":receipt.persona_chars
+            "personaChars":receipt.persona_chars,
+            "stableContextChars":receipt.stable_context_chars,
+            "rollingContextChars":receipt.rolling_context_chars,
+            "checkpointedMessages":receipt.checkpoint_end
         }
     }));
     UiMessage{
