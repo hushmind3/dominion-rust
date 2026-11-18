@@ -41,8 +41,11 @@ async fn repair_model(State(turn):State<Arc<AtomicUsize>>,Json(request):Json<Val
         5=>json!({"role":"assistant","content":"Repaired alpha and beta source files."}),
         _=>json!({"role":"assistant","content":"PASS"})
     };
+    // Regression: real compatible gateways may use Responses-style counters.
+    // This must be billed by the same native Run ledger as ordinary tools.
     Json(json!({"choices":[{"message":message}],"usage":{
-        "prompt_tokens":40,"completion_tokens":12}}))
+        "input_tokens":40,"output_tokens":12,
+        "input_tokens_details":{"cached_tokens":15}}}))
 }
 #[tokio::test]
 async fn coding_fixture_repairs_two_files_after_missing_path_feedback(){
@@ -100,6 +103,14 @@ async fn coding_fixture_repairs_two_files_after_missing_path_feedback(){
     ]);
     assert!(run.events.iter().any(|e|e.kind=="verification"));
     assert!(model_turns.load(Ordering::SeqCst)>=6);
+    let metered=run.events.iter().filter(|e|e.kind=="model").collect::<Vec<_>>();
+    assert!(metered.len()>=6);
+    assert!(run.input_tokens>=240,"mock gateway usage must not be recorded as 0");
+    assert!(run.output_tokens>=72);
+    assert!(run.cached_input_tokens>=90);
+    assert!(metered.iter().all(|e|e.detail.as_ref()
+        .and_then(|d|d.get("usage_reported")).and_then(Value::as_bool)==Some(true)),
+        "every coding-model request must have a real upstream usage receipt");
     for _ in 0..100{
         if !engine.active.lock().await.contains(&id){break;}
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
