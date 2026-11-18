@@ -6,7 +6,7 @@ import {OwnerAvatar,useOwnerProfile} from '../components/OwnerProfile'
 import {createPortal} from 'react-dom'
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {FormEvent,useEffect,useMemo,useRef,useState,type KeyboardEvent} from 'react'
-import {ArrowRight,ArrowUp,BrainCircuit,Check,ChevronDown,ChevronRight,CircleHelp,Clock3,Code2,Command,Compass,Copy,Cpu,CornerDownLeft,HardDrive,Menu,Settings,List,LoaderCircle,MessageCircle,MoreHorizontal,Plus,Power,RefreshCw,ShieldAlert,ShieldCheck,Sparkles,TerminalSquare,Trash2,X} from 'lucide-react'
+import {ArrowRight,ArrowUp,BrainCircuit,Check,ChevronDown,ChevronRight,CircleHelp,Clock3,Code2,Command,Compass,Copy,Cpu,CornerDownLeft,HardDrive,Menu,Settings,List,LoaderCircle,MessageCircle,MoreHorizontal,Plus,Power,RefreshCw,Square,ShieldAlert,ShieldCheck,Sparkles,TerminalSquare,Trash2,X} from 'lucide-react'
 import {Agent,Approval,ChatMessage,ChatSession,Provider,get,post,resolveApproval,streamChat,koreanReasoningEnabled} from '../api'
 import {Action,Empty,Notice,StateTag,refresh,useRemote} from '../components/UI'
 import {SlashMenu,slashCandidates,slashCommandLabel,slashCommands,type SlashChoice} from '../components/SlashMenu'
@@ -61,6 +61,9 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const setRoute=(providerId:string,model:string)=>setOverride({scope:current,providerId,model});
  useEffect(()=>{if(!current){setOverride(undefined);setAgentChoice(undefined)}},[initialAgent,initialProvider,initialModel]);
  const [turnSession,setTurnSession]=useState<string>();
+ const [stopping,setStopping]=useState(false);
+ const stoppingRef=useRef(false);
+ const streamSession=useRef<string|undefined>(undefined);
  const [savedMessageId,setSavedMessageId]=useState<string>();
  const [approvalBusy,setApprovalBusy]=useState(false);
  const [liveApproval,setLiveApproval]=useState<Approval|null>(null);
@@ -172,6 +175,51 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   if(window.innerWidth<768)setShowHistory(false);
   inputRef.current?.focus({preventScroll:true});
  };
+ const stopChat=async()=>{
+  if(stoppingRef.current)return;
+  const controller=stream.current;
+  const target=streamSession.current||current;
+  if(!controller&&!selectedSession?.pendingRun)return;
+  stoppingRef.current=true;
+  setStopping(true);
+  // Browser-only abort is not server cancellation. Disconnect first for
+  // responsive controls, then commit a native Rust cancellation by session.
+  controller?.abort();
+  let stopped=false;
+  try{
+   if(target){
+    let receipt:{cancelled:boolean;pending?:boolean;status?:string}|undefined;
+    // A Stop click can race the initial POST /api/chat setup. Retry only
+    // while the server reports no run, never after a started tool is pending.
+    for(let attempt=0;attempt<3;attempt++){
+     receipt=await post('/api/sessions/'+encodeURIComponent(target)+'/cancel',{});
+     if(receipt.cancelled||receipt.pending||receipt.status!=='idle')break;
+     if(attempt<2)await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    stopped=receipt?.cancelled===true;
+    if(view.current===target){
+     setCommandInfo(stopped?'응답을 중단했습니다.':
+      receipt?.pending?'중단 요청을 기록했습니다. 진행 중인 도구 결과를 정산한 후 다시 보낼 수 있습니다.':
+      '실행이 이미 종료되었거나 중단할 요청이 없습니다.');
+    }
+   }else{
+    // New-session creation is in progress. Its await continuation checks
+    // controller.signal.aborted before it ever starts the model.
+    stopped=true;
+    setCommandInfo('응답 전송을 중단했습니다.');
+   }
+  }catch(error){
+   if(view.current===target)setError(translateError((error as Error).message));
+  }finally{
+   if(stream.current===controller)stream.current=null;
+   if(streamSession.current===target)streamSession.current=undefined;
+   setBusy(false);setStopping(false);stoppingRef.current=false;
+   setTurnSession(undefined);setSavedMessageId(undefined);
+   setLive('');setThought('');setToolStatus('');setLiveApproval(null);
+   refresh('/api/sessions',...(target?['/api/sessions/'+encodeURIComponent(target)+'/messages']:[]));
+   void sessions.reload();
+  }
+ };
  const executeCommand=async(text:string)=>{
   const found=text.trim().match(/^\/([a-zA-Z]+)(?:\s+([\s\S]*))?$/);
   if(!found){setError(t('chat.cmd.invalid'));return;}
@@ -198,9 +246,8 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    }
    if(name==='help'){setCommandInfo(slashCommands.map(x=>x.command+' · '+slashCommandLabel(x,loc).name).join('\n'));return;}
    if(name==='stop'){
-    if(!current)throw Error(t('chat.cmd.noSessionStop'));
-    const answer=await post<{cancelled:boolean}>('/api/sessions/'+current+'/cancel',{});
-    setCommandInfo(answer.cancelled?t('chat.cmd.stopRequested'):t('chat.cmd.nothingRunning'));return;
+    if(!current&&!stream.current)throw Error(t('chat.cmd.noSessionStop'));
+    await stopChat();return;
    }
    if(name==='status'){
     const state=await get<{agents:number;providers:number;jobs:number;executions:number}>('/api/status');
@@ -256,12 +303,14 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    if(busy&&text!=='/stop')return;
    await executeCommand(text);return;
   }
-  if(stream.current||selectedSession?.roomId||(current&&sessions.loading))return;
+  if(busy||stoppingRef.current||stream.current||selectedSession?.pendingRun
+    ||selectedSession?.roomId||(current&&sessions.loading))return;
   if(providerId&&!selectedProvider){setError(t('chat.err.agentApi'));return;}
   if(!providerId){setError(t('chat.err.connectApi'));return;}
   if(!model){setError(t('chat.err.pickModel'));return;}
   const controller=new AbortController();
   stream.current=controller;
+  streamSession.current=current;
   setTurnSession(current);setSavedMessageId(undefined);
   setBusy(true);setError('');setCommandInfo('');setLive('');setThought('');setSlashOpen(false);setToolStatus('');
   jumpDown();
@@ -272,6 +321,8 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     const session=await post<ChatSession>('/api/sessions',{title:t('chat.sessionTitle'),agentId,providerId:manual?.providerId,model:manual?.model});
     if(controller.signal.aborted)return;
     id=session.id;
+    streamSession.current=id;
+    if(controller.signal.aborted)return;
     if(view.current===current){
      onSession(id);setTurnSession(id);
      if(agentId)setAgentChoice({id:agentId,scope:id});
@@ -286,6 +337,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     toolsEnabled,toolsExecutionEnabled:toolsEnabled,autoLearning:autoLearn,
     reasoningLanguage:reasoningKo?'ko':'original',reasoningEffort:reasoningEffort||undefined,thinking:selectedProvider?.kind==='codex'?(reasoningEffort==='none'?false:canDisableThinking?thinkingEnabled:undefined):thinkingEnabled,
    },event=>{
+    if(controller.signal.aborted||stream.current!==controller||view.current!==id)return;
     if(event.type==='assistant_saved'){saved=true;setSavedMessageId(event.messageId);refresh('/api/sessions',...(id?['/api/sessions/'+encodeURIComponent(id)+'/messages']:[]));}
     if(event.type==='text')setLive(old=>old+event.text);
     if(event.type==='reasoning')setThought(old=>old+event.text);
@@ -299,7 +351,8 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   }catch(e){
    if(!controller.signal.aborted&&view.current===id)setError(translateError((e as Error).message));
   }finally{
-   stream.current=null;
+   if(stream.current===controller)stream.current=null;
+   if(streamSession.current===id)streamSession.current=undefined;
    if(!controller.signal.aborted){
     refresh('/api/sessions',...(id?['/api/sessions/'+encodeURIComponent(id)+'/messages']:[]));
     setBusy(false);setLiveApproval(null);setToolStatus('');
@@ -391,7 +444,12 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
       </div>
       <div className="ml-auto flex items-center gap-2">
        <span className="hidden text-[10px] text-[#9C9388] sm:inline">{t('chat.enterHint')}</span>
-       <Button className="conversation-composer-send" disabled={busy||Boolean(selectedSession?.roomId)||(Boolean(current)&&sessions.loading)||!input.trim()} type="submit" title={t('chat.send')}>{busy?<LoaderCircle size={18} className="animate-spin"/>:<ArrowUp size={19}/>}</Button>
+       {(busy||Boolean(selectedSession?.pendingRun))?
+        <Button type="button" className="conversation-composer-send !w-auto !min-w-[72px] !gap-1.5 !rounded-xl !bg-rose-600 !px-3 !text-white" title="응답 중단" aria-label="응답 중단" disabled={stopping} onClick={()=>void stopChat()}>
+         {stopping?<LoaderCircle size={17} className="animate-spin"/>:<Square size={15} fill="currentColor"/>}
+         <span className="text-xs font-bold">{stopping?'중단 중':'중단'}</span>
+        </Button>:
+        <Button className="conversation-composer-send" disabled={Boolean(selectedSession?.roomId)||(Boolean(current)&&sessions.loading)||!input.trim()} type="submit" title={t('chat.send')}><ArrowUp size={19}/></Button>}
       </div>
      </div>
     </form></div>
