@@ -52,7 +52,7 @@ fn schema_types(node:&Value)->Result<Vec<&str>,String>{
     let Some(map)=node.as_object()else{return Err("schema node must be an object".into());};
     for key in map.keys(){
         if !matches!(key.as_str(),"type"|"properties"|"required"|"additionalProperties"|"items"|
-            "enum"|"const"|"minimum"|"maximum"|"minLength"|"maxLength"|"minItems"|"maxItems"|
+            "enum"|"const"|"minimum"|"maximum"|"exclusiveMinimum"|"exclusiveMaximum"|"minLength"|"maxLength"|"minItems"|"maxItems"|
             "minProperties"|"maxProperties"|"anyOf"|"oneOf"|"allOf"|
             "description"|"title"|"default"|"examples"){
             return Err(format!("unsupported schema keyword {key}"));
@@ -90,12 +90,12 @@ fn check_schema(node:&Value,depth:usize,path:&str)->Result<(),String>{
         .iter().any(|key|node.get(*key).is_some()) && !ty.contains(&"string"){
         return Err(format!("{path}: string-only constraints on non-string schema"));
     }
-    if ["minimum","maximum"]
+    if ["minimum","maximum","exclusiveMinimum","exclusiveMaximum"]
         .iter().any(|key|node.get(*key).is_some())
         && !ty.iter().any(|t|matches!(*t,"number"|"integer")){
         return Err(format!("{path}: number-only constraints on non-number schema"));
     }
-    for name in ["minimum","maximum"]{
+    for name in ["minimum","maximum","exclusiveMinimum","exclusiveMaximum"]{
         if node.get(name).is_some_and(|x|!x.is_number()){return Err(format!("{path}: {name} must be numeric"));}
     }
     for name in ["minLength","maxLength","minItems","maxItems","minProperties","maxProperties"]{
@@ -106,8 +106,16 @@ fn check_schema(node:&Value,depth:usize,path:&str)->Result<(),String>{
             if a>b{return Err(format!("{path}: {min} cannot exceed {max}"));}
         }
     }
-    if let (Some(a),Some(b))=(node.get("minimum").and_then(Value::as_f64),node.get("maximum").and_then(Value::as_f64)){
-        if a>b{return Err(format!("{path}: minimum exceeds maximum"));}
+    let lower=["minimum","exclusiveMinimum"].iter().filter_map(|key|
+        node.get(*key).and_then(Value::as_f64).map(|n|(n,*key=="exclusiveMinimum"))
+    ).max_by(|a,b|a.0.total_cmp(&b.0).then_with(||a.1.cmp(&b.1)));
+    let upper=["maximum","exclusiveMaximum"].iter().filter_map(|key|
+        node.get(*key).and_then(Value::as_f64).map(|n|(n,*key=="exclusiveMaximum"))
+    ).min_by(|a,b|a.0.total_cmp(&b.0).then_with(||b.1.cmp(&a.1)));
+    if let (Some(a),Some(b))=(lower,upper){
+        if a.0>b.0 || (a.0==b.0 && (a.1||b.1)){
+            return Err(format!("{path}: impossible numeric bounds"));
+        }
     }
     if let Some(required)=node.get("required"){
         let entries=required.as_array().ok_or_else(||format!("{path}: required must be an array"))?;
@@ -239,6 +247,12 @@ fn validate_value(schema:&Value,value:&Value,depth:usize,path:&str)->Result<(),S
         if schema.get("maximum").and_then(Value::as_f64).is_some_and(|max|number>max){
             return Err(format!("{path}: exceeds maximum"));
         }
+        if schema.get("exclusiveMinimum").and_then(Value::as_f64).is_some_and(|min|number<=min){
+            return Err(format!("{path}: must be strictly greater than exclusiveMinimum"));
+        }
+        if schema.get("exclusiveMaximum").and_then(Value::as_f64).is_some_and(|max|number>=max){
+            return Err(format!("{path}: must be strictly less than exclusiveMaximum"));
+        }
     }
     Ok(())
 }
@@ -252,6 +266,29 @@ mod tests{
     }
     fn check(schema:Value,args:Value)->Result<(),AdmissionError>{
         admit(&ToolCall{id:"id".into(),name:"update".into(),arguments:args},&tool(schema))
+    }
+    #[test]
+    fn all_builtin_tool_schemas_are_accepted_by_real_admission_validator(){
+        for tool in crate::tools::definitions(true){
+            let name=tool.pointer("/function/name").and_then(Value::as_str).unwrap();
+            let schema=tool.pointer("/function/parameters").unwrap();
+            check_schema(schema,0,"$").unwrap_or_else(|error|
+                panic!("native tool {name} advertises unusable schema: {error}"));
+        }
+    }
+    #[test]
+    fn exclusive_numeric_bounds_are_enforced_in_actual_model_calls(){
+        let schema=json!({"type":"object","properties":{
+            "price":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":100}},
+            "required":["price"]});
+        assert!(check(schema.clone(),json!({"price":0.01})).is_ok());
+        for price in [0.0,-1.0,100.0,101.0]{
+            assert_eq!(check(schema.clone(),json!({"price":price})).unwrap_err().code,
+                AdmissionCode::InvalidArguments);
+        }
+        assert_eq!(check(json!({"type":"object","properties":{"x":{
+            "type":"number","exclusiveMinimum":5,"maximum":5
+        }}}),json!({"x":5})).unwrap_err().code,AdmissionCode::InvalidSchema);
     }
     #[test]
     fn validates_required_nested_types_and_bounds(){
