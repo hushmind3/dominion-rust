@@ -49,7 +49,9 @@ fn config_of(room:&Room)->FrontendRoom{
   })
 }
 fn room_status(room:&Room)->&'static str{
-    if room.status==RoomStatus::Open{return "idle";}
+    if room.status==RoomStatus::Open{
+        return if room.last_provider_failure.is_some(){"interrupted"}else{"idle"};
+    }
     match room.finish_reason.as_str(){
         "stopped"=>"stopped",
         "max_turns_reached"=>"interrupted",
@@ -148,6 +150,7 @@ pub fn room_view(room:&Room)->Value{
     "autoModels":conf.auto_models,"models":conf.models,
     "reasoningEffort":conf.reasoning_effort,"sessionId":room_session(room.id),
     "status":room_status(room),"finishReason":room.finish_reason,
+    "lastProviderFailure":room.last_provider_failure,
     "updatedAt":timestamp(room.updated_at_ms)
   })
 }
@@ -352,6 +355,7 @@ async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     "jobs":[],"executions":[],"learningJobs":[],"operations":[],"approvals":[],
     "status":room_status(&room),
     "queueDepth":0,
+    "lastProviderFailure":room.last_provider_failure,
     "usage":room_usage(&room)
   })))
 }
@@ -394,7 +398,40 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
     let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?
         .with_session_affinity(&format!("dominion-room-{id}"));
     engine.providers.throttle(&provider).await;
-    room=engine.groups.next_for(&selected_model,id,Some(&agent_id)).await.map_err(bad)?;
+    room=match engine.groups.next_for(&selected_model,id,Some(&agent_id)).await{
+      Ok(next)=>next,
+      Err(error)=>{
+        let snapshot=engine.groups.get(id).await.ok_or_else(missing)?;
+        if let Some(ref failure)=snapshot.last_provider_failure{
+          let index=snapshot.messages.iter().rposition(|m|m.speaker=="user")
+            .unwrap_or(0);
+          let (wanted,actual)=owner_turn_progress(&snapshot,index,&snapshot.recipients);
+          // Upstream HTTP 400 is not an invalid owner message. Report a
+          // 502 with precise, privacy-safe provider context and the durable
+          // partial speaker transcript for idempotent same-ID resume.
+          tracing::warn!(room=%id,participant=%failure.participant,
+            status=?failure.http_status,upstream_code=?failure.upstream_code,
+            context_chars=failure.context_chars,
+            completed=actual,expected=wanted,
+            "room model call failed; partial room retained for retry");
+          return Err((StatusCode::BAD_GATEWAY,Json(json!({
+            "error":"Room model request failed; retry the same clientMessageId to continue from the missing speaker",
+            "errorCode":failure.category,
+            "providerStatus":failure.http_status,
+            "providerCode":failure.upstream_code,
+            "failedSpeaker":failure.participant,
+            "model":failure.model,
+            "contextChars":failure.context_chars,
+            "systemChars":failure.system_chars,
+            "actualResponses":actual,
+            "expectedResponses":wanted,
+            "room":room_view(&snapshot),
+            "usage":room_usage(&snapshot)
+          }))));
+        }
+        return Err(bad(error));
+      }
+    };
     turns+=1;
     if config.auto_learning{
       if let Some(last)=room.messages.last().filter(|m|m.speaker!="user"){
