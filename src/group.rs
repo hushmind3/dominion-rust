@@ -159,7 +159,7 @@ fn sealed_room_evidence(room:&Room,end:usize,budget:usize)->(String,usize){
     let last_owners=owner_indices.iter().rev().take(2).copied().collect::<HashSet<_>>();
     const OWNER_SIGNALS:&[&str]=&[
         "remember","decision","decided","agreed","must","require","replace",
-        "override","discard","current","deployment","owner","only","do not",
+        "override","discard","current","deployment","owner is","only","do not",
         "never","final","contract","code","기억","결정","합의","확정",
         "변경","교체","수정","담당","최종","금지","하지","코드","현재"];
     const PEER_SIGNALS:&[&str]=&[
