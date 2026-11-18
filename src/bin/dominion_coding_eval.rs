@@ -1,6 +1,6 @@
 //! Opt-in live-model coding benchmark. Never assigns a success grade from CI mocks.
 //! Run identical manifests/model budgets against each branch for an honest comparison.
-use dominion::{config::Settings,domain::{CreateRun,RunStatus},sdk::Dominion};
+use dominion::{config::Settings,domain::{CreateRun,Run,RunStatus},sdk::Dominion};
 use serde::{Deserialize,Serialize};
 use std::{collections::HashSet,env,path::{Component,Path,PathBuf},process::Stdio,time::Instant};
 use tokio::{process::Command,time::{timeout,Duration}};
@@ -21,9 +21,54 @@ struct ResultRow{
     expected_files:Vec<String>,changed_files:Vec<String>,checks:Vec<Check>,
     tool_approvals:usize,input_tokens:u64,output_tokens:u64,cached_input_tokens:u64,
     reported_cost_krw:f64,cost_priced:bool,elapsed_ms:u128,
+    model_requests:usize,tool_started:usize,tool_succeeded:usize,
+    tool_failed:usize,tool_admission_rejected:usize,
+    ambiguous_effects:usize,recovery_events:usize,
+    duplicated_call_intents:usize,context_chars_avoided:u64,
+    tool_schema_chars_avoided:u64,cache_write_tokens:u64,
 }
 #[derive(Serialize)]
 struct Report{version:u32,model:String,total:usize,passed:usize,results:Vec<ResultRow>}
+#[derive(Default)]
+struct TraceMetrics{
+    model_requests:usize,tool_started:usize,tool_succeeded:usize,
+    tool_failed:usize,tool_admission_rejected:usize,
+    ambiguous_effects:usize,recovery_events:usize,
+    duplicated_call_intents:usize
+}
+/// Deterministic observation, not a proxy for benchmark pass/fail.
+/// Replayed/uncertain side effects cannot be graded as completed actions.
+fn trace_metrics(run:&Run)->TraceMetrics{
+    let mut metrics=TraceMetrics::default();
+    let mut seen=HashSet::new();
+    for event in &run.events{
+        match event.kind.as_str(){
+            "model"=>metrics.model_requests+=1,
+            "tool_started"=>{
+                metrics.tool_started+=1;
+                if let Some(id)=event.detail.as_ref().and_then(|v|v["id"].as_str()){
+                    if !seen.insert(id.to_owned()){metrics.duplicated_call_intents+=1;}
+                }
+            },
+            "tool_result"|"tool_reconciled"=>{
+                if event.kind=="tool_result" || event.detail.as_ref()
+                    .is_some_and(|v|v["succeeded"]==true){
+                    metrics.tool_succeeded+=1;
+                }else{metrics.tool_failed+=1;}
+            },
+            "tool_error"=>metrics.tool_failed+=1,
+            "tool_admission_rejected"=>metrics.tool_admission_rejected+=1,
+            "tool_outcome_unknown"|"mcp_remote_outcome_unknown"=>{
+                metrics.ambiguous_effects+=1
+            },
+            "tool_retry_safe"|"read_batch_retry_safe"|"recovered_ready"=>{
+                metrics.recovery_events+=1
+            },
+            _=>{}
+        }
+    }
+    metrics
+}
 fn validate_relative(path:&str)->Result<(),String>{
     if path.is_empty()||path.len()>512||Path::new(path).components()
         .any(|part|!matches!(part,Component::Normal(_))){
@@ -148,13 +193,23 @@ async fn evaluate(sdk:&Dominion,settings:&Settings,case:&Case,permitted:&HashSet
         else if checks.iter().any(|c|!c.passed){"artifact verifier failed".into()}
         else if run.status!=RunStatus::Completed{format!("run finished in {status} state")}
         else{String::new()};
+    let trace=trace_metrics(&run);
     Ok(ResultRow{
         id:case.id.clone(),run_id:Some(id.to_string()),status,passed,reason,
         expected_files:case.expected_files.clone(),changed_files:changed,checks,
         tool_approvals:approvals,input_tokens:run.input_tokens,output_tokens:run.output_tokens,
         cached_input_tokens:run.cached_input_tokens,reported_cost_krw:run.cost_krw,
         cost_priced:settings.main.input_krw_per_million>0.0
-            &&settings.main.output_krw_per_million>0.0,elapsed_ms:begin.elapsed().as_millis()
+            &&settings.main.output_krw_per_million>0.0,elapsed_ms:begin.elapsed().as_millis(),
+        model_requests:trace.model_requests,tool_started:trace.tool_started,
+        tool_succeeded:trace.tool_succeeded,tool_failed:trace.tool_failed,
+        tool_admission_rejected:trace.tool_admission_rejected,
+        ambiguous_effects:trace.ambiguous_effects,
+        recovery_events:trace.recovery_events,
+        duplicated_call_intents:trace.duplicated_call_intents,
+        context_chars_avoided:run.context_chars_avoided,
+        tool_schema_chars_avoided:run.tool_schema_chars_avoided,
+        cache_write_tokens:run.cache_write_tokens
     })
 }
 async fn run()->Result<(),String>{
@@ -209,7 +264,11 @@ async fn run()->Result<(),String>{
                 reason:error,expected_files:case.expected_files.clone(),
                 changed_files:vec![],checks:vec![],tool_approvals:0,
                 input_tokens:0,output_tokens:0,cached_input_tokens:0,
-                reported_cost_krw:0.0,cost_priced:false,elapsed_ms:0
+                reported_cost_krw:0.0,cost_priced:false,elapsed_ms:0,
+                model_requests:0,tool_started:0,tool_succeeded:0,tool_failed:0,
+                tool_admission_rejected:0,ambiguous_effects:0,recovery_events:0,
+                duplicated_call_intents:0,context_chars_avoided:0,
+                tool_schema_chars_avoided:0,cache_write_tokens:0
             }),
         }
     }
@@ -229,6 +288,29 @@ async fn main(){
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipt_metrics_are_grounded_and_uncertain_execution_is_not_a_success(){
+        let mut run=Run::new(CreateRun{
+            instruction:"Repair the app".into(),budget_krw:Some(10.0),max_steps:Some(5)},5).unwrap();
+        run.event("model","provider call",None);
+        run.event("tool_started","write tool",Some(serde_json::json!({"id":"write1"})));
+        run.event("mcp_remote_outcome_unknown","network disconnected",None);
+        run.event("tool_started","accidentally repeated intent",
+            Some(serde_json::json!({"id":"write1"})));
+        run.event("tool_reconciled","observed failure",
+            Some(serde_json::json!({"id":"write1","succeeded":false})));
+        run.event("tool_admission_rejected","invalid arguments",None);
+        run.event("recovered_ready","resumed",None);
+        let t=trace_metrics(&run);
+        assert_eq!(t.model_requests,1);
+        assert_eq!(t.tool_started,2);
+        assert_eq!(t.tool_succeeded,0);
+        assert_eq!(t.tool_failed,1);
+        assert_eq!(t.ambiguous_effects,1);
+        assert_eq!(t.duplicated_call_intents,1);
+        assert_eq!(t.tool_admission_rejected,1);
+        assert_eq!(t.recovery_events,1);
+    }
     #[test]
     fn manifest_cannot_pass_without_external_verification_and_real_diff(){
         let task=Case{id:"case-a".into(),repository:"projects/demo".into(),
