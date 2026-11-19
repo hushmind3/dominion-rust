@@ -37,6 +37,8 @@ pub struct Draft{
     #[serde(default="default_kind")] pub kind:String,
     #[serde(default)]pub model:String,
     #[serde(default)]pub api_key:Option<String>,
+    /// Reuse an existing same-endpoint credential without returning it to UI.
+    #[serde(default)]pub credential_source_id:Option<String>,
     #[serde(default="enabled")]pub enabled:bool,
     #[serde(default)]pub local:bool,
     #[serde(default)]pub reflection:bool,
@@ -153,8 +155,23 @@ impl Registry{
         let same_binding=old.as_ref().is_some_and(|entry|
             entry.base_url.as_str()==base_url.as_str() &&
             entry.kind.as_str()==draft.kind.as_str());
+        let copied_key=if let Some(source_id)=draft.credential_source_id.as_deref(){
+            if draft.api_key.is_some(){
+                return Err("send either an API key or credentialSourceId".into());
+            }
+            let source=next.entries.get(source_id)
+                .ok_or("credential source provider not found")?;
+            if source.base_url!=base_url||source.kind!=draft.kind{
+                return Err("credential source must match the exact endpoint and protocol".into());
+            }
+            if source.api_key.is_empty(){
+                return Err("credential source has no stored API key".into());
+            }
+            Some(source.api_key.clone())
+        }else{None};
         let key=match draft.api_key{
             Some(key)=>key,
+            None if copied_key.is_some()=>copied_key.unwrap_or_default(),
             None if same_binding=>old.as_ref().map_or_else(String::new,|entry|entry.api_key.clone()),
             None=>String::new(),
         };
@@ -254,10 +271,42 @@ pub fn public(record:&Provider)->serde_json::Value{
 mod tests{
     use super::*;
 
+    #[test]
+    fn credential_source_copies_only_exact_provider_binding_without_public_secret(){
+        let root=std::env::temp_dir().join(format!(
+            "dominion-credential-source-{}",Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let registry=Registry::open(root.join("providers.json")).unwrap();
+        let origin=registry.upsert(draft(None,
+            "https://api.example.test/v1","openai",Some("source-secret"))).unwrap();
+        let source_id=origin.id.clone();
+        let mut new=draft(None,"https://api.example.test/v1","openai",None);
+        new.model="a-new-model".into();
+        new.credential_source_id=Some(source_id.clone());
+        let copied=registry.upsert(new).unwrap();
+        assert_eq!(copied.api_key,"source-secret");
+        assert!(!public(&copied).to_string().contains("source-secret"));
+        let mut cross_origin=draft(None,"https://other.example.test/v1","openai",None);
+        cross_origin.credential_source_id=Some(source_id.clone());
+        assert!(registry.upsert(cross_origin).is_err());
+        let mut cross_protocol=draft(None,"https://api.example.test/v1","anthropic",None);
+        cross_protocol.credential_source_id=Some(source_id.clone());
+        assert!(registry.upsert(cross_protocol).is_err());
+        let mut nonexistent=draft(None,"https://api.example.test/v1","openai",None);
+        nonexistent.credential_source_id=Some("not-a-provider".into());
+        assert!(registry.upsert(nonexistent).is_err());
+        let mut ambiguous=draft(None,"https://api.example.test/v1",
+            "openai",Some("new-secret"));
+        ambiguous.credential_source_id=Some(source_id);
+        assert!(registry.upsert(ambiguous).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn draft(id:Option<String>,base_url:&str,kind:&str,key:Option<&str>)->Draft{
         Draft{
             id,name:"Test provider".into(),base_url:base_url.into(),
             kind:kind.into(),model:"test-model".into(),api_key:key.map(str::to_owned),
+            credential_source_id:None,
             enabled:true,local:false,reflection:false,reflection_model:None,
             requests_per_minute:0,
         }

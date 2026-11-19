@@ -328,8 +328,15 @@ mod tests {
             match tokio::fs::remove_dir_all(&path).await{
                 Ok(())=>return,
                 Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return,
-                Err(error) if cfg!(windows) && error.raw_os_error()==Some(32)
-                    && attempt<19=>{
+                // Linux/macOS can return ENOTEMPTY when an async worker is
+                // finishing its final fsync/rename during directory teardown.
+                // This is a bounded test cleanup retry, not a runtime ignore.
+                Err(error) if attempt<19 && (
+                    error.kind()==std::io::ErrorKind::DirectoryNotEmpty
+                    ||error.raw_os_error()==Some(39) // Linux ENOTEMPTY
+                    ||error.raw_os_error()==Some(66) // macOS ENOTEMPTY
+                    ||error.raw_os_error()==Some(32) // Windows sharing violation
+                )=>{
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 },
                 Err(error)=>panic!("test directory cleanup failed: {error}")
