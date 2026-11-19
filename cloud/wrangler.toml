@@ -13,7 +13,8 @@ database_id = "edc9c387-310e-4660-aac7-db53f9da5d17"
 # UPSTREAM_URL=https://openrouter.ai/api/v1 (set as Worker variable)
 # UPSTREAM_API_KEY=<operator-owned key> (set as Worker secret)
 # UPSTREAM_FREE_DISCOVERY=1 (set as Worker variable to discover verified :free models)
-# FREE_DAILY_LIMIT=20 (per free account per UTC day)\n# PRO_DAILY_LIMIT=50 (per active Pro account per UTC day)\n# PRO_MONTHLY_LIMIT=500 (per active Pro account per UTC calendar month)\n# Limits apply to centrally funded free-model inference; paid models still require prepaid credits.
+# FREE_DAILY_LIMIT=20 (per free account per UTC day)
+# FREE_GLOBAL_DAILY_LIMIT=500 (hard aggregate free requests per UTC day)\n# PRO_DAILY_LIMIT=50 (per active Pro account per UTC day)\n# PRO_MONTHLY_LIMIT=500 (per active Pro account per UTC calendar month)\n# Limits apply to centrally funded free-model inference; paid models still require prepaid credits.
 # Direct provider routing (OpenRouter is NOT required):
 # Set secrets OPENAI_API_KEY, DEEPSEEK_API_KEY, GROQ_API_KEY,
 # TOGETHER_API_KEY, MISTRAL_API_KEY individually as needed.

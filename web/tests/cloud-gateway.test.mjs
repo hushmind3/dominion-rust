@@ -25,6 +25,12 @@ const db=()=>{
       if(sql.includes('FROM sessions'))return revoked?null:{id:'google:smoke',credits:0}
       if(sql.includes('FROM subscriptions'))return null
       if(sql.includes('FROM identity_verifications'))return null
+      if(sql.includes('INSERT INTO free_budget_daily')){
+       const key='sitewide:'+String(args[0]),limit=Number(args[1])
+       const n=counters.get(key)||0
+       if(n>=limit)return null
+       counters.set(key,n+1);return {used:n+1}
+      }
       if(sql.includes('INSERT INTO free_quota')){
        const key=String(args[0]),limit=Number(args[1])
        const n=counters.get(key)||0
@@ -36,6 +42,9 @@ const db=()=>{
      },
      async run(){
       if(sql.includes('DELETE FROM sessions')){revoked=true;deletions++}
+      if(sql.includes('UPDATE free_budget_daily')){
+       const key='sitewide:'+String(args[0]);counters.set(key,Math.max(0,(counters.get(key)||0)-1))
+      }
       if(sql.includes('UPDATE free_quota')){const key=String(args[0]);counters.set(key,Math.max(0,(counters.get(key)||0)-1))}
       return {success:true}
      },
@@ -157,4 +166,18 @@ test('configured free upstream forwards real agent tool schemas without leaking 
   assert.equal(reply.headers.get('x-upstream-secret'),null);
   assert.equal(reply.headers.get('x-dominion-free-remaining'),'1');
  }finally{globalThis.fetch=original}
+});
+
+test('global operator free allowance caps separate member requests regardless of individual quota',async()=>{
+ const DB=db();let count=0;
+ const env={DB,ALLOWED_ORIGIN:origin,AI:{run:async()=>{count++;return {response:'one answer'}}},
+  FREE_GLOBAL_DAILY_LIMIT:'1',FREE_DAILY_LIMIT:'10'};
+ const body={model:'@cf/meta/llama-3.1-8b-instruct-fast',
+  messages:[{role:'user',content:'hi'}]};
+ const first=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env);
+ assert.equal(first.status,200);
+ const second=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env);
+ assert.equal(second.status,429);
+ assert.match((await second.json()).error,/Operator free daily capacity/);
+ assert.equal(count,1);
 });

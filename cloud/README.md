@@ -218,3 +218,10 @@ balance in **KRW**; no customer self-service credit top-up exists yet.
 Changes to D1, live Cloudflare secrets, deployed Workers and real payment
 settings require separate operational verification. Sub4 CI uses mocked
 inference/payment paths and does not bill any real customer.
+
+The sitewide `FREE_GLOBAL_DAILY_LIMIT` (default 500 requests per UTC day)
+uses the existing atomic D1 `free_budget_daily` counter, independent of each
+member's `FREE_DAILY_LIMIT`. Rejects with HTTP 429 when the operator's
+shared free allowance is exhausted. Failed pre-inference quota checks and
+failed upstream calls release the global reservation. This request ceiling
+is separate from paid micro-KRW allowances and supplier billing.

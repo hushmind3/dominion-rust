@@ -62,3 +62,9 @@ CREATE TABLE IF NOT EXISTS paid_budget_daily (
   day TEXT PRIMARY KEY,
   reserved_micro_krw INTEGER NOT NULL DEFAULT 0 CHECK (reserved_micro_krw >= 0)
 );
+
+-- Independent sitewide allowance for centrally funded free inference.
+CREATE TABLE IF NOT EXISTS free_budget_daily (
+  day TEXT PRIMARY KEY,
+  used INTEGER NOT NULL DEFAULT 0 CHECK (used >= 0)
+);

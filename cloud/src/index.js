@@ -348,23 +348,41 @@ async function freeProxy(request, env, user) {
   const monthLimitConfig = Number(env.PRO_MONTHLY_LIMIT || 500);
   const monthLimit = Number.isSafeInteger(monthLimitConfig) ? Math.max(1, Math.min(10000, monthLimitConfig)) : 500;
   const day = new Date().toISOString().slice(0, 10);
+  // Per-member quotas alone cannot cap the operator's shared inference bill.
+  // One conditional D1 statement reserves a sitewide free request slot.
+  const rawGlobal = Number(env.FREE_GLOBAL_DAILY_LIMIT || 500);
+  const globalLimit = Number.isSafeInteger(rawGlobal) ? Math.max(1, Math.min(100000, rawGlobal)) : 500;
+  let globalReserved;
+  try {
+    globalReserved = await env.DB.prepare(
+      'INSERT INTO free_budget_daily(day,used) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET used=used+1 WHERE used<? RETURNING used'
+    ).bind(day,globalLimit).first();
+  } catch {
+    return err('Operator free capacity ledger unavailable',503);
+  }
+  if (!globalReserved) return err('Operator free daily capacity exhausted',429);
+  const refundGlobal = async () => {
+    await env.DB.prepare('UPDATE free_budget_daily SET used=MAX(0,used-1) WHERE day=?').bind(day).run();
+  };
   const key = user.id + ':' + day;
   const monthlyKey = user.id + ':pro-month:' + day.slice(0, 7);
   let monthlyReserved = false;
   if (isPro) {
     const month = await env.DB.prepare('INSERT INTO free_quota(account_day,used) VALUES(?,1) ON CONFLICT(account_day) DO UPDATE SET used=used+1 WHERE used<? RETURNING used')
       .bind(monthlyKey, monthLimit).first();
-    if (!month) return err('Monthly Pro quota exhausted', 429);
+    if (!month) { await refundGlobal(); return err('Monthly Pro quota exhausted', 429); }
     monthlyReserved = true;
   }
   const refundQuota = async () => {
     await env.DB.prepare('UPDATE free_quota SET used=MAX(0,used-1) WHERE account_day=?').bind(key).run();
+    await refundGlobal();
     if (monthlyReserved) await env.DB.prepare('UPDATE free_quota SET used=MAX(0,used-1) WHERE account_day=?').bind(monthlyKey).run();
   };
   const updated = await env.DB.prepare('INSERT INTO free_quota(account_day,used) VALUES(?,1) ON CONFLICT(account_day) DO UPDATE SET used=used+1 WHERE used<? RETURNING used')
     .bind(key, limit).first();
   if (!updated) {
     if (monthlyReserved) await env.DB.prepare('UPDATE free_quota SET used=MAX(0,used-1) WHERE account_day=?').bind(monthlyKey).run();
+    await refundGlobal();
     return err('Daily free quota exhausted', 429);
   }
   if (model.backend === 'workers-ai') {
