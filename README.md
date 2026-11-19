@@ -42,6 +42,8 @@ The standard UI posts `/api/rooms/{id}/messages/background`. A successful admiss
 
 The original room transcript is preserved locally. A stateless model endpoint still receives a projected history each call; this is **not** the same as model-side KV-state reuse. Provider-reported prompt cache hits and OpenAI Responses continuation are accounted for separately. See [measurement protocol](docs/SUB4_ROOM_FANOUT_MEASUREMENT_2026-11-19.md).
 
+DOMINION Cloud free inference uses a shared D1 daily request allowance. Explicit validation rejections release quota; ambiguous network, 429 or 5xx failures retain the in-flight allowance, and free-auto does not replay those calls to another supplier. This prevents an automatic double dispatch when the original provider may have billed. It does not establish exactly-once external billing or a token-cost spending cap. See the [Cloud gateway contract](cloud/README.md).
+
 ## CI and status
 
 [Sub4 frontend and Rust development CI](.github/workflows/sub4-dev-rust.yml) runs TypeScript checking, a production Vite build, UI tests, all-target Rust compilation, native library tests and the benchmark contract. [Manual macOS/Windows checks](.github/workflows/check.yml) remain a separate release/platform gate.
