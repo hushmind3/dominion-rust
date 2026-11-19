@@ -172,6 +172,11 @@ test('global operator free allowance caps separate member requests regardless of
  const DB=db();let count=0;
  const env={DB,ALLOWED_ORIGIN:origin,AI:{run:async()=>{count++;return {response:'one answer'}}},
   FREE_GLOBAL_DAILY_LIMIT:'1',FREE_DAILY_LIMIT:'10'};
+ // Refresh the Worker-isolate catalog; other cases intentionally exercise
+ // different operator/model settings and share this module cache.
+ let refreshed;
+ await worker.scheduled(null,env,{waitUntil(p){refreshed=p}});
+ await refreshed;
  const body={model:'@cf/meta/llama-3.1-8b-instruct-fast',
   messages:[{role:'user',content:'hi'}]};
  const first=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env);
