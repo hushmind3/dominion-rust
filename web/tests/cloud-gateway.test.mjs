@@ -186,3 +186,73 @@ test('global operator free allowance caps separate member requests regardless of
  assert.match((await second.json()).error,/Operator free daily capacity/);
  assert.equal(count,1);
 });
+
+test('free-auto does not replay an ambiguously billed supplier request or refund shared capacity',async()=>{
+  const DB=db(),env={DB,ALLOWED_ORIGIN:origin,
+    UPSTREAM_URL:'https://operator-upstream.example.test/v1',UPSTREAM_API_KEY:'operator-key',
+    FREE_MODELS_JSON:JSON.stringify([
+      {id:'free-uncertain-a',free:true,backend:'upstream'},
+      {id:'free-uncertain-b',free:true,backend:'upstream'}
+    ]),FREE_DAILY_LIMIT:'3',FREE_GLOBAL_DAILY_LIMIT:'1'};
+  let refreshing;
+  await worker.scheduled(null,env,{waitUntil(p){refreshing=p}});
+  await refreshing;
+  let calls=0;
+  const original=globalThis.fetch;
+  globalThis.fetch=async()=>{calls++;throw Error('socket closed after supplier accepted the request')};
+  try{
+    const body={model:'dominion/free-auto',messages:[{role:'user',content:'analyze'}]};
+    const first=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env);
+    assert.equal(first.status,502);
+    assert.equal(first.headers.get('x-dominion-ambiguous-call'),'1');
+    assert.equal((await first.json()).quotaRetained,true);
+    assert.equal(calls,1,'automatic fallback must not make a second billable attempt');
+    const retried=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env);
+    assert.equal(retried.status,429,'shared capacity stays reserved after uncertain inference');
+    assert.equal(calls,1);
+  }finally{globalThis.fetch=original}
+});
+
+test('an explicit upstream validation rejection refunds capacity for safe free-auto fallback',async()=>{
+  const DB=db(),env={DB,ALLOWED_ORIGIN:origin,
+    UPSTREAM_URL:'https://operator-upstream.example.test/v1',UPSTREAM_API_KEY:'operator-key',
+    FREE_MODELS_JSON:JSON.stringify([
+      {id:'free-explicit-reject',free:true,backend:'upstream'},
+      {id:'free-safe-fallback',free:true,backend:'upstream'}
+    ]),FREE_DAILY_LIMIT:'1',FREE_GLOBAL_DAILY_LIMIT:'1'};
+  let refreshing;
+  await worker.scheduled(null,env,{waitUntil(p){refreshing=p}});
+  await refreshing;
+  const original=globalThis.fetch;
+  const attempted=[];
+  globalThis.fetch=async(_url,init)=>{
+    const model=JSON.parse(init.body).model;
+    attempted.push(model);
+    if(model==='free-explicit-reject')return new Response('bad request',{status:400});
+    return new Response(JSON.stringify({choices:[{message:{role:'assistant',content:'ok'}}]}),
+      {status:200,headers:{'content-type':'application/json'}});
+  };
+  try{
+    const body={model:'dominion/free-auto',messages:[{role:'user',content:'inspect'}]};
+    const reply=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env);
+    assert.equal(reply.status,200);
+    assert.deepEqual(attempted,['free-explicit-reject','free-safe-fallback']);
+    assert.equal(reply.headers.get('x-dominion-free-remaining'),'0');
+  }finally{globalThis.fetch=original}
+});
+
+test('Workers AI transport failure retains admitted free quota',async()=>{
+  const DB=db();let calls=0;
+  const env={DB,ALLOWED_ORIGIN:origin,AI:{run:async()=>{calls++;throw Error('inference outcome unknown')}},
+    FREE_GLOBAL_DAILY_LIMIT:'1',FREE_DAILY_LIMIT:'2'};
+  let refreshing;
+  await worker.scheduled(null,env,{waitUntil(p){refreshing=p}});
+  await refreshing;
+  const body={model:'@cf/meta/llama-3.1-8b-instruct-fast',messages:[{role:'user',content:'hello'}]};
+  const first=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env);
+  assert.equal(first.status,502);
+  assert.equal((await first.json()).quotaRetained,true);
+  const second=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env);
+  assert.equal(second.status,429);
+  assert.equal(calls,1);
+});
