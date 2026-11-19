@@ -688,7 +688,8 @@ async fn registered_native_ollama_provider_completes_original_agent_tool_loop(){
     let provider=engine.providers.upsert(crate::provider_registry::Draft{
         id:None,name:"Local Qwen".into(),
         base_url:format!("http://{address}"),kind:"ollama".into(),
-        model:"qwen-local".into(),api_key:None,enabled:true,local:true,
+        model:"qwen-local".into(),api_key:None,credential_source_id:None,
+        enabled:true,local:true,
         reflection:false,reflection_model:None,requests_per_minute:0
     }).unwrap();
     let mut run=Run::new(CreateRun{
