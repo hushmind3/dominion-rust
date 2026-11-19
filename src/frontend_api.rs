@@ -55,6 +55,8 @@ pub fn router()->Router<Arc<Engine>>{
         .route("/sessions/{id}/usage",get(session_usage))
         .route("/sessions/{id}/rename",post(rename_session))
         .route("/sessions/{id}/clear",post(clear_session))
+        .route("/sessions/{id}/compact",post(compact_session))
+        .route("/sessions/{id}/learn",post(learn_session))
         .route("/sessions/{id}/fork",post(fork_session))
         .route("/sessions/{id}/cancel",post(cancel_session))
         .route("/chat",post(chat))

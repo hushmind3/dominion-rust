@@ -111,6 +111,7 @@ pub(super) async fn delete_session(State(engine):State<Arc<Engine>>,Path(id):Pat
             return Err("stop the active chat run before deleting the session".into());
         }
         if store.sessions.remove(&id).is_none(){return Err("session not found".into());}
+        store.compacted.remove(&id);
         Ok(())
     }).await.map_err(bad)?;
     Ok(Json(json!({"ok":true})))
@@ -160,10 +161,76 @@ pub(super) async fn clear_session(State(engine):State<Arc<Engine>>,Path(id):Path
         if session.pending_run.is_some(){return Err("cannot clear an active conversation".into());}
         session.messages.clear();
         session.updated_at=timestamp(now_ms());
+        store.compacted.remove(&id);
         Ok(())
     }).await.map_err(bad)?;
     Ok(Json(json!({"ok":true})))
 }
+
+fn shorten_bytes(mut text:String,max:usize)->String{
+    while text.len()>max{text.pop();}
+    text
+}
+/// Deterministic, user-requested history projection. The full durable chat
+/// transcript remains intact; no model-generated summary is claimed.
+pub(super) async fn compact_session(State(engine):State<Arc<Engine>>,
+    Path(id):Path<String>)->Result<Json<Value>,Fault>{
+    sync_session(&engine,&id).await.map_err(broken)?;
+    let current=engine.frontend.session(&id).await
+        .ok_or_else(||missing("session not found"))?;
+    if current.room_id.is_some(){return Err(bad("compact a group conversation in Rooms"));}
+    if current.pending_run.is_some(){return Err(busy("complete the active chat run first"));}
+    let through=current.messages.len().saturating_sub(12);
+    if through==0{
+        return Ok(Json(json!({"summarized":0,
+            "remaining":current.messages.len(),"method":"deterministic_excerpt"})));
+    }
+    let mut lines=current.messages[..through].iter().rev().take(16)
+        .map(|m|format!("[{}] {}",m.role,
+            shorten_bytes(m.content.clone(),340))).collect::<Vec<_>>();
+    lines.reverse();
+    let excerpt=shorten_bytes(lines.join("\n\n"),2700);
+    let total=current.messages.len();
+    engine.frontend.mutate(|state|{
+        let session=state.sessions.get(&id).ok_or("session disappeared")?;
+        if session.pending_run.is_some()||session.messages.len()!=total{
+            return Err("conversation changed during compaction".into());
+        }
+        state.compacted.insert(id.clone(),
+            crate::frontend_state::ChatCompaction{through,excerpt});
+        Ok(())
+    }).await.map_err(bad)?;
+    Ok(Json(json!({"summarized":through,"remaining":total-through,
+        "method":"deterministic_excerpt","transcriptPreserved":true})))
+}
+/// Only owner-authored source text is saved when the user explicitly clicks
+/// Learn. Assistant assertions are never promoted into owner memories.
+pub(super) async fn learn_session(State(engine):State<Arc<Engine>>,
+    Path(id):Path<String>)->Result<Json<Value>,Fault>{
+    sync_session(&engine,&id).await.map_err(broken)?;
+    let current=engine.frontend.session(&id).await
+        .ok_or_else(||missing("session not found"))?;
+    if current.room_id.is_some(){return Err(bad("learn group messages from Rooms"));}
+    if current.pending_run.is_some(){return Err(busy("complete the active chat run first"));}
+    let mut notes=current.messages.iter().rev().filter(|m|m.role=="user")
+        .take(8).map(|m|format!("Owner message {}: {}",m.id,
+            shorten_bytes(m.content.clone(),700))).collect::<Vec<_>>();
+    if notes.is_empty(){
+        return Ok(Json(json!({"result":{"memories":0,"skill":false},
+            "message":"저장할 사용자 대화가 없습니다."})));
+    }
+    notes.reverse();
+    let evidence=shorten_bytes(format!(
+        "Owner-authored chat evidence; not independently verified.\n{}",
+        notes.join("\n\n")),3800);
+    let saved=engine.knowledge.remember("global",
+        &format!("User-selected chat evidence {id}"),&evidence).await.map_err(bad)?;
+    Ok(Json(json!({"result":{"memories":1,"skill":false},
+        "memoryId":saved.id,"source":"owner_explicit_chat_learning",
+        "message":"사용자 발언 {}개를 원문 근거로 기억에 저장했습니다.",
+        "ownerMessages":notes.len()})))
+}
+
 pub(super) async fn fork_session(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
     sync_session(&engine,&id).await.map_err(broken)?;

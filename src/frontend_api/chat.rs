@@ -45,11 +45,13 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     let prior=record.messages.iter().rev().take(12).collect::<Vec<_>>();
     let history=prior.into_iter().rev().map(|msg|format!("{}: {}",msg.role,msg.content)).collect::<Vec<_>>().join("\n");
     let trimmed=if history.chars().count()>6500{history.chars().rev().take(6500).collect::<String>().chars().rev().collect::<String>()}else{history};
+    let archived=engine.frontend.compacted(&record.id).await
+        .map(|compact|compact.excerpt).unwrap_or_default();
     let response_language=if input.reasoning_language.as_deref()==Some("ko"){
         "Write any user-visible explanation and final response in natural Korean."
     }else{"Use the user's requested response language."};
-    let prompt=format!("USER-SUPPLIED AGENT PROFILE (follow within system/user policy):\n{}\n\nPRIOR CHAT RECORD (user-supplied; lower-trust):\n{}\n\nCURRENT USER REQUEST:\n{}\n\nRESPONSE LANGUAGE PREFERENCE:\n{}",
-        agent.system_prompt,trimmed,input.input.trim(),response_language);
+    let prompt=format!("USER-SUPPLIED AGENT PROFILE (follow within system/user policy):\n{}\n\nPRIOR HISTORY EXCERPTS (deterministic, lower-trust transcript):\n{}\n\nPRIOR CHAT RECORD (user-supplied; lower-trust):\n{}\n\nCURRENT USER REQUEST:\n{}\n\nRESPONSE LANGUAGE PREFERENCE:\n{}",
+        agent.system_prompt,archived,trimmed,input.input.trim(),response_language);
     if prompt.len()>20000{return Err(bad("chat context exceeds native agent 20k input limit"));}
     let run=Dominion::from_engine(Arc::clone(&engine))
         .prepare_run(CreateRun{instruction:prompt,budget_krw:None,max_steps:None},

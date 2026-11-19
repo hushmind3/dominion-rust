@@ -62,9 +62,15 @@ pub struct UiMessage {
     pub metadata:Option<Value>,
 }
 #[derive(Clone,Debug,Serialize,Deserialize,Default)]
+pub struct ChatCompaction{
+    pub through:usize,
+    pub excerpt:String,
+}
+#[derive(Clone,Debug,Serialize,Deserialize,Default)]
 pub struct Snapshot{
     pub sessions:HashMap<String,UiSession>,
     pub agents:HashMap<String,UiAgent>,
+    #[serde(default)]pub compacted:HashMap<String,ChatCompaction>,
 }
 pub struct FrontendStore{
     file:PathBuf,
@@ -177,6 +183,9 @@ impl FrontendStore {
     }
     pub async fn session(&self,id:&str)->Option<UiSession>{
         self.state.lock().await.sessions.get(id).cloned()
+    }
+    pub async fn compacted(&self,id:&str)->Option<ChatCompaction>{
+        self.state.lock().await.compacted.get(id).cloned()
     }
     pub async fn begin_turn(&self,id:&str,input:&str,run:Uuid)->Result<UiSession,String>{
         let message=UiMessage{id:Uuid::new_v4().to_string(),session_id:id.into(),
