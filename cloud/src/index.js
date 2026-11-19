@@ -385,6 +385,12 @@ async function freeProxy(request, env, user) {
     await refundGlobal();
     return err('Daily free quota exhausted', 429);
   }
+  // A transport failure after supplier admission is not proof of a free call.
+  // Retain admitted quota and stop free-auto from launching another provider.
+  const uncertainFree = () => json({
+    error: 'Free model outcome uncertain; request quota retained',
+    quotaRetained: true
+  }, 502, { 'x-dominion-ambiguous-call': '1' });
   if (model.backend === 'workers-ai') {
     try {
       const answer = await env.AI.run(model.id, { messages: body.messages, max_tokens: Math.min(1024, body.max_tokens || 512) });
@@ -406,7 +412,7 @@ async function freeProxy(request, env, user) {
         } });
       }
       return json({ id: completionId, object: 'chat.completion', model: model.id, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } }, 200, quotaHeaders);
-    } catch { markModelResult(model.id, false); await refundQuota(); return err('Workers AI inference unavailable', 502); }
+    } catch { markModelResult(model.id, false); return uncertainFree(); }
   }
   let upstream;
   try {
@@ -422,10 +428,17 @@ async function freeProxy(request, env, user) {
     });
   } catch {
     markModelResult(model.id, false);
-    await refundQuota();
-    return err('Free model provider connection failed', 502);
+    return uncertainFree();
   }
-  if (!upstream.ok) { if (upstream.status === 404 || upstream.status === 429 || upstream.status >= 500) markModelResult(model.id, false); await refundQuota(); return err('Free model provider unavailable', 502); }
+  if (!upstream.ok) {
+    if (upstream.status === 404 || upstream.status === 429 || upstream.status >= 500) markModelResult(model.id, false);
+    // Only explicit no-inference validation/auth/model rejection permits refund.
+    if ([400,401,403,404,422].includes(upstream.status)) {
+      await refundQuota();
+      return err('Free model provider rejected request', 502);
+    }
+    return uncertainFree();
+  }
   markModelResult(model.id, true);
   const headers = new Headers({ 'cache-control': 'no-store', 'x-dominion-free-remaining': String(Math.max(0, limit - updated.used)) });
   headers.set('content-type', upstream.headers.get('content-type') || (body.stream ? 'text/event-stream' : 'application/json'));
@@ -585,7 +598,7 @@ async function routeCompletion(request, env, user) {
     for (const candidate of candidates) {
       const attempted = new Request(request, { body: JSON.stringify({ ...body, model: candidate.id }) });
       const response = await freeProxy(attempted, env, user);
-      if (response.ok || response.status === 429) return response;
+      if (response.ok || response.status === 429 || response.headers.get('x-dominion-ambiguous-call') === '1') return response;
     }
     return err('All free models temporarily unavailable', 503);
   }
