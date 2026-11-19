@@ -214,12 +214,16 @@ fn detail_row(repo:&str,doc:&Value)->Value{
             .or_else(||doc["config"]["architectures"][0].as_str()).unwrap_or(""),
         "options":options,"readme":""})
 }
+pub(crate) async fn raw_repo_details(repo:&str)->Result<Value,String>{
+    if !valid_repo(repo){return Err("invalid Hub repository ID".into());}
+    let url=reqwest::Url::parse(&format!(
+        "https://huggingface.co/api/models/{repo}?blobs=true&cardData=true&config=true"))
+        .map_err(|e|e.to_string())?;
+    public_json(url,12*1024*1024).await
+}
 async fn details(Query(q):Query<DetailQuery>)->Result<Json<Value>,Fault>{
     if !valid_repo(&q.id){return Err(fail(StatusCode::BAD_REQUEST,"invalid Hub repository ID"));}
-    let url=reqwest::Url::parse(&format!(
-        "https://huggingface.co/api/models/{}?blobs=true&cardData=true&config=true",q.id))
-        .map_err(|e|fail(StatusCode::BAD_REQUEST,e.to_string()))?;
-    let value=public_json(url,12*1024*1024).await
+    let value=raw_repo_details(&q.id).await
         .map_err(|e|fail(StatusCode::BAD_GATEWAY,e))?;
     Ok(Json(detail_row(&q.id,&value)))
 }

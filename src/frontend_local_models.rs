@@ -109,33 +109,72 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/model-library/runtime",get(runtime))
   .route("/model-library/runtime/load",post(load))
   .route("/model-library/runtime/unload",post(unload))
+  .route("/model-library/runtimes",get(runtimes))
   .merge(crate::frontend_huggingface::routes())
+  .merge(crate::frontend_model_downloads::routes())
 }
-async fn installed()->Result<Json<Value>,Fault>{
+async fn installed(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let result=match ollama_get("/api/tags").await{
   Ok(data)=>data,
   Err(_)=>return Ok(Json(json!([]))), // No Ollama process or models are installed.
  };
- let list=result["models"].as_array().map(|rows|rows.iter().filter_map(|row|{
+ let mut list=result["models"].as_array().map(|rows|rows.iter().filter_map(|row|{
   let id=row["name"].as_str().or_else(||row["model"].as_str())?;
   if !valid_model(id){return None;}
   Some(json!({"id":id,"repo":id,"label":id,"format":row["details"]["format"].as_str().unwrap_or("ollama"),
    "bytes":row["size"].as_u64().unwrap_or(0),"source":"ollama"}))
  }).collect::<Vec<_>>()).unwrap_or_default();
+ let managed=crate::frontend_model_downloads::list(&engine.settings).await
+    .map_err(|e|bad(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ list.extend(managed);
  Ok(Json(json!(list)))
 }
+async fn capabilities()->Value{
+ let bin=tokio::time::timeout(Duration::from_secs(3),
+  tokio::process::Command::new("ollama").arg("--version")
+   .kill_on_drop(true).output()).await.ok()
+  .and_then(Result::ok).is_some_and(|out|out.status.success());
+ let online=ollama_get("/api/version").await.is_ok();
+ json!({
+  "gguf":{"available":bin&&online,"path":if bin&&online{Some("ollama")}else{None},
+    "backend":"ollama","installable":false},
+  "mlx":{"available":false,"standalone":false,"installable":false},
+  "memory":{"total":0,"free":0,"platform":std::env::consts::OS,
+    "arch":std::env::consts::ARCH},
+  "gpu":Value::Null
+ })
+}
 async fn runtime(State(engine):State<Arc<Engine>>)->Json<Value>{
+ let capabilities=capabilities().await;
  let Some(model)=selected(&engine.settings) else{
-  return Json(json!({"status":"idle","engine":"ollama","model":Value::Null}));
+  return Json(json!({"status":"idle","engine":"ollama","model":Value::Null,
+    "capabilities":capabilities}));
  };
  match ollama_get("/api/ps").await{
   Ok(ps) if names(&ps).iter().any(|name|name==&model)=>{
-   Json(json!({"status":"ready","engine":"ollama","id":model,"name":model,"model":model}))
+   Json(json!({"status":"ready","engine":"ollama","id":model,"name":model,"model":model,
+    "capabilities":capabilities}))
   },
   Ok(_)=>Json(json!({"status":"idle","engine":"ollama",
+   "capabilities":capabilities,
    "error":"The selected model is not currently loaded in Ollama"})),
-  Err(error)=>Json(json!({"status":"unavailable","engine":"ollama","error":error})),
+  Err(error)=>Json(json!({"status":"unavailable","engine":"ollama","error":error,
+   "capabilities":capabilities})),
  }
+}
+async fn runtimes()->Json<Value>{
+ let cap=capabilities().await;
+ let installed=cap["gguf"]["available"]==true;
+ Json(json!({"items":[
+  {"id":"llama-cpp","name":"Ollama · GGUF","formats":["GGUF"],
+   "installed":installed,"installable":false,"installMethod":"manual",
+   "path":cap["gguf"]["path"],"url":"https://ollama.com/download",
+   "description":"Ollama executes imported local GGUF files; Rust retains Run scheduling and verification."},
+  {"id":"mlx-lm","name":"MLX runtime","formats":["MLX"],"installed":false,
+   "installable":false,"installMethod":"manual",
+   "url":"https://github.com/ml-explore/mlx-lm",
+   "description":"No native MLX execution adapter is configured in Sub4."}
+ ]}))
 }
 #[derive(Deserialize)]
 struct Load{ id:String,#[serde(default)]context:Option<u32> }
@@ -149,20 +188,23 @@ async fn load(State(engine):State<Arc<Engine>>,Json(input):Json<Load>)
   (run.provider_id.is_empty()||run.provider_id=="dominion-native")){
   return Err(bad(StatusCode::CONFLICT,"finish active native-model runs before switching the local runtime"));
  }
+ let alias=crate::frontend_model_downloads::prepare_for_load(&engine.settings,&input.id)
+  .await.map_err(|e|bad(StatusCode::BAD_GATEWAY,e))?
+  .unwrap_or_else(||input.id.clone());
  let tags=ollama_get("/api/tags").await.map_err(|e|bad(StatusCode::SERVICE_UNAVAILABLE,e))?;
- if !names(&tags).iter().any(|name|name==&input.id){
-  return Err(bad(StatusCode::NOT_FOUND,"requested Ollama model is not installed"));
+ if !names(&tags).iter().any(|name|name==&alias){
+  return Err(bad(StatusCode::NOT_FOUND,"requested Ollama model is not installed or imported"));
  }
- let mut body=json!({"model":input.id,"prompt":"","stream":false,"keep_alive":"24h"});
+ let mut body=json!({"model":alias,"prompt":"","stream":false,"keep_alive":"24h"});
  if let Some(context)=input.context{body["options"]=json!({"num_ctx":context});}
  ollama_post(body).await.map_err(|e|bad(StatusCode::BAD_GATEWAY,e))?;
  let ps=ollama_get("/api/ps").await.map_err(|e|bad(StatusCode::BAD_GATEWAY,e))?;
- if !names(&ps).iter().any(|name|name==&input.id){
+ if !names(&ps).iter().any(|name|name==&alias){
   return Err(bad(StatusCode::BAD_GATEWAY,"Ollama did not report the requested model as loaded"));
  }
- save_selection(&engine.settings,Some(&input.id)).map_err(|e|bad(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ save_selection(&engine.settings,Some(&alias)).map_err(|e|bad(StatusCode::INTERNAL_SERVER_ERROR,e))?;
  Ok(Json(json!({"status":"ready","engine":"ollama","id":input.id,
-  "name":input.id,"model":input.id})))
+  "name":alias,"model":alias,"capabilities":capabilities().await})))
 }
 async fn unload(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let Some(model)=selected(&engine.settings) else{
