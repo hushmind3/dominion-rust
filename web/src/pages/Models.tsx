@@ -177,30 +177,28 @@ export function ModelHub(){
    setSavedId('');setRemovedName(edit.name);setApiKey('');setModal(false);refresh()
   }catch(e){setError((e as Error).message)}finally{setSaving(false)}
  }
- const startCodexDevice=async()=>{
+ const startCodexFlow=async(openBrowser:boolean)=>{
   if(oauthBusy)return
+  // Only the documented first-party device verification page may open.
+  const popup=openBrowser?window.open('about:blank','_blank'):null
   setOauthBusy('codex-device');setError('');setLoginMessage('');setLoginUrl('');setDeviceCode(null)
   try{
-   const started=await post<{user_code:string;verification_url:string}>('/api/providers/codex/device',{})
+   const started=await post<{user_code?:string;verification_url?:string;status?:string;message?:string}>('/api/providers/codex/device',{})
+   if(started.status==='success'){
+    popup?.close();setLoginPending(false);setOauthBusy('')
+    setLoginMessage(started.message||'Codex CLI 인증됨. Rust 모델 제공자는 별도로 연결해야 합니다.')
+    await cli.reload();return
+   }
+   if(!started.user_code||started.verification_url!=='https://auth.openai.com/codex/device'){
+    throw Error('공식 Codex 인증 코드를 받지 못했습니다.')
+   }
    setDeviceCode({userCode:started.user_code,verificationUrl:started.verification_url})
-   // The code and verification link are displayed below; the user opens it directly.
+   if(popup)popup.location.href=started.verification_url
    setLoginPending(true)
-  }catch(e){setOauthBusy('');setError((e as Error).message)}
+  }catch(e){popup?.close();setOauthBusy('');setError((e as Error).message)}
  }
- const startCodexLogin=async()=>{
-  if(oauthBusy)return
-  // A blank tab must be opened synchronously from the click; after an
-  // awaited API request browsers often block the OAuth login popup.
-  const loginWindow=window.open('about:blank','_blank')
-  setOauthBusy('codex-login');setError('');setLoginMessage('');setLoginUrl('');setDeviceCode(null)
-  try{
-   const started=await get<{url:string}>('/api/providers/codex/login')
-   setLoginUrl(started.url)
-   if(loginWindow)loginWindow.location.href=started.url
-   setLoginPending(true)
-   if(!loginWindow)setLoginMessage('팝업이 차단되었습니다. 아래 로그인 링크를 직접 누르세요.')
-  }catch(e){loginWindow?.close();setOauthBusy('');setError((e as Error).message)}
- }
+ const startCodexDevice=()=>startCodexFlow(false)
+ const startCodexLogin=()=>startCodexFlow(true)
  useEffect(()=>{
   if(tab!=='oauth')return
   let alive=true

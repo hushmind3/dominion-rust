@@ -60,7 +60,7 @@ fn public(p:&Progress)->Value{
 }
 async fn status()->Json<Value>{
  let shared=current().lock().await.clone();
- if let Some(login)=shared{return Json(public(&login.progress.lock().await))}
+ if let Some(login)=shared{return Json(public(&*login.progress.lock().await))}
  if authorized().await{
   Json(json!({"status":"success","message":"Codex CLI 로그인 완료. Rust 모델 API는 별도로 연결해야 합니다.","nativeProviderConnected":false}))
  }else{Json(json!({"status":"idle","nativeProviderConnected":false}))}
