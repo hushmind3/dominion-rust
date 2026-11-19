@@ -48,6 +48,25 @@ async function account(request, env) {
   return env.DB.prepare('SELECT a.id, a.credits FROM sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.expires_at>?')
     .bind(await hash(token), now()).first();
 }
+// Public web OAuth client IDs are not credentials. The runtime config endpoint
+// lets desktop and Vite frontends display Google sign-in after Worker setup.
+function publicConfig(env) {
+  return json({
+    google_client_id: env.GOOGLE_CLIENT_ID || null,
+    login: { google: Boolean(env.GOOGLE_CLIENT_ID),
+      kakao: Boolean(env.KAKAO_CLIENT_ID && env.KAKAO_CLIENT_SECRET),
+      naver: Boolean(env.NAVER_CLIENT_ID && env.NAVER_CLIENT_SECRET) },
+    checkout_enabled: Boolean(proPrice(env) && env.TOSS_CLIENT_KEY && env.TOSS_SECRET_KEY),
+    cloud_models_configured: Boolean(env.AI || (env.UPSTREAM_API_KEY && env.UPSTREAM_URL))
+  });
+}
+async function logout(request, env) {
+  const token = /^Bearer ([A-Za-z0-9_-]{32,})$/.exec(request.headers.get('authorization') || '')?.[1];
+  if (!token || !await account(request, env)) return err('Unauthorized', 401);
+  await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?')
+    .bind(await hash(token)).run();
+  return json({ ok: true, revoked: true });
+}
 async function login(request, env) {
   const { credential } = await maxBody(request);
   if (typeof credential !== 'string' || credential.length > 10000) return err('Google credential required');
@@ -500,7 +519,9 @@ export default {
     try {
       const path = new URL(request.url).pathname;
       let response;
-      if (path === '/v1/auth/google' && request.method === 'POST') response = await login(request, env);
+      if (path === '/v1/config' && request.method === 'GET') response = publicConfig(env);
+      else if (path === '/v1/auth/logout' && request.method === 'POST') response = await logout(request, env);
+      else if (path === '/v1/auth/google' && request.method === 'POST') response = await login(request, env);
       else if (['/v1/auth/kakao/start','/v1/auth/naver/start'].includes(path) && request.method === 'GET')
         response = await oauthStart(request,env,path.split('/')[3]);
       else if (['/v1/auth/kakao/callback','/v1/auth/naver/callback'].includes(path) && request.method === 'GET')

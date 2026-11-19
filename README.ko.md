@@ -35,3 +35,11 @@ cargo test --locked --lib
 ## CLI 인증 범위
 
 공식 Codex CLI 기기 인증은 로컬 서버에서만 실행하며 토큰을 웹에 전달하지 않습니다. CLI 로그인 상태가 성공이어도 서브4 Rust 실행 커널의 모델 제공자/API 연결을 자동 생성하지 않습니다. 실제 모델 호출에는 별도로 등록된 Rust 제공자 연결이 필요합니다.
+
+## 도미니언 클라우드 계정 및 모델 중계 (서브4)
+
+`main`의 Cloudflare Worker와 D1 스키마를 독립 복제했습니다. Rust 에이전트·Run·Room 엔진과 로컬 모델/BYOK는 그대로 유지됩니다. 웹 모델 허브의 DOMINION Cloud 카드에서 회원 세션을 받아 `/api/providers`에 선택한 모델을 등록하면 기존 Rust OpenAI 호환 제공자 라우터가 Worker의 `/v1/chat/completions`을 호출합니다. 상위 모델 API 키는 Worker에만 보관합니다.
+
+기본 Worker 주소는 `https://dominion-cloud.dominion-hushmind.workers.dev`이고, 스테이징 주소는 `VITE_DOMINION_CLOUD_URL`로 재설정합니다. Google의 공개 웹 클라이언트 ID는 새 Worker `GET /v1/config`에서 읽고, 구버전 Worker 또는 별도 스테이징은 `VITE_DOMINION_GOOGLE_CLIENT_ID`로 설정할 수 있습니다. Worker의 `ALLOWED_ORIGIN`은 프런트 URL과 정확히 일치해야 합니다. 로그아웃은 Worker 토큰 폐기를 요청하고 로컬 Rust 제공자의 기존 세션 키를 지운 뒤 비활성화합니다.
+
+**배포 구분:** 이 브랜치의 Worker 소스가 메인 운영 Worker에 자동 배포되지는 않습니다. 클라우드 설정을 변경하지 않고도 Rust CI/Worker 모의 D1 테스트는 실행됩니다. Cloudflare 계정의 D1·Workers AI 바인딩과 OAuth 앱 설정을 확인한 다음 별도 배포가 필요합니다. 무료 모델은 공급자·하루 사용량 한도 내에서만 동작하며, 유료 모델은 사전 충전액·본인확인·운영자 요금/예산 구성과 상위 공급자 키가 있어야 합니다. 현재 결제 서비스가 상용으로 완주되었다고 표시하지 않습니다.

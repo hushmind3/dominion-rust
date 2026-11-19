@@ -14,10 +14,24 @@ type Model={id:string;name?:string;free:boolean;provider?:string;input_micro_krw
 type CatalogProvider={id:string;name:string;api:string;models:number;doc?:string}
 type RemoteModel={id:string;name?:string;context?:number|null;reasoning?:boolean|null;toolCall?:boolean|null}
 const catalogProviderKind=(provider:CatalogProvider):'anthropic'|'openai'=>/anthropic/i.test(provider.id+' '+provider.api)?'anthropic':'openai'
-const cloudUrl=(import.meta.env.VITE_DOMINION_CLOUD_URL||'').replace(/\/$/,'')
-const clientId=import.meta.env.VITE_DOMINION_GOOGLE_CLIENT_ID||''
+// Existing Dominion-owned Worker; staging deployments override this at build time.
+const cloudUrl=(import.meta.env.VITE_DOMINION_CLOUD_URL||'https://dominion-cloud.dominion-hushmind.workers.dev').replace(/\/$/,'')
+const configuredClientId=import.meta.env.VITE_DOMINION_GOOGLE_CLIENT_ID||''
 export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initialProviderId,hideManagementNavigation=false}:{onProviderAdded:()=>Promise<unknown>;initialTab?:'cloud'|'providers';initialProviderId?:string;hideManagementNavigation?:boolean}) {
  const button=useRef<HTMLDivElement>(null)
+ const [googleClientId,setGoogleClientId]=useState(configuredClientId)
+ const [socialLogin,setSocialLogin]=useState({kakao:false,naver:false})
+ useEffect(()=>{
+  let alive=true
+  void fetch(cloudUrl+'/v1/config',{cache:'no-store'}).then(async response=>{
+   if(!response.ok)return
+   const config=await response.json() as {google_client_id?:string|null;login?:{kakao?:boolean;naver?:boolean}}
+   if(!alive)return
+   if(config.google_client_id&&!configuredClientId)setGoogleClientId(config.google_client_id)
+   setSocialLogin({kakao:config.login?.kakao===true,naver:config.login?.naver===true})
+  }).catch(()=>{/* Offline cloud leaves local models and BYOK available. */})
+  return()=>{alive=false}
+ },[])
  const [token,setToken]=useState(()=>sessionStorage.getItem('dominion_cloud_session')||'')
  const [showLoginOptions,setShowLoginOptions]=useState(false)
  const [billing,setBilling]=useState<Billing|null>(null)
@@ -146,14 +160,14 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
   setSelected(previous=>unique.some(m=>m.id===previous)?previous:(unique[0]?.id||''))
  }
  useEffect(()=>{
-  if(!cloudUrl||!clientId||!button.current)return
+  if(!cloudUrl||!googleClientId||!showLoginOptions||!button.current)return
   let active=true
   const script=document.createElement('script')
   script.src='https://accounts.google.com/gsi/client'
   script.async=true
   script.onload=()=>{
    if(!active||!button.current||!window.google)return
-   window.google.accounts.id.initialize({client_id:clientId,callback:async({credential})=>{
+   window.google.accounts.id.initialize({client_id:googleClientId,callback:async({credential})=>{
     setBusy(true);setMessage('')
     try{
      const response=await fetch(cloudUrl+'/v1/auth/google',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({credential})})
@@ -168,10 +182,29 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
   }
   document.head.appendChild(script)
   return()=>{active=false;script.remove()}
- },[])
- function logout(){
-  sessionStorage.removeItem('dominion_cloud_session');setIdentity(null);setBilling(null);setToken('');setModels([]);setSelected('');setModelSearch('');setMessage('DOMINION Cloud에서 로그아웃했습니다.');
+ },[showLoginOptions,googleClientId]
+ async function logout(){
+  const oldToken=token
+  sessionStorage.removeItem('dominion_cloud_session')
+  setIdentity(null);setBilling(null);setToken('');setModels([]);setSelected('');setModelSearch('')
   window.google?.accounts.id.disableAutoSelect?.()
+  let cleanupFailed=false
+  try{
+   const response=await fetch(cloudUrl+'/v1/auth/logout',{method:'POST',headers:{Authorization:'Bearer '+oldToken}})
+   if(!response.ok)cleanupFailed=true
+  }catch{cleanupFailed=true}
+  try{
+   const items=await get<Array<{id:string;name:string;baseUrl:string;kind:string;model:string}>>('/api/providers')
+   for(const item of items.filter(p=>(p.baseUrl.endsWith('/')?p.baseUrl.slice(0,-1):p.baseUrl)===cloudUrl+'/v1')){
+    await post('/api/providers',{id:item.id,name:item.name,baseUrl:item.baseUrl,
+     kind:item.kind,model:item.model,apiKey:'',enabled:false,local:false})
+   }
+   await onProviderAdded()
+  }catch{cleanupFailed=true}
+  setRegistered(null)
+  setMessage(cleanupFailed
+   ?'브라우저 세션을 종료했습니다. 서버 세션 또는 모델 연결 해제를 완료하지 못해 재확인이 필요합니다.'
+   :'DOMINION Cloud 로그아웃 · 서버 세션 폐기 및 등록 모델 연결 해제 완료')
  }
  async function loadCatalog(){
   setCatalogBusy(true)
@@ -313,11 +346,16 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
   if(!token||!selected)return
   setBusy(true);setMessage('')
   try{
-   const existing=await get<Array<{id:string;baseUrl:string;model:string}>>('/api/providers')
+   const existing=await get<Array<{id:string;name:string;baseUrl:string;kind:string;model:string}>>('/api/providers')
    const match=existing.find(p=>p.baseUrl.replace(/\/$/,'')===cloudUrl+'/v1'&&p.model===selected)
    if(match){
+    // A re-login changes the server session. Refresh the credential used by
+    // the Rust model route rather than returning a stale cached registration.
+    await post('/api/providers',{id:match.id,name:match.name,baseUrl:cloudUrl+'/v1',
+     kind:'openai',apiKey:token,model:selected,enabled:true,local:false})
     setRegistered({providerId:match.id,model:selected,source:'cloud'})
-    setMessage('이미 등록된 모델입니다. 중복 등록하지 않았습니다.')
+    await onProviderAdded()
+    setMessage('기존 모델의 계정 인증을 갱신했습니다.')
     return
    }
    const saved=await post<{id:string}>('/api/providers',{name:'DOMINION Cloud · '+selected,baseUrl:cloudUrl+'/v1',kind:'openai',apiKey:token,model:selected,enabled:true,local:false,toolMode:'compat'})
@@ -347,9 +385,9 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
      <div className="flex items-center justify-between gap-3"><strong className="text-base">DOMINION 가입 · 로그인</strong><button type="button" onClick={()=>setShowLoginOptions(false)} aria-label="닫기" className="rounded-lg border px-3 py-1">닫기</button></div>
      <p className="my-3 text-[12px] text-[#7C7469]">처음 인증하면 자동 가입됩니다. 로그인 없이도 로컬 모델과 개인 API를 사용할 수 있습니다.</p>
      <div className="flex flex-col items-start gap-3">
-      {clientId&&<div ref={button}/>}
-      <button type="button" onClick={()=>void openSocialLogin('kakao')} className="w-full rounded-lg bg-[#FEE500] px-4 py-2 text-[12px] font-semibold text-[#191919]">카카오로 계속하기</button>
-      <button type="button" onClick={()=>void openSocialLogin('naver')} className="w-full rounded-lg bg-[#03C75A] px-4 py-2 text-[12px] font-semibold text-white">네이버로 계속하기</button>
+      {googleClientId&&<div ref={button}/>} 
+      <button type="button" disabled={!socialLogin.kakao} onClick={()=>void openSocialLogin('kakao')} className="w-full rounded-lg bg-[#FEE500] px-4 py-2 text-[12px] font-semibold text-[#191919]">카카오로 계속하기</button>
+      <button type="button" disabled={!socialLogin.naver} onClick={()=>void openSocialLogin('naver')} className="w-full rounded-lg bg-[#03C75A] px-4 py-2 text-[12px] font-semibold text-white">네이버로 계속하기</button>
      </div>
     </div>
    </div>}
@@ -381,7 +419,7 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
    {!billing?.checkout_enabled&&<p className="mt-2 text-[12px]">운영자 결제 키와 요금 설정 후 테스트 결제를 시작할 수 있습니다.</p>}
   </div>}
   {registered?.source==='cloud'&&<button type="button" onClick={goToRegisteredChat} className="mt-2 rounded-lg bg-[#C96442] px-3 py-2 text-[12px] font-semibold text-white">등록한 모델로 채팅하기</button>}
-  {token&&<button type="button" className="mt-3 rounded-lg border px-3 py-2 text-[12px]" onClick={logout}>로그아웃</button>}
+  {token&&<button type="button" className="mt-3 rounded-lg border px-3 py-2 text-[12px]" onClick={()=>void logout()}>로그아웃</button>}
   </>}
   {managementTab==='providers'&&<div className="mt-4 border-t border-[#E7E0D5] pt-4">
 

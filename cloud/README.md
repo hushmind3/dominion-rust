@@ -173,3 +173,9 @@ Before live charging: implement and verify refund/cancellation handling,
 payment-status webhook reconciliation, stuck `processing` order recovery,
 admin-only settlement reconciliation and customer support processes. Existing
 Pro checkout is a one-time 30-day purchase, not recurring auto-billing.
+
+## Sub4 native Rust parity (2026-11-19)
+
+The independent `dominion-sub4` branch includes this Worker, D1 schema and auth/payment contracts. The Rust agent kernel remains independent. Its latest-main React cloud card can use the deployed Worker origin (or `VITE_DOMINION_CLOUD_URL` for staging) and dynamically fetch the public OAuth client ID from `GET /v1/config`. Social providers are shown according to Worker readiness. `POST /v1/auth/logout` invalidates the bearer session; the UI disables previously linked native model providers and refreshes their session credentials on re-login. A normal logout cannot be treated as simply clearing browser storage.
+
+The Worker is not automatically published by a sub4 push; all workflows test locally. The connected existing production Worker must be updated through a separate reviewed deployment before the new config/logout endpoints work. This source is not a production payment settlement or unrestricted model credits service: paid model streaming, tools, refund reconciliation and hard per-member token-cost controls require additional work.

@@ -4,6 +4,8 @@ on:
     branches: [dominion-sub4]
     paths:
       - 'src/**'
+      - 'cloud/**'
+      - 'services/dominion-cloud/**'
       - 'web/**'
       - 'sdk/**'
       - 'scripts/**'
@@ -33,9 +35,11 @@ jobs:
         run: npm run typecheck --prefix web
       - name: Production frontend bundle
         run: npm run build --prefix web
-      - name: UI regressions (models, chat stop and refresh)
+      - name: UI and Cloud Worker integration regressions
         working-directory: web
         run: node --experimental-strip-types --test tests/*.test.mjs
+      - name: Validate ported Cloudflare Worker JavaScript
+        run: node --check cloud/src/index.js
       - name: No retired Money module in active code or frontend
         run: |
           test ! -d src/money
