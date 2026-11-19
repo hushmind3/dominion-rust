@@ -48,7 +48,7 @@ function database(credits=1000000){
        assert.ok(receipt)
        receipt.charged=Number(args[0]);receipt.status=args[1];return{success:true}
       }
-      if(sql.startsWith('UPDATE paid_budget_daily SET reserved=')){
+      if(sql.startsWith('UPDATE paid_budget_daily SET reserved_micro_krw=')){
        state.budget=Math.max(0,state.budget-Number(args[0]));return{success:true}
       }
       throw Error('unexpected run SQL: '+sql)

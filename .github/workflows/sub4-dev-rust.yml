@@ -66,8 +66,8 @@ jobs:
                     'subscriptions','paid_budget_daily'}
           assert required.issubset(tables), required-tables
           query=('INSERT INTO paid_budget_daily(day,reserved_micro_krw) VALUES(?,?) '
-                 'ON CONFLICT(day) DO UPDATE SET reserved=reserved+excluded.reserved '
-                 'WHERE reserved<=? RETURNING reserved')
+                 'ON CONFLICT(day) DO UPDATE SET reserved_micro_krw=reserved_micro_krw+excluded.reserved_micro_krw '
+                 'WHERE reserved_micro_krw<=? RETURNING reserved_micro_krw')
           assert db.execute(query,('2026-11-19',100,150)).fetchone()==(100,)
           assert db.execute(query,('2026-11-19',75,50)).fetchone() is None
           assert db.execute('SELECT reserved_micro_krw FROM paid_budget_daily').fetchone()==(100,)
