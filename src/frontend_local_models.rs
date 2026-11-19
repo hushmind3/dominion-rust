@@ -31,6 +31,11 @@ pub fn selected(settings:&Settings)->Option<String>{
  let id=value["model"].as_str()?;
  if valid_model(id){Some(id.to_owned())}else{None}
 }
+fn selected_id(settings:&Settings)->Option<String>{
+ let value:Value=serde_json::from_slice(&fs::read(selection_file(settings)).ok()?).ok()?;
+ let id=value["selectedId"].as_str().or_else(||value["model"].as_str())?;
+ valid_model(id).then(||id.to_owned())
+}
 fn valid_model(id:&str)->bool{
  !id.trim().is_empty()&&id.len()<=240&&
  !id.chars().any(char::is_control)
@@ -49,7 +54,7 @@ pub fn native_override(settings:&Settings,model:&str)->Option<ModelSettings>{
  configured.cache_ttl=None;configured.cache_key=None;
  Some(configured)
 }
-fn save_selection(settings:&Settings,model:Option<&str>)->Result<(),String>{
+fn save_selection(settings:&Settings,model:Option<&str>,selected_id:Option<&str>)->Result<(),String>{
  let file=selection_file(settings);
  if let Some(model)=model{
   fs::create_dir_all(&settings.data_dir).map_err(|e|e.to_string())?;
@@ -58,7 +63,7 @@ fn save_selection(settings:&Settings,model:Option<&str>)->Result<(),String>{
    let mut opt=fs::OpenOptions::new();opt.create_new(true).write(true);
    #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;opt.mode(0o600);}
    let mut out=opt.open(&stage).map_err(|e|e.to_string())?;
-   out.write_all(json!({"model":model}).to_string().as_bytes()).map_err(|e|e.to_string())?;
+   out.write_all(json!({"model":model,"selectedId":selected_id.unwrap_or(model)}).to_string().as_bytes()).map_err(|e|e.to_string())?;
    out.sync_all().map_err(|e|e.to_string())?;
    drop(out);
    fs::rename(&stage,&file).map_err(|e|e.to_string())?;
@@ -116,9 +121,11 @@ pub fn routes()->Router<Arc<Engine>>{
 }
 async fn installed(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let result=ollama_get("/api/tags").await.ok();
+ let aliases=crate::frontend_model_downloads::registered_ollama_aliases(&engine.settings)
+  .await.map_err(|e|bad(StatusCode::INTERNAL_SERVER_ERROR,e))?;
  let mut list=result.as_ref().and_then(|value|value["models"].as_array()).map(|rows|rows.iter().filter_map(|row|{
   let id=row["name"].as_str().or_else(||row["model"].as_str())?;
-  if !valid_model(id){return None;}
+  if !valid_model(id)||aliases.contains(id){return None;}
   Some(json!({"id":id,"repo":id,"label":id,"format":"gguf",
    "bytes":row["size"].as_u64().unwrap_or(0),"source":"ollama"}))
  }).collect::<Vec<_>>()).unwrap_or_default();
@@ -150,7 +157,7 @@ async fn runtime(State(engine):State<Arc<Engine>>)->Json<Value>{
  };
  match ollama_get("/api/ps").await{
   Ok(ps) if names(&ps).iter().any(|name|name==&model)=>{
-   Json(json!({"status":"ready","engine":"ollama","id":model,"name":model,"model":model,
+   Json(json!({"status":"ready","engine":"ollama","id":selected_id(&engine.settings).unwrap_or_else(||model.clone()),"name":model,"model":model,
     "capabilities":capabilities}))
   },
   Ok(_)=>Json(json!({"status":"idle","engine":"ollama",
@@ -200,7 +207,7 @@ async fn load(State(engine):State<Arc<Engine>>,Json(input):Json<Load>)
  if !names(&ps).iter().any(|name|name==&alias){
   return Err(bad(StatusCode::BAD_GATEWAY,"Ollama did not report the requested model as loaded"));
  }
- save_selection(&engine.settings,Some(&alias)).map_err(|e|bad(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ save_selection(&engine.settings,Some(&alias),Some(&input.id)).map_err(|e|bad(StatusCode::INTERNAL_SERVER_ERROR,e))?;
  Ok(Json(json!({"status":"ready","engine":"ollama","id":input.id,
   "name":alias,"model":alias,"capabilities":capabilities().await})))
 }
@@ -218,7 +225,7 @@ async fn unload(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  if names(&ps).iter().any(|name|name==&model){
   return Err(bad(StatusCode::BAD_GATEWAY,"model remains resident after unload"));
  }
- save_selection(&engine.settings,None).map_err(|e|bad(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ save_selection(&engine.settings,None,None).map_err(|e|bad(StatusCode::INTERNAL_SERVER_ERROR,e))?;
  Ok(Json(json!({"status":"idle","engine":"ollama"})))
 }
 #[cfg(test)]

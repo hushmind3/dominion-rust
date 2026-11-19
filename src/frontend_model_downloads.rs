@@ -472,6 +472,14 @@ pub(crate) async fn find(settings:&Settings,id:&str)->Result<Option<Installed>,S
     Ok(entry)
 }
 
+pub(crate) async fn registered_ollama_aliases(settings:&Settings)
+    ->Result<std::collections::HashSet<String>,String>{
+    let (_,shared)=state(settings).await?;
+    let aliases=shared.lock().await.installed.values()
+        .filter_map(|entry|entry.ollama_model.clone())
+        .collect::<std::collections::HashSet<_>>();
+    Ok(aliases)
+}
 pub(crate) async fn list(settings:&Settings)->Result<Vec<Value>,String>{
     let (_,shared)=state(settings).await?;
     let mut models=shared.lock().await.installed.values().map(Installed::public)
