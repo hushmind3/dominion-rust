@@ -39,6 +39,7 @@ pub mod frontend_growth;
 pub mod frontend_personas;
 pub mod frontend_system;
 pub mod frontend_local_models;
+pub mod frontend_huggingface;
 pub mod frontend_channels;
 pub mod frontend_skill_import;
 pub mod frontend_oauth;

@@ -35,6 +35,17 @@ test('main GitHub connect and disconnect map to native encrypted-vault routes',(
  assert.match(oauth,/\/oauth\/\{id\}/)
  assert.match(oauth,/store\.accounts\.remove\(&id\)/)
 })
+test('Hugging Face browsing has a real safe Rust read-only metadata adapter',()=>{
+ const ui=source('../src/components/ModelExplorer.tsx')
+ const routes=source('../../src/frontend_huggingface.rs')
+ const runtime=source('../../src/frontend_local_models.rs')
+ assert.match(ui,/\/api\/model-library\/catalog\?/)
+ assert.match(ui,/\/api\/model-library\/details\?id=/)
+ assert.match(routes,/\.route\("\/model-library\/catalog",get\(catalog\)\)/)
+ assert.match(routes,/\.route\("\/model-library\/details",get\(details\)\)/)
+ assert.match(routes,/huggingface\.co\/api\/models/)
+ assert.match(runtime,/crate::frontend_huggingface::routes\(\)/)
+})
 test('retired Money backend, scheduler and screen are absent',()=>{
  const lib=source('../../src/lib.rs')
  const sdk=source('../../src/sdk.rs')

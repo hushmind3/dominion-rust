@@ -109,6 +109,7 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/model-library/runtime",get(runtime))
   .route("/model-library/runtime/load",post(load))
   .route("/model-library/runtime/unload",post(unload))
+  .merge(crate::frontend_huggingface::routes())
 }
 async fn installed()->Result<Json<Value>,Fault>{
  let result=match ollama_get("/api/tags").await{

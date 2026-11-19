@@ -14,7 +14,7 @@ Dominion Sub4 is a **Rust-native, local-first AI agent execution harness** with 
 - **Tools and MCP:** `src/tools.rs`, `src/mcp.rs`, `src/tool_discovery.rs`; explicit scope and approval for side effects.
 - **Persistent context and memory:** `src/context.rs`, `src/knowledge.rs`; user corrections and durable evidence survive restarts.
 - **SDKs:** `src/sdk.rs` and `sdk/typescript/`; typed native or HTTP entry points rather than duplicated task schedulers.
-- **Main user interface:** `web/` is synced to the current main React navigation and pages, including model exploration, accounts, memory, rooms and chat.
+- **Main user interface:** `web/` is synced to the current main React navigation and pages, including model exploration, accounts, memory, rooms and chat. Hugging Face public GGUF/MLX metadata search and model details are wired to a read-only Rust endpoint; the main branch's full managed model download/MLX runtime pipeline is not part of this independent backend.
 
 The former **Money/business-opportunity discovery** feature has been removed from the executable, APIs, SDK, frontend and its tests. Existing `money.sqlite` data on a user's disk is **not automatically deleted**. No data migration or automated source collection is launched for that retired feature.
 
