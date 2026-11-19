@@ -41,15 +41,3 @@ test('merge collapses rapid SSE bursts while unknown events do not cause full re
  assert.deepEqual(classifyRefreshEvent({type:'audit'}).targets,['/api/audit/*','/api/audit'])
  assert.deepEqual(classifyRefreshEvent({type:'unrecognized'}).targets,[])
 })
-
-test('native Rust run changes refresh SDK and terminal chat without unrelated queries',()=>{
- const running=classifyRefreshEvent({type:'job_event',id:'r1',status:'running'})
- assert.ok(matchesRefreshTarget('/api/sdk/runs/r1',running.targets))
- assert.ok(matchesRefreshTarget('/api/jobs/r1',running.targets))
- assert.equal(matchesRefreshTarget('/api/providers',running.targets),false)
- assert.equal(matchesRefreshTarget('/api/sessions/s1/messages',running.targets),false)
- const done=classifyRefreshEvent({type:'job_event',id:'r1',status:'completed'})
- assert.ok(matchesRefreshTarget('/api/sessions/s1/messages',done.targets))
- const approval=classifyRefreshEvent({type:'job_event',id:'r1',status:'awaiting_approval'})
- assert.ok(matchesRefreshTarget('/api/approvals',approval.targets))
-});

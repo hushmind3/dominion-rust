@@ -1,9 +1,12 @@
-name: Sub4 targeted Rust development tests
+name: Sub4 Rust and latest-main frontend CI
 on:
   push:
     branches: [dominion-sub4]
     paths:
       - 'src/**'
+      - 'web/**'
+      - 'sdk/**'
+      - 'scripts/**'
       - 'benchmarks/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -13,94 +16,48 @@ concurrency:
   group: sub4-dev-rust
   cancel-in-progress: true
 jobs:
-  relevant-rust:
-    runs-on: macos-15
-    timeout-minutes: 20
+  frontend:
+    name: Main frontend TypeScript, production bundle and UI tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Reject retired duplicate runtimes and legacy context projection
-        run: bash scripts/check-sub4-architecture.sh
-      - name: Independent benchmark adapter artifact export and evidence tests
-        run: python3 -m unittest discover -s benchmarks/tests -p 'test_*.py'
-      - name: Independent artifact success versus native job completion benchmark selftest
-        run: python3 benchmarks/compare.py --selftest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.12.0'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Clean install
+        run: npm ci --prefix web --no-audit --no-fund
+      - name: TypeScript strict check
+        run: npm run typecheck --prefix web
+      - name: Production frontend bundle
+        run: npm run build --prefix web
+      - name: UI regressions (models, chat stop and refresh)
+        working-directory: web
+        run: node --experimental-strip-types --test tests/*.test.mjs
+      - name: No retired Money module in active code or frontend
+        run: |
+          test ! -d src/money
+          test ! -f web/src/pages/Money.tsx
+          ! grep -R -E 'crate::money|pub mod money|MoneyPage|/money/' src web/src
+  rust:
+    name: Native Rust all-target compile and unit regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Native SDK UI progress and cost view (dev profile)
-        run: cargo test --lib program_view_tests
-      - name: Nine-agent three-turn fanout, per-speaker metering and upstream 400 recovery
-        run: cargo test --lib frontend_rooms::fanout_tests
-      - name: Shared prefix, relevance-selected group context and restored provenance accounting
-        run: 'cargo test --lib group::tests'
-      - name: Scoped Cloudflare session affinity and honest cached-token pricing
-        run: 'cargo test --lib cloudflare_room_affinity_is_explicit_scoped_and_not_sent_to_other_providers'
-      - name: Model-authored program cursor, typed receipts, policy and crash recovery (dev profile)
-        run: cargo test --lib program_session::tests
-      - name: Programmatic native shell remains approval-gated (dev profile)
-        run: cargo test --lib programmatic_shell_step_cannot_skip_existing_human_approval
-      - name: Mixed write/search/read/edit/verify via one native Run journal (dev profile)
-        run: cargo test --lib programmatic_tool_calls_write_edit_search_verify_via_existing_journal
-      - name: Shared typed IR and strict observation binding semantics (dev profile)
-        run: cargo test --lib program_ir::tests
-      - name: Bounded native execution program and read-only policy (dev profile)
-        run: cargo test --lib read_program::tests
-      - name: Conditional read-program through native model and journal (dev profile)
-        run: cargo test --lib read_program_fuses_planning_and_skips_duplicate_model_audit
-      - name: Money domain and implementation approval regressions (dev profile)
-        run: 'cargo test --lib money::'
-      - name: 2026 HTIR-style recovery certificate and same-failure transfer regressions (dev profile)
-        run: cargo test --lib strategy::transfer::tests
-      - name: Evidence-only isolated strategy comparison invariants (dev profile)
-        run: cargo test --lib runtime_trials_tests
-      - name: Candidate policy, budget and cancellation regressions (dev profile)
-        run: cargo test --lib strategy_trial_
-      - name: Two real workspace workers and mock-model verification (dev profile)
-        run: cargo test --lib strategy_trial_two_real_workers_share_base_and_settle_before_comparison
-      - name: Full mock model-path correction integration (dev profile)
-        run: cargo test --lib coding_fixture_repairs_two_files_after_missing_path_feedback
-      - name: Indexed delegation lineage and durable restart regression (dev profile)
-        run: cargo test --lib indexed_lineage_tracks_reparent_replace_and_durable_restart
-      - name: Native SDK inert reservation and recovery regression (dev profile)
-        run: cargo test --lib reserved_unlaunched_run_is_not_auto_resumed_on_restart
-      - name: Domain approval receipt crash-state regression (dev profile)
-        run: cargo test --lib committed_domain_receipt_survives_restart_without_extra_worker
-      - name: Focused per-run memory cache regression (dev profile)
-        run: cargo test --lib repeated_model_turns_reuse_scoped_memory_until_owner_edit
-      - name: Failure-conditioned memory retrieval via actual Engine path
-        run: cargo test --lib fresh_failure_class_retargets_existing_run_memory_without_extra_model_calls
-      - name: Durable memory revision persistence (dev profile)
-        run: 'cargo test --lib knowledge::'
-      - name: Agent context retention and repair regression (dev profile)
-        run: 'cargo test --lib context::'
-      - name: Owner-controlled deterministic artifact gate and run isolation
-        run: 'cargo test --lib acceptance::tests'
-      - name: Real Engine cannot fake sum.py completion; observed edit permits completion
-        run: 'cargo test --lib artifact_completion::'
-      - name: Evidence-driven next-step repair and observation regressions (dev profile)
-        run: 'cargo test --lib repair_guidance::'
-      - name: Permission-scoped progressive tool discovery and durable resume (dev profile)
-        run: 'cargo test --lib tool_discovery::tests'
-      - name: One-file task-aware minimal tool schemas with full failure recovery
-        run: 'cargo test --lib local_task_catalog::tests'
-      - name: MCP JSON Schema unions, maps and fail-closed admission (dev profile)
-        run: 'cargo test --lib tool_schema::tests'
-      - name: Credential rotation cannot leak old provider keys to changed endpoints
-        run: 'cargo test --lib provider_registry::tests'
-      - name: Native Ollama and Anthropic provider protocol normalization
-        run: 'cargo test --lib provider::tests'
-      - name: Registered Ollama provider through full native tool-capable Run
-        run: 'cargo test --lib registered_native_ollama_provider_completes_original_agent_tool_loop'
-      - name: Chat Stop cancels silent model HTTP and preserves session isolation
-        run: 'cargo test --lib chat_cancellation_tests'
-      - name: Durable owner directive supersession and stale queue barriers (dev profile)
-        run: 'cargo test --lib journal::tests'
-      - name: Live Engine correction with waiting approval and started write (dev profile)
-        run: 'cargo test --lib owner_correction'
-      - name: Operator tool admission and budget policy regressions (dev profile)
-        run: 'cargo test --lib policy::'
-      - name: Common workspace path regression (dev profile)
-        run: cargo test --lib paginates_large_repository_and_searches_beyond_first_200
-      - name: Live benchmark CLI manifest and durable trace accounting
-        run: cargo test --bin dominion_coding_eval
-# Full macOS / Windows builds, frontend checks, packaging, E2E and soak
-# intentionally stay in manually dispatched release workflows only.
+      - name: Architecture and retired runtime guard
+        run: bash scripts/check-sub4-architecture.sh
+      - name: All Rust targets compile
+        run: cargo check --locked --all-targets
+      - name: Real backend unit/integration-path regressions
+        run: cargo test --locked --lib
+      - name: Coding benchmark CLI contract
+        run: cargo test --locked --bin dominion_coding_eval
+      - name: Deterministic benchmark harness
+        run: |
+          python3 -m unittest discover -s benchmarks/tests -p 'test_*.py'
+          python3 benchmarks/compare.py --selftest

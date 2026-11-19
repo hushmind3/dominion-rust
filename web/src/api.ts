@@ -5,7 +5,7 @@ export type RecordItem = {id:string;name?:string;createdAt?:string;updatedAt?:st
 export type Provider = RecordItem & {name:string;baseUrl:string;kind:string;enabled:boolean;hasKey?:boolean;model?:string;learning?:boolean;reflection?:boolean;reflectionModel?:string;accountId?:string}
 export type Agent = RecordItem & {name:string;description?:string;systemPrompt:string;providerId:string;model:string;reasoningEffort?:string;thinking?:boolean;color?:string;aliases?:string[];avatarUrl?:string;personaSource?:string;sourceProfile?:string;role?:string}
 export type ChatMessage = {id:string;session_id:string;role:string;content:string;reasoning?:string;agent_id?:string;tool_calls?:any[];tool_call_id?:string;metadata?:{authorKind?:string;roomId?:string;replyToMessageId?:string;executionId?:string;usage?:{promptTokens?:number;cachedPromptTokens?:number|null;uncachedPromptTokens?:number|null;completionTokens?:number;totalTokens?:number;estimated?:boolean;model?:string;providerId?:string};[key:string]:unknown};created_at:string}
-export type ChatSession = RecordItem & {title:string;agentId:string;providerId?:string;model?:string;roomId?:string;pendingRun?:string|null}
+export type ChatSession = RecordItem & {title:string;agentId:string;providerId?:string;model?:string;roomId?:string}
 export type Room = RecordItem & {name:string;agentIds:string[];rounds:number;maxTurns?:number;sessionId?:string}
 export type StreamEvent = {type:string;[key:string]:any}
 export const koreanReasoningKey='dominion.chat.reasoningKo'
@@ -56,14 +56,16 @@ export async function resolveApproval(id: string, allow: boolean) {
  if (!result.resolved) throw Error(result.error ? translateError(result.error) : t('chat.approvalGone'))
 }
 
-export async function openOAuth(id: string, repository = false, workspace = false) {
+export async function openOAuth(id: string) {
  const path = '/api/oauth/' + encodeURIComponent(id)
- // Browser OAuth must use the real authorization redirect. The historical
- // native '/open' placeholder returned 501 and never connected an account.
+ if ('__DOMINION_NATIVE__' in window) {
+  await post(path + '/open', {})
+  return
+ }
  const popup = window.open('', 'dominion_oauth', 'width=650,height=780')
  if (!popup) throw Error(t('oauth.popupBlocked'))
  try {
-  const {url} = await get<{url: string}>(path + '/start' + (repository && id === 'github' ? '?repository=true' : workspace && id === 'google' ? '?workspace=true' : ''))
+  const {url} = await get<{url: string}>(path + '/start')
   popup.location.replace(url)
  } catch (error) {
   popup.close()

@@ -26,7 +26,6 @@ export function MemoryPage(){
  const [status,setStatus]=useState('active'),[owner,setOwner]=useState('all')
  const [error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false)
  const [showRecords,setShowRecords]=useState(false)
- const [showGrowth,setShowGrowth]=useState(false)
  const [visibleLimit,setVisibleLimit]=useState(40)
  useEffect(()=>setVisibleLimit(40),[query,status,owner])
  const agentNames=new Map(agents.value.map(agent=>[agent.id,agent.name]))
@@ -94,9 +93,9 @@ export function MemoryPage(){
    <summary className="cursor-pointer font-semibold">{t('memory.records')}</summary>
    {showRecords&&<LearningRecords/>}
   </details>
-  <details className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] p-4" onToggle={event=>setShowGrowth(event.currentTarget.open)}>
+  <details className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] p-4">
    <summary className="cursor-pointer font-semibold">{t('memory.growth')}</summary>
-   {showGrowth&&<GrowthDashboard/>}
+   <GrowthDashboard/>
   </details>
  </div>
 }

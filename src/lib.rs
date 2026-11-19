@@ -24,7 +24,6 @@ pub mod read_program;
 pub mod program_ir;
 pub mod program_session;
 pub mod strategy;
-pub mod money;
 pub mod mcp;
 pub mod policy;
 pub mod provider;

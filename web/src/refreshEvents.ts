@@ -1,7 +1,7 @@
 /** Pure SSE invalidation map. Unknown events do not invalidate the whole UI. */
 export type RefreshScope = {targets:string[];sessions:string[];rooms:string[]}
 type BusRow = Record<string,unknown>
-export type BusChange = {type?:string;kind?:string;record?:BusRow;message?:BusRow;approval?:BusRow;sessionId?:string;roomId?:string;jobId?:string;id?:string;status?:string}
+export type BusChange = {type?:string;kind?:string;record?:BusRow;message?:BusRow;approval?:BusRow;sessionId?:string;roomId?:string;jobId?:string}
 const field=(row:BusRow|undefined,name:string):string|undefined=>{
  const value=row?.[name]
  return typeof value==='string'&&value.length>0?value:undefined
@@ -51,17 +51,7 @@ export function classifyRefreshEvent(event:BusChange):RefreshScope {
   add('/api/approvals')
  }else if(event.type==='job_event'){
   add('/api/jobs')
-  const id=event.jobId||event.id
-  if(id)add('/api/jobs/'+encoded(id))
-  // The sub4 Rust Store sends post-fsync updates as {id,status}.
-  // Only the corresponding execution, SDK and terminal chat views refresh.
-  if(event.id){
-   add('/api/sdk/runs','/api/sdk/runs/'+encoded(event.id),'/api/executions')
-   if(event.status==='awaiting_approval')add('/api/approvals')
-   if(['completed','failed','cancelled'].includes(event.status||'')){
-    add('/api/sessions','/api/sessions/*')
-   }
-  }
+  if(event.jobId)add('/api/jobs/'+encoded(event.jobId))
  }else if(event.type==='execution_event'){
   add('/api/executions')
  }else if(event.type==='goal_event'){

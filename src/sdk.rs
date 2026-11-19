@@ -26,7 +26,6 @@ impl Dominion {
         let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
         // Legacy media/RSI archive files are left untouched on disk.
         let engine=Engine::new(settings,store,groups)?;
-        crate::money::api::start_scheduler(&engine);
         // Reconcile durable parent/child settlement after a previous process
         // died between a child completion and the parent wake notification.
         let (suspended,safe_to_resume)=engine.store.recovery_candidates().await;
@@ -292,92 +291,6 @@ impl Dominion {
     }
     pub async fn remember(&self,scope:&str,title:&str,content:&str)->Result<crate::knowledge::MemoryEntry,String>{
         self.engine.knowledge.remember(scope,title,content).await
-    }
-    /// Market observations remain separate from native Run receipts.
-    /// Configures the detachable Money tool independently from its optional
-    /// recurring public-feed collection. Disabling it retains all user data.
-    pub async fn money_settings(&self)->Result<Value,String>{
-        crate::money::api::native_module_settings(&self.engine).await
-    }
-    pub async fn money_set_enabled(&self,enabled:bool)->Result<Value,String>{
-        crate::money::api::native_configure_module(&self.engine,enabled).await
-    }
-    pub async fn money_candidates(&self,status:&str,query:&str,
-        offset:usize)->Result<Value,String>{
-        crate::money::api::native_candidates(&self.engine,status,query,offset).await
-    }
-    pub async fn money_decide_candidate(&self,id:&str,action:&str,
-        reason:&str)->Result<Value,String>{
-        crate::money::api::native_decide_candidate(&self.engine,id,action,reason).await
-    }
-    /// Price calculations are owner assumptions with original-source pointers,
-    /// stored under the same optional Money domain. They never call a model.
-    pub async fn money_compare_price(&self,id:&str,input:Value)->Result<Value,String>{
-        crate::money::api::native_compare_price(&self.engine,id,input).await
-    }
-    pub async fn money_price_history(&self,id:&str)->Result<Value,String>{
-        crate::money::api::native_price_history(&self.engine,id).await
-    }
-    pub async fn money_latest(&self)->Result<Value,String>{
-        crate::money::api::native_latest(&self.engine).await
-    }
-    /// Explicit operator approval for one saved Money candidate. This is a
-    /// normal native Run with the shared journal, not a Money worker.
-    pub async fn money_implement(&self,id:&str,agent_id:&str,budget_krw:f64,
-        approved:bool)->Result<Value,String>{
-        crate::money::api::native_implement(
-            &self.engine,id,agent_id,budget_krw,approved).await
-    }
-    /// Indexed archive recall with no model calls; shares the Money domain
-    /// database and standard Rust SDK lifecycle.
-    /// Original persisted source snapshots and revision/syndication lineage.
-    /// This is a domain read, not an agent or paid model invocation.
-    pub async fn money_source_history(&self,id:&str)->Result<Value,String>{
-        if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
-            return Err("Money tool is disabled".into());
-        }
-        let root=self.engine.settings.data_dir.clone();
-        let key=id.to_string();
-        tokio::task::spawn_blocking(move||
-            crate::money::provenance::history(&root,&key))
-            .await.map_err(|e|e.to_string())?
-    }
-    pub async fn money_search(&self,query:&str,limit:usize)->Result<Vec<Value>,String>{
-        if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
-            return Err("Money tool is disabled".into());
-        }
-        let q=query.trim();
-        if !(2..=160).contains(&q.chars().count()){
-            return Err("money search requires 2..160 characters".into());
-        }
-        let root=self.engine.settings.data_dir.clone();
-        let term=q.to_string();
-        tokio::task::spawn_blocking(move||crate::money::retrieval::search(&root,&term,limit.min(40)))
-            .await.map_err(|e|e.to_string())?
-    }
-    pub async fn money_signals(&self,limit:usize)->Result<Vec<Value>,String>{
-        if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
-            return Err("Money tool is disabled".into());
-        }
-        let root=self.engine.settings.data_dir.clone();
-        tokio::task::spawn_blocking(move||crate::money::signals(&root,limit))
-            .await.map_err(|e|e.to_string())?
-    }
-    pub async fn money_collect(&self,force:bool)->Result<Value,String>{
-        if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
-            return Err("Money tool is disabled".into());
-        }
-        let root=&self.engine.settings.data_dir;
-        let (rss,catalog)=tokio::join!(
-            crate::money::sources::collect(root,force),
-            crate::money::catalog::collect(root,force));
-        if rss.is_err()&&catalog.is_err(){
-            return Err(format!("RSS: {}; catalog: {}",
-                rss.err().unwrap(),catalog.err().unwrap()));
-        }
-        Ok(json!({"rss":rss.as_ref().ok(),"catalog":catalog.as_ref().ok(),
-            "rssError":rss.as_ref().err(),"catalogError":catalog.as_ref().err(),
-            "modelCalls":0}))
     }
     pub async fn search_memory(&self,scope:&str,query:&str)->Vec<crate::knowledge::MemoryEntry>{
         self.engine.knowledge.search(scope,query,20).await
