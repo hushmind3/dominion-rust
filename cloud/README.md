@@ -6,8 +6,11 @@ The existing desktop UI and Rust execution engine remain unchanged.
 Cloudflare Worker + D1 provides Google ID-token verification (RS256 against Google's JWKs),
 a DOMINION bearer session, account balance, and a single-model OpenAI-compatible relay.
 Users never receive the upstream provider API key. No paid model call is permitted without
-a positive prepaid balance. The first release intentionally rejects streaming, tools,
-unconfigured models, and unsupported options.
+a positive prepaid balance. The paid gateway supports measured, non-streaming OpenAI-compatible text and
+function-tool calls. Upstream free models can forward tool calls and SSE where
+supported. Worker-AI-only free models cannot execute tools. Paid streaming
+remains disabled until a metered-stream settlement protocol is implemented.
+Unconfigured models and unsupported request options are rejected.
 
 ## Provisioning
 
@@ -26,7 +29,9 @@ require `Authorization: Bearer <DOMINION token>`.
 
 ## Before production
 
-This is an **un-deployed backend foundation**, not a ready billing service.
+The provisioned Worker may be deployed independently, but this branch's
+code is **not automatically published** to the shared production Worker.
+This is a foundation, not an approved live payment service.
 Add a payment webhook with verified signatures and idempotent credit grants;
 never let clients set balances. Add rate limits, replay protection, session
 revocation, provider-specific pricing, streaming/tool support, admin audit,
@@ -179,3 +184,37 @@ Pro checkout is a one-time 30-day purchase, not recurring auto-billing.
 The independent `dominion-sub4` branch includes this Worker, D1 schema and auth/payment contracts. The Rust agent kernel remains independent. Its latest-main React cloud card can use the deployed Worker origin (or `VITE_DOMINION_CLOUD_URL` for staging) and dynamically fetch the public OAuth client ID from `GET /v1/config`. Social providers are shown according to Worker readiness. `POST /v1/auth/logout` invalidates the bearer session; the UI disables previously linked native model providers and refreshes their session credentials on re-login. A normal logout cannot be treated as simply clearing browser storage.
 
 The Worker is not automatically published by a sub4 push; all workflows test locally. The connected existing production Worker must be updated through a separate reviewed deployment before the new config/logout endpoints work. This source is not a production payment settlement or unrestricted model credits service: paid model streaming, tools, refund reconciliation and hard per-member token-cost controls require additional work.
+
+## Sub4 native Rust cloud integration and budget migration (2026-11-19)
+
+The Sub4 React account card signs into the existing DOMINION-owned Cloudflare
+Worker (default `https://dominion-cloud.dominion-hushmind.workers.dev`).
+The selected model is registered with the native Rust provider registry using
+the user's revocable DOMINION session bearer; upstream vendor API keys stay
+in Worker secrets. The Rust run kernel, local models and BYOK all remain
+independent of this optional account feature.
+
+**Before deploying the revised Cloud Worker**, apply the updated
+`cloud/schema.sql` to the existing D1 database. The new
+`operator_daily_budget` table supports atomic, conditional daily reservations
+in integer micro-KRW. Paid requests fail closed with HTTP 503 if this
+migration is absent. Set `PAID_DAILY_BUDGET_MICRO_KRW` and supplier-verified
+token tariffs before enabling paid models.
+
+Explicit provider 400/401/403/404/422 rejection releases the reserved credits.
+Ambiguous transport errors, 429, missing usage receipts and timeouts preserve
+bounded credits as an `uncertain` record pending provider-side reconciliation.
+Never label unknown spending as free or automatically replay it.
+
+Paid OpenAI-compatible models forward up to 24 validated function schemas and
+tool-choice settings. The same Rust kernel executes returned tool calls.
+Upstream free models also forward supported tool calls and SSE, subject to
+per-account request quotas. Workers AI free models reject mandatory tool
+calls. Paid streaming stays disabled pending reliable usage settlement.
+
+Pro is a one-time 30-day entitlement and higher free-tier quota, NOT an API
+prepaid credit top-up. The Cloud account card now displays the separate paid
+balance in **KRW**; no customer self-service credit top-up exists yet.
+Changes to D1, live Cloudflare secrets, deployed Workers and real payment
+settings require separate operational verification. Sub4 CI uses mocked
+inference/payment paths and does not bill any real customer.

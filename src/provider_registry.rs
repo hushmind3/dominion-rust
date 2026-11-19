@@ -271,6 +271,55 @@ pub fn public(record:&Provider)->serde_json::Value{
 mod tests{
     use super::*;
 
+    #[tokio::test]
+    async fn cloud_account_session_routes_native_tools_through_registered_provider(){
+        use axum::{http::HeaderMap,Json,Router,routing::post};
+        async fn relay(headers:HeaderMap,Json(body):Json<serde_json::Value>)->Json<serde_json::Value>{
+            assert_eq!(headers.get("authorization").and_then(|v|v.to_str().ok()),
+                Some("Bearer fake-dominion-session-token"));
+            assert_eq!(body["model"],"dominion/free-example");
+            assert_eq!(body["tools"][0]["function"]["name"],"read_file");
+            Json(serde_json::json!({
+                "model":"dominion/free-example",
+                "choices":[{"index":0,"finish_reason":"tool_calls",
+                    "message":{"role":"assistant","content":null,
+                        "tool_calls":[{"id":"call_one","type":"function",
+                          "function":{"name":"read_file","arguments":"{\"path\":\"src/lib.rs\"}"}}]}}],
+                "usage":{"prompt_tokens":50,"completion_tokens":12,"total_tokens":62}
+            }))
+        }
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let app=Router::new().route("/v1/chat/completions",post(relay));
+        let running=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let root=std::env::temp_dir().join(format!("dominion-cloud-bridge-{}",Uuid::new_v4()));
+        let registry=Registry::open(root.clone()).unwrap();
+        let mut draft=draft(None,&format!("http://{address}/v1"),"openai",
+            Some("fake-dominion-session-token"));
+        draft.model="dominion/free-example".into();
+        draft.name="DOMINION Cloud · Free Example".into();
+        let provider=registry.upsert(draft).unwrap();
+        assert!(!public(&provider).to_string().contains("fake-dominion-session-token"));
+        assert_eq!(public(&provider)["hasKey"],true);
+        let settings=crate::config::Settings::from_env().unwrap();
+        let chosen=registry.resolve(&provider.id,&provider.model,&settings.main).unwrap();
+        let client=crate::provider::ModelClient::new(&settings).unwrap()
+            .with_primary_protocol(chosen,&provider.kind).unwrap();
+        let tool=serde_json::json!({"type":"function","function":{
+            "name":"read_file","description":"read a repository file",
+            "parameters":{"type":"object","properties":{"path":{"type":"string"}}}
+        }});
+        let reply=client.complete(&[serde_json::json!({"role":"user",
+            "content":"inspect src/lib.rs"})],&[tool],false).await.unwrap();
+        assert_eq!(reply.calls.len(),1);
+        assert_eq!(reply.calls[0].name,"read_file");
+        assert_eq!(reply.calls[0].arguments["path"],"src/lib.rs");
+        assert_eq!(reply.input_tokens,50);
+        assert_eq!(reply.output_tokens,12);
+        running.abort();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn credential_source_copies_only_exact_provider_binding_without_public_secret(){
         let root=std::env::temp_dir().join(format!(

@@ -55,6 +55,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Architecture and retired runtime guard
         run: bash scripts/check-sub4-architecture.sh
+      - name: Check cloud D1 schema and atomic operator allowance
+        run: |
+          python3 - <<'PY'
+          import sqlite3, pathlib
+          db=sqlite3.connect(':memory:')
+          db.executescript(pathlib.Path('cloud/schema.sql').read_text())
+          tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+          required={'accounts','sessions','usage','free_quota','checkout_orders',
+                    'subscriptions','operator_daily_budget'}
+          assert required.issubset(tables), required-tables
+          query=('INSERT INTO operator_daily_budget(day,reserved) VALUES(?,?) '
+                 'ON CONFLICT(day) DO UPDATE SET reserved=reserved+excluded.reserved '
+                 'WHERE reserved<=? RETURNING reserved')
+          assert db.execute(query,('2026-11-19',100,150)).fetchone()==(100,)
+          assert db.execute(query,('2026-11-19',75,50)).fetchone() is None
+          assert db.execute('SELECT reserved FROM operator_daily_budget').fetchone()==(100,)
+          print('D1 operator budget reservation is atomic and bounded')
+          PY
       - name: All Rust targets compile
         run: cargo check --locked --all-targets
       - name: Real backend unit/integration-path regressions

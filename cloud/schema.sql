@@ -55,3 +55,10 @@ CREATE TABLE IF NOT EXISTS identity_attempts (
  created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS identity_attempts_account ON identity_attempts(account_id,created_at);
+
+-- Atomic operator-wide paid spend admission. Every in-flight reservation is
+-- counted alongside settled charge. All values are micro-KRW.
+CREATE TABLE IF NOT EXISTS operator_daily_budget (
+  day TEXT PRIMARY KEY,
+  reserved INTEGER NOT NULL DEFAULT 0 CHECK (reserved >= 0)
+);

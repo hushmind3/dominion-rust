@@ -326,6 +326,20 @@ async function freeProxy(request, env, user) {
       JSON.stringify(body.messages).length > 50000 ||
       (body.max_tokens !== undefined && (!Number.isSafeInteger(body.max_tokens) || body.max_tokens < 1)))
     return err('Invalid or oversized messages');
+  if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.length > 24 ||
+      body.tools.some(tool => tool?.type !== 'function' ||
+        !/^[a-zA-Z0-9_-]{1,64}$/.test(tool?.function?.name || '') ||
+        typeof tool.function.parameters !== 'object')))
+    return err('Invalid free tool definitions');
+  if (body.tool_choice !== undefined &&
+      !['auto','none','required'].includes(body.tool_choice) &&
+      !(body.tool_choice?.type === 'function' &&
+        /^[a-zA-Z0-9_-]{1,64}$/.test(body.tool_choice?.function?.name || '')))
+    return err('Invalid free tool choice');
+  if (model.backend === 'workers-ai' &&
+      (body.tool_choice === 'required' ||
+       (typeof body.tool_choice === 'object' && body.tool_choice !== null)))
+    return err('This Workers AI free model cannot execute tool calls',422);
   // Free and Pro both have hard account-level limits. A subscription is not unlimited inference.
   const subscription = await env.DB.prepare('SELECT status,current_period_end FROM subscriptions WHERE account_id=?').bind(user.id).first();
   const isPro = subscription?.status === 'active' && subscription.current_period_end > now();
@@ -381,7 +395,11 @@ async function freeProxy(request, env, user) {
     upstream = await fetch(env.UPSTREAM_URL.replace(/\/$/, '') + '/chat/completions', {
       method: 'POST',
       headers: { authorization: 'Bearer ' + env.UPSTREAM_API_KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: model.upstream_model || model.id, messages: body.messages, stream: body.stream === true, max_tokens: Math.min(2048, body.max_tokens || 1024) }),
+      body: JSON.stringify({ model: model.upstream_model || model.id, messages: body.messages,
+        stream: body.stream === true, max_tokens: Math.min(2048, body.max_tokens || 1024),
+        ...(body.tools?.length ? { tools:body.tools } : {}),
+        ...(body.tools?.length && body.tool_choice ? { tool_choice:body.tool_choice } : {}),
+        ...(body.stream === true ? { stream_options:{include_usage:true} } : {}) }),
       signal: AbortSignal.timeout(90000)
     });
   } catch {
@@ -429,63 +447,111 @@ async function proxy(request, env, user) {
   const upstreamModel = selected?.upstream_model || env.MODEL_ID;
   if (!Array.isArray(body.messages) || !body.messages.length)
     return err('Unsupported model or messages');
-  // Paid provider adapter: non-streaming text only until usage accounting supports streams.
-  if (body.stream || body.tools || body.tool_choice || body.n || body.response_format)
-    return err('Unsupported request options');
+  // Paid model tool schemas are forwarded to the selected OpenAI-compatible
+  // supplier. Rust is still the only executor of returned tool calls.
+  if (body.stream || body.response_format || (body.n !== undefined && body.n !== 1))
+    return err('Unsupported paid completion options');
+  if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.length > 24 ||
+      body.tools.some(tool => tool?.type !== 'function' ||
+        !/^[a-zA-Z0-9_-]{1,64}$/.test(tool?.function?.name || '') ||
+        typeof tool.function.parameters !== 'object')))
+    return err('Invalid paid tool definitions');
+  if (body.tool_choice !== undefined &&
+      !['auto','none','required'].includes(body.tool_choice) &&
+      !(body.tool_choice?.type === 'function' && /^[a-zA-Z0-9_-]{1,64}$/.test(body.tool_choice?.function?.name || '')))
+    return err('Invalid paid tool choice');
   const maxTokens = Math.min(4096, Math.max(1, Number(body.max_tokens || 1024)));
   if (!Number.isSafeInteger(maxTokens)) return err('Invalid max_tokens');
   const inputPrice = Number(selected?.input_micro_krw ?? env.PRICE_INPUT_MICRO_KRW), outputPrice = Number(selected?.output_micro_krw ?? env.PRICE_OUTPUT_MICRO_KRW);
   if (![inputPrice, outputPrice].every(n => Number.isSafeInteger(n) && n > 0)) return err('Invalid pricing configuration', 503);
-  const encoded = JSON.stringify(body.messages);
-  if (encoded.length > 100000) return err('Context too large');
-  // Conservative upper bound: charge for all input bytes as tokens, plus max output tokens.
-  const reserve = encoded.length * inputPrice + maxTokens * outputPrice;
+  const encoded = JSON.stringify({messages:body.messages,tools:body.tools||[],tool_choice:body.tool_choice||'auto'});
+  const inputBytes = new TextEncoder().encode(encoded).length;
+  if (inputBytes > 100000) return err('Context too large');
+  // UTF-8 bytes conservatively bound standard BPE input; the settlement
+  // still refuses to debit beyond the amount explicitly reserved.
+  const reserve = inputBytes * inputPrice + maxTokens * outputPrice;
   if (!Number.isSafeInteger(reserve) || reserve > 1000000000) return err('Request exceeds limit');
-  // Operator-side daily ceiling is independent of users' prepaid balances.
-  // Count outstanding reservations; strict concurrency enforcement needs an atomic budget ledger.
+  // One guarded D1 UPSERT admits concurrent requests under the same global
+  // daily ceiling. A SELECT followed by INSERT was a spending race.
   const dailyBudget = Number(env.PAID_DAILY_BUDGET_MICRO_KRW);
   if (!env.PAID_DAILY_BUDGET_MICRO_KRW || !Number.isSafeInteger(dailyBudget) || dailyBudget <= 0)
     return err('Operator daily paid budget must be configured', 503);
-  {
-    const dayStart = Math.floor(Date.now() / 86400000) * 86400;
-    const spent = await env.DB.prepare(
-      "SELECT COALESCE(SUM(CASE WHEN status='reserved' THEN reserved ELSE charged END),0) AS total FROM usage WHERE created_at>=?"
-    ).bind(dayStart).first();
-    if (Number(spent?.total || 0) + reserve > dailyBudget)
-      return err('Operator daily model budget reached', 429);
+  if (reserve > dailyBudget) return err('Operator daily model budget reached', 429);
+  const budgetDay = new Date().toISOString().slice(0, 10);
+  let admission;
+  try {
+    admission = await env.DB.prepare(
+      'INSERT INTO operator_daily_budget(day,reserved) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET reserved=reserved+excluded.reserved WHERE reserved<=? RETURNING reserved'
+    ).bind(budgetDay,reserve,dailyBudget-reserve).first();
+  } catch {
+    return err('Operator daily budget ledger requires D1 schema migration', 503);
   }
+  if (!admission) return err('Operator daily model budget reached', 429);
   const id = crypto.randomUUID();
-  const debited = await env.DB.prepare('UPDATE accounts SET credits=credits-? WHERE id=? AND credits>=? RETURNING credits')
-    .bind(reserve, user.id, reserve).first();
-  if (!debited) return err('Insufficient prepaid credits', 402);
-  await env.DB.prepare('INSERT INTO usage(id,account_id,model,reserved,status,created_at) VALUES(?,?,?,?,?,?)')
-    .bind(id, user.id, modelId, reserve, 'reserved', now()).run();
-  let charge = 0, status = 'failed', result;
+  let creditHeld = false;
+  const release = async amount => {
+    if (amount <= 0) return;
+    await env.DB.prepare('UPDATE operator_daily_budget SET reserved=MAX(0,reserved-?) WHERE day=?')
+      .bind(amount,budgetDay).run();
+  };
+  try {
+    const debited = await env.DB.prepare('UPDATE accounts SET credits=credits-? WHERE id=? AND credits>=? RETURNING credits')
+      .bind(reserve, user.id, reserve).first();
+    if (!debited) { await release(reserve); return err('Insufficient prepaid credits', 402); }
+    creditHeld = true;
+    await env.DB.prepare('INSERT INTO usage(id,account_id,model,reserved,status,created_at) VALUES(?,?,?,?,?,?)')
+      .bind(id, user.id, modelId, reserve, 'reserved', now()).run();
+  } catch {
+    // On admission/storage failure no supplier call was issued. Compensate
+    // the reservation without exposing a partly admitted job.
+    if (creditHeld) await env.DB.prepare('UPDATE accounts SET credits=credits+? WHERE id=?').bind(reserve,user.id).run();
+    await release(reserve);
+    return err('Model credit reservation unavailable', 503);
+  }
+  let charge = reserve, status = 'uncertain';
+  let result = { error: 'Model usage pending reconciliation' };
   try {
     const upstream = await fetch(modelEndpoint.replace(/\/$/, '') + '/chat/completions', {
       method: 'POST',
       headers: { authorization: 'Bearer ' + modelKey, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: upstreamModel, messages: body.messages, max_tokens: maxTokens, stream: false }),
+      body: JSON.stringify({ model: upstreamModel, messages: body.messages, max_tokens: maxTokens, stream: false,
+        ...(body.tools ? { tools: body.tools } : {}),
+        ...(body.tool_choice ? { tool_choice: body.tool_choice } : {}) }),
       signal: AbortSignal.timeout(90000)
     });
-    if (!upstream.ok) throw new Error('Upstream unavailable (' + upstream.status + ')');
+    if (!upstream.ok) {
+      // Explicit client-side rejects before inference can be released. 5xx,
+      // timeouts and 429 remain uncertain to avoid silently gifting billable usage.
+      if ([400,401,403,404,422].includes(upstream.status)) {
+        charge = 0;status = 'rejected';
+      }
+      throw new Error('Upstream unavailable (' + upstream.status + ')');
+    }
     result = await upstream.json();
     const input = result.usage?.prompt_tokens, output = result.usage?.completion_tokens;
     if (!Number.isSafeInteger(input) || !Number.isSafeInteger(output) || input < 0 || output < 0)
       throw new Error('Upstream usage unavailable');
-    charge = Math.min(reserve, input * inputPrice + output * outputPrice);
-    if (!Number.isSafeInteger(charge)) throw new Error('Invalid usage');
+    const measured = input * inputPrice + output * outputPrice;
+    if (!Number.isSafeInteger(measured) || measured > reserve)
+      throw new Error('Usage exceeds reserved tokens; reconciliation required');
+    charge = measured;
     status = 'completed';
-  } catch (e) {
-    result = { error: 'Model request failed', detail: String(e.message || e) };
+  } catch {
+    result = { error: status === 'rejected' ? 'Model provider rejected request' :
+      'Model outcome uncertain; reserved credits retained until reconciliation',
+      requestId:id, reconciliationRequired:status !== 'rejected' };
   } finally {
-    // Reconcile against the initial reservation; never allow a negative credit balance.
+    // The receipt, refund and operator allowance settle in one D1 batch.
+    // A missing upstream receipt retains the full bounded reservation, never
+    // incorrectly reports that an expensive request was free.
     await env.DB.batch([
-      env.DB.prepare('UPDATE accounts SET credits=credits+? WHERE id=?').bind(reserve - charge, user.id),
-      env.DB.prepare('UPDATE usage SET charged=?,status=? WHERE id=?').bind(charge, status, id)
+      env.DB.prepare('UPDATE accounts SET credits=credits+? WHERE id=?').bind(reserve-charge,user.id),
+      env.DB.prepare('UPDATE usage SET charged=?,status=? WHERE id=? AND status=?').bind(charge,status,id,'reserved'),
+      env.DB.prepare('UPDATE operator_daily_budget SET reserved=MAX(0,reserved-?) WHERE day=?')
+        .bind(reserve-charge,budgetDay)
     ]);
   }
-  return json(result, status === 'completed' ? 200 : 502);
+  return json(result, status === 'completed' ? 200 : status === 'rejected' ? 502 : 503);
 }
 async function routeCompletion(request, env, user) {
   const raw = await request.clone().text();
@@ -494,7 +560,9 @@ async function routeCompletion(request, env, user) {
   const available = await availableModels(env);
   if (available.some(x => x.id === body.model)) return freeProxy(request, env, user);
   if (body.model === 'dominion/free-auto') {
-    const candidates = available.filter(x => x.free).slice(0, 5);
+    const requiresTools = Array.isArray(body.tools) && body.tools.length>0;
+    const candidates = available.filter(x => x.free && (!requiresTools || x.backend !== 'workers-ai')).slice(0, 5);
+    if (requiresTools && !candidates.length) return err('No tool-capable free model configured',422);
     if (!candidates.length) return err('No healthy free models available', 503);
     for (const candidate of candidates) {
       const attempted = new Request(request, { body: JSON.stringify({ ...body, model: candidate.id }) });

@@ -35,6 +35,7 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
  const [token,setToken]=useState(()=>sessionStorage.getItem('dominion_cloud_session')||'')
  const [showLoginOptions,setShowLoginOptions]=useState(false)
  const [billing,setBilling]=useState<Billing|null>(null)
+ const [paidCredits,setPaidCredits]=useState<number|null>(null)
  const [identity,setIdentity]=useState<IdentityStatus|null>(null)
  const [identityBusy,setIdentityBusy]=useState(false)
  const [showCheckout,setShowCheckout]=useState(false)
@@ -91,6 +92,13 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
   const response=await fetch(cloudUrl+'/v1/billing',{headers:{Authorization:'Bearer '+session}})
   if(!response.ok)throw Error('구독 정보를 불러오지 못했습니다.')
   setBilling(await response.json())
+  const creditsResponse=await fetch(cloudUrl+'/v1/me',{headers:{Authorization:'Bearer '+session}})
+  if(creditsResponse.ok){
+   const info=await creditsResponse.json() as {credits_micro_krw?:number}
+   if(Number.isSafeInteger(info.credits_micro_krw)&&Number(info.credits_micro_krw)>=0){
+    setPaidCredits(Number(info.credits_micro_krw)/1000)
+   }
+  }
   const identityResponse=await fetch(cloudUrl+'/v1/identity',{headers:{Authorization:'Bearer '+session}})
   if(identityResponse.ok)setIdentity(await identityResponse.json())
  }
@@ -186,7 +194,7 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
  async function logout(){
   const oldToken=token
   sessionStorage.removeItem('dominion_cloud_session')
-  setIdentity(null);setBilling(null);setToken('');setModels([]);setSelected('');setModelSearch('')
+  setIdentity(null);setBilling(null);setPaidCredits(null);setToken('');setModels([]);setSelected('');setModelSearch('')
   window.google?.accounts.id.disableAutoSelect?.()
   let cleanupFailed=false
   try{
@@ -408,7 +416,11 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
    <div className="flex flex-wrap items-center justify-between gap-2"><span>내 구독: <strong>{billing?.plan==='pro'?'Pro':'무료'}</strong>{billing?.valid_until&&billing.plan==='pro'?' · 만료 '+new Date(billing.valid_until*1000).toLocaleDateString('ko-KR'):''}</span>
     <button type="button" className="rounded-lg border px-3 py-2" onClick={()=>setShowCheckout(true)}>요금제 · 결제</button></div>
    <div className="mt-2 flex flex-wrap items-center gap-2"><span className="text-[#7C7469]">유료 API 본인확인: {identity?.verified?'완료':'미완료'}</span>{!identity?.verified&&<button type="button" disabled={identityBusy} onClick={()=>void verifyIdentity()} className="rounded-lg border px-3 py-2">{identityBusy?'인증 진행 중…':'PASS · 간편 본인확인'}</button>}</div>
-   {billingMessage&&<p role="status" className="mt-2">{billingMessage}</p>}
+   <div className="mt-2 text-[12px] text-[#7C7469]">
+     유료 모델 선불 잔액: <strong>{paidCredits===null?'조회되지 않음':paidCredits.toLocaleString('ko-KR',{maximumFractionDigits:3})+'원'}</strong>
+     <p className="mt-1">Pro 30일 이용권과 유료 모델 API 선불 크레딧은 별도입니다. 잔액 충전이 설정되지 않았다면 유료 모델 호출은 사용할 수 없습니다.</p>
+    </div>
+    {billingMessage&&<p role="status" className="mt-2">{billingMessage}</p>}
   </div>}
   {token&&billing&&<p className="mt-2 text-[12px] text-[#7C7469]" role="status">DOMINION 무료 AI: 오늘 {billing.free_daily_used ?? 0} / {billing.free_daily_limit ?? 20}회 사용 · 남은 {billing.free_daily_remaining ?? 0}회 (매일 오전 9시 KST 초기화)</p>}
   {token&&showCheckout&&<div role="dialog" aria-modal="true" aria-label="DOMINION 구독 결제" className="mt-3 rounded-xl border border-[#E7E0D5] bg-white p-4">

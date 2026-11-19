@@ -116,3 +116,45 @@ test('checkout requires real identity, pricing, and merchant setup before accept
  const details=await response.json()
  assert.match(details.error,/Identity verification/)
 })
+
+test('configured free upstream forwards real agent tool schemas without leaking supplier credentials',async()=>{
+ const DB=db();
+ const env={DB,ALLOWED_ORIGIN:origin,
+  UPSTREAM_URL:'https://operator-upstream.example.test/v1',
+  UPSTREAM_API_KEY:'private-operator-key',
+  FREE_MODELS_JSON:JSON.stringify([{
+   id:'free-tool-model',name:'Free tool model',free:true,
+   backend:'upstream',upstream_model:'free-tool-model'
+  }]),FREE_DAILY_LIMIT:'2'};
+ let refreshing;
+ await worker.scheduled(null,env,{waitUntil(p){refreshing=p}});
+ await refreshing;
+ const original=globalThis.fetch;
+ let received;
+ globalThis.fetch=async(url,init)=>{
+  assert.equal(url,'https://operator-upstream.example.test/v1/chat/completions');
+  assert.equal(init.headers.authorization,'Bearer private-operator-key');
+  received=JSON.parse(init.body);
+  return new Response(JSON.stringify({choices:[{message:{role:'assistant',content:null,
+   tool_calls:[{id:'call-1',type:'function',function:{name:'read_file',
+    arguments:'{"path":"src/lib.rs"}'}}]},finish_reason:'tool_calls'}],
+   usage:{prompt_tokens:20,completion_tokens:5}}),{status:200,headers:{
+    'content-type':'application/json','x-upstream-secret':'not-for-clients'
+   }});
+ };
+ try{
+  const body={model:'free-tool-model',messages:[{role:'user',content:'inspect'}],
+   tools:[{type:'function',function:{name:'read_file',
+    parameters:{type:'object',properties:{path:{type:'string'}}}}}],
+   tool_choice:'auto',stream:false};
+  const reply=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{
+   authorization:auth}),env);
+  assert.equal(reply.status,200);
+  const result=await reply.json();
+  assert.equal(result.choices[0].message.tool_calls[0].function.name,'read_file');
+  assert.deepEqual(received.tools,body.tools);
+  assert.equal(received.tool_choice,'auto');
+  assert.equal(reply.headers.get('x-upstream-secret'),null);
+  assert.equal(reply.headers.get('x-dominion-free-remaining'),'1');
+ }finally{globalThis.fetch=original}
+});

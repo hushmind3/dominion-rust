@@ -43,3 +43,9 @@ cargo test --locked --lib
 기본 Worker 주소는 `https://dominion-cloud.dominion-hushmind.workers.dev`이고, 스테이징 주소는 `VITE_DOMINION_CLOUD_URL`로 재설정합니다. Google의 공개 웹 클라이언트 ID는 새 Worker `GET /v1/config`에서 읽고, 구버전 Worker 또는 별도 스테이징은 `VITE_DOMINION_GOOGLE_CLIENT_ID`로 설정할 수 있습니다. Worker의 `ALLOWED_ORIGIN`은 프런트 URL과 정확히 일치해야 합니다. 로그아웃은 Worker 토큰 폐기를 요청하고 로컬 Rust 제공자의 기존 세션 키를 지운 뒤 비활성화합니다.
 
 **배포 구분:** 이 브랜치의 Worker 소스가 메인 운영 Worker에 자동 배포되지는 않습니다. 클라우드 설정을 변경하지 않고도 Rust CI/Worker 모의 D1 테스트는 실행됩니다. Cloudflare 계정의 D1·Workers AI 바인딩과 OAuth 앱 설정을 확인한 다음 별도 배포가 필요합니다. 무료 모델은 공급자·하루 사용량 한도 내에서만 동작하며, 유료 모델은 사전 충전액·본인확인·운영자 요금/예산 구성과 상위 공급자 키가 있어야 합니다. 현재 결제 서비스가 상용으로 완주되었다고 표시하지 않습니다.
+
+## DOMINION Cloud 통합 회원·모델
+
+메인에서 구현한 Cloudflare Worker·D1 회원 계정, Google/카카오/네이버 로그인, 무료 모델 및 TossPayments Pro 코드가 서브4에도 들어 있습니다. 로그인 후 선택한 클라우드 모델을 **서브4 Rust 제공자**로 등록하므로 자체 SDK·실행 커널과 BYOK·로컬 모델을 그대로 사용할 수 있습니다. 모델 공급사 키는 Cloudflare 비밀 설정에 보관합니다.
+
+이번 변경에는 도구 호출 전달, 실제 토큰 사용량 정산, 동시 호출 운영자 예산의 원자적 예약, 프런트 선불 잔액 표시 및 결정론적 회귀 테스트가 포함됩니다. Pro 30일 이용권과 유료 API 선불 크레딧은 별도이며 고객 결제·충전·실계정 호출·D1 운영 DB 마이그레이션은 CI에서 수행하지 않습니다.

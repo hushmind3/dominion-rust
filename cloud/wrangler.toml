@@ -25,7 +25,8 @@ database_id = "edc9c387-310e-4660-aac7-db53f9da5d17"
 # Models only appear if their provider secret is configured.
 # PAID_DAILY_BUDGET_MICRO_KRW sets an optional operator budget ceiling.
 # Paid requests require prepaid user credits. No auto-charging of user cards.
-# Paid streaming and tool calls are not yet enabled.
+# Paid non-streaming function tools supported; paid streaming remains disabled.
+# Apply the updated cloud/schema.sql before deploying: operator_daily_budget required.
 
 [ai]
 binding = "AI"
