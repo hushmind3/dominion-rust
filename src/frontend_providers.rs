@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json,Value};
-use std::{sync::Arc,time::Duration};
+use std::{sync::{Arc,OnceLock},time::Duration};
 type Fault=(StatusCode,Json<Value>);
 fn fail(code:StatusCode,message:impl Into<String>)->Fault{
     (code,Json(json!({"error":message.into()})))
@@ -22,7 +22,12 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/providers",get(all).post(save))
         .route("/providers/cli",get(cli))
         .route("/providers/catalog",get(catalog))
+        .route("/providers/catalog/{id}/models",
+            get(crate::frontend_provider_public::provider_models))
+        .route("/providers/openrouter/free-models",
+            get(crate::frontend_provider_public::openrouter_free_catalog))
         .route("/providers/free-catalog",get(free_catalog))
+        .route("/providers/free-catalog/refresh",post(free_catalog_refresh))
         .route("/providers/{id}",axum::routing::delete(remove))
         .route("/providers/{id}/models",get(models))
         .route("/providers/{id}/test",post(test))
@@ -57,20 +62,85 @@ pub async fn all(State(engine):State<Arc<Engine>>)->Json<Value>{
     Json(Value::Array(providers))
 }
 async fn cli()->Json<Value>{Json(json!([]))}
-async fn catalog(State(engine):State<Arc<Engine>>)->Json<Value>{
-    let mut providers=vec![json!({
-        "id":"dominion-native","name":"Dominion Native",
-        "api":engine.settings.main.base_url,"models":1
-    })];
-    providers.extend(engine.providers.list().iter().map(|p|json!({
-        "id":p.id,"name":p.name,"api":p.base_url,
-        "models":usize::from(!p.model.is_empty())
-    })));
-    Json(json!({"providers":providers,"cached":false}))
+/// One public, credential-free models.dev snapshot backs both listing and
+/// model discovery. A registered provider is not required to browse models.
+async fn catalog()->Json<Value>{
+    crate::frontend_provider_public::provider_catalog().await
+}
+static FREE_CATALOG:OnceLock<tokio::sync::Mutex<Value>>=OnceLock::new();
+fn free_state()->&'static tokio::sync::Mutex<Value>{
+    FREE_CATALOG.get_or_init(||tokio::sync::Mutex::new(
+        json!({"status":"empty","providers":[],
+            "counts":{"free":0,"paid":0,"unknown":0}})))
 }
 async fn free_catalog()->Json<Value>{
-    Json(json!({"providers":[],"status":"not_assessed",
-        "counts":{"free":0,"paid":0,"unknown":0}}))
+    Json(free_state().lock().await.clone())
+}
+/// Explicit user refresh only. No invisible background model enumeration,
+/// no guessed free/paid classification and no second task scheduler.
+async fn free_catalog_refresh(State(engine):State<Arc<Engine>>)->Json<Value>{
+    let mut jobs=tokio::task::JoinSet::new();
+    let mut providers=Vec::new();
+    for provider in engine.providers.list().into_iter()
+        .filter(|provider|provider.enabled).take(24){
+        let id=provider.id.clone();
+        let name=provider.name.clone();
+        match engine.providers.resolve(&id,&provider.model,&engine.settings.main){
+            Ok(settings)=>{
+                let kind=provider.kind.clone();
+                let client_engine=Arc::clone(&engine);
+                jobs.spawn(async move{
+                    client_engine.providers.throttle(&id).await;
+                    let result=if settings.api_key.is_empty()&&!provider.local{
+                        match crate::frontend_provider_public::public_models_for_endpoint(
+                            &settings.base_url).await{
+                            Ok(Some(models))=>Ok(models),
+                            Ok(None)=>Err("no public metadata for this provider URL".to_owned()),
+                            Err(error)=>Err(error)
+                        }
+                    }else{fetch_models(&settings,&kind).await};
+                    match result{
+                        Ok(models)=>{
+                            let rows=models.into_iter().map(|model|json!({
+                                "id":model["id"],"free":model["free"],
+                                "freeStatus":model["freeStatus"].as_str()
+                                    .unwrap_or("unknown"),
+                                "freeSource":model["freeSource"]
+                            })).collect::<Vec<_>>();
+                            json!({"providerId":id,"providerName":name,
+                                "reachable":true,"models":rows})
+                        }
+                        Err(error)=>json!({"providerId":id,"providerName":name,
+                            "reachable":false,"error":error,"models":[]})
+                    }
+                });
+            }
+            Err(error)=>providers.push(json!({"providerId":id,
+                "providerName":name,"reachable":false,
+                "error":error,"models":[]}))
+        }
+    }
+    while let Some(result)=jobs.join_next().await{
+        if let Ok(record)=result{providers.push(record);}
+    }
+    providers.sort_by(|a,b|a["providerName"].as_str()
+        .cmp(&b["providerName"].as_str()));
+    let (mut free,mut paid,mut unknown)=(0usize,0usize,0usize);
+    for provider in &providers{
+        for model in provider["models"].as_array().into_iter().flatten(){
+            match model["freeStatus"].as_str(){
+                Some("free")=>free+=1,
+                Some("paid")=>paid+=1,
+                _=>unknown+=1
+            }
+        }
+    }
+    let report=json!({"status":"ready",
+        "updatedAt":crate::frontend_state::timestamp(crate::domain::now_ms()),
+        "providers":providers,
+        "counts":{"free":free,"paid":paid,"unknown":unknown}});
+    *free_state().lock().await=report.clone();
+    Json(report)
 }
 async fn save(State(engine):State<Arc<Engine>>,Json(body):Json<Draft>)
     ->Result<Json<Value>,Fault>{
@@ -155,6 +225,15 @@ async fn models(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
     let (settings,selected)=active(&engine,&id)?;
     let protocol=selected.as_ref().map(|p|p.kind.as_str()).unwrap_or("openai");
+    // Public discovery does not require or create an API credential. Exact
+    // endpoint matching prevents attaching unrelated vendor model metadata.
+    if settings.api_key.is_empty() && protocol!="ollama"{
+        if let Ok(Some(models))=
+            crate::frontend_provider_public::public_models_for_endpoint(
+                &settings.base_url).await{
+            return Ok(Json(Value::Array(models)));
+        }
+    }
     let list=match fetch_models(&settings,protocol).await{
         Ok(models)=>models,
         Err(error)=>{
