@@ -1067,6 +1067,36 @@ mod tests {
         assert!(validate_completion("anthropic",Some("end_turn"),false,false).is_err());
     }
     #[tokio::test]
+    async fn terminal_stop_with_tool_calls_is_rejected_before_native_dispatch(){
+        use axum::{extract::State,routing::post,Json,Router};
+        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+        async fn contradictory(State(count):State<Arc<AtomicUsize>>)->Json<Value>{
+            count.fetch_add(1,Ordering::SeqCst);
+            Json(json!({"choices":[{"finish_reason":"stop","message":{
+                "role":"assistant","content":"Task completed.",
+                "tool_calls":[{"id":"call_should_not_run","type":"function",
+                    "function":{"name":"write_file","arguments":"{\\\"path\\\":\\\"unexpected.txt\\\",\\\"content\\\":\\\"unsafe\\\"}"}}]
+            }}],"usage":{"prompt_tokens":100,"completion_tokens":40}}))
+        }
+        let count=Arc::new(AtomicUsize::new(0));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let app=Router::new().route("/chat/completions",post(contradictory))
+            .with_state(Arc::clone(&count));
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.main.base_url=format!("http://{address}");
+        cfg.main.api_key.clear();
+        let error=ModelClient::new(&cfg).unwrap().complete(
+            &[json!({"role":"user","content":"Read a file and finish"})],&[],false).await
+            .err().expect("contradictory terminal tool call must not reach the harness");
+        assert!(error.contains("stop_reason=stop"));
+        assert_eq!(count.load(Ordering::SeqCst),1,
+            "reject the supplier reply without an implicit retry");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn truncated_billable_reply_is_not_retried_or_accepted(){
         use axum::{extract::State,routing::post,Json,Router};
         use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
