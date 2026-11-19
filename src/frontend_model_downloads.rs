@@ -166,7 +166,7 @@ async fn download_file(root:&FilePath,shared:&Shared,id:&str,repo:&str,
     let mut written=prior;
     let mut checkpoint=prior;
     loop{
-        if stopped(&shared.lock().await,id){return Err("download paused or cancelled".into());}
+        if stopped(&*shared.lock().await,id){return Err("download paused or cancelled".into());}
         let chunk=response.chunk().await.map_err(|e|format!("Hub stream: {e}"))?;
         let Some(chunk)=chunk else{break};
         if written.saturating_add(chunk.len() as u64)>MAX_BYTES{
@@ -183,7 +183,7 @@ async fn download_file(root:&FilePath,shared:&Shared,id:&str,repo:&str,
     }
     out.sync_all().await.map_err(|e|e.to_string())?;
     drop(out);
-    if stopped(&shared.lock().await,id){return Err("download paused or cancelled".into());}
+    if stopped(&*shared.lock().await,id){return Err("download paused or cancelled".into());}
     async_fs::rename(&part,&dest).await.map_err(|e|e.to_string())?;
     let final_delta=written.saturating_sub(checkpoint);
     let _=update_job(root,shared,id,|j|{
@@ -364,7 +364,8 @@ async fn remove(State(engine):State<Arc<Engine>>,
 }
 pub(crate) async fn find(settings:&Settings,id:&str)->Result<Option<Installed>,String>{
     let (_,shared)=state(settings).await?;
-    Ok(shared.lock().await.installed.get(id).cloned())
+    let entry=shared.lock().await.installed.get(id).cloned();
+    Ok(entry)
 }
 
 pub(crate) async fn list(settings:&Settings)->Result<Vec<Value>,String>{
@@ -436,7 +437,7 @@ pub(crate) async fn prepare_for_load(settings:&Settings,id:&str)
     if source.chars().any(char::is_control)||source.contains('"'){
         return Err("GGUF file path contains unsupported control/quote characters".into());
     }
-    let model_name=format!("dominion-{}",id.replace(['-',':'],""));
+    let model_name=format!("dominion-{}",id.replace('-',"").replace(':',""));
     let directory=base(settings).join("modelfiles");
     async_fs::create_dir_all(&directory).await.map_err(|e|e.to_string())?;
     let file=directory.join(format!("{model_name}.Modelfile"));
