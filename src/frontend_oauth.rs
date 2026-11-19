@@ -245,6 +245,7 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/oauth/providers",get(providers))
   .route("/oauth/providers/{id}",post(save_app))
   .route("/oauth/connections",get(connections))
+   .route("/oauth/{id}",axum::routing::delete(disconnect))
   .route("/oauth/{id}/start",get(start))
   .route("/oauth/{id}/callback",get(callback))
   .route("/oauth/{id}/open",post(open_unavailable))
@@ -272,6 +273,15 @@ async fn connections(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault
   "workspaceAccess":provider.as_str()=="google"&&granted_workspace(&account.scopes),
   "tools":crate::connected_tools::names_for(&engine.settings,provider)
  })).collect::<Vec<_>>())))
+}
+/// Remove a connected account from the local encrypted vault.
+async fn disconnect(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
+ ->Result<Json<Value>,Fault>{
+ if !valid_provider(&id){return Err(bad("unsupported OAuth provider"));}
+ let _guard=lock();
+ let mut store=read(&engine.settings).map_err(bad)?;
+ if store.accounts.remove(&id).is_some(){write(&engine.settings,&store).map_err(bad)?;}
+ Ok(Json(json!({"ok":true,"provider":id,"connected":false})))
 }
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -423,7 +433,7 @@ pub(crate) async fn github_cli_installed()->bool{
  timeout(Duration::from_secs(3),Command::new("gh").arg("--version")
   .kill_on_drop(true).output()).await.is_ok_and(|v|v.is_ok_and(|o|o.status.success()))
 }
-async fn import_github_cli(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
+pub(crate) async fn import_github_cli(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  if !local_cli_eligible(&engine.settings){
   return Err(bad("GitHub CLI import is available only on a local Dominion instance"));
  }

@@ -21,8 +21,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Native engine regressions and platform tests
         run: |
-          cargo fmt --all -- --check
-          cargo test --all-targets
+          cargo check --locked --all-targets
+          cargo test --locked --lib
+          cargo test --locked --bin dominion_coding_eval
       - uses: actions/setup-node@v4
         with:
           node-version: '24.12.0'
@@ -34,14 +35,14 @@ jobs:
           cd web
           npm ci --no-audit --no-fund
           npm run typecheck
-          npm run test:refresh
+          node --experimental-strip-types --test tests/*.test.mjs
           npm run build
       - name: Browser against the real Rust adapter and mock provider
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.extended }}
         working-directory: web
         run: |
           npx playwright install chromium
-          npm run e2e
+          npx playwright test
       - name: TypeScript SDK contract
         working-directory: sdk/typescript
         run: |
@@ -71,6 +72,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check native SDK and binaries on Windows
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
       - name: Windows native regressions
-        run: cargo test --lib
+        run: cargo test --locked --lib

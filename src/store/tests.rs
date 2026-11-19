@@ -654,7 +654,26 @@ use super::*;
             run.strategy_learning=true;
             run.status=RunStatus::Completed;
             run.plan=Some("Read test errors, patch the correct source, verify cargo test".into());
-            run.event("tool_result","write_file returned confirmation",None);
+            // Transfer eligibility now demands linked real failure, exact-file
+            // repair and postflight receipts before the verifier decision.
+            run.event("tool_started","",Some(serde_json::json!({
+                "id":"read-failed","name":"read_file",
+                "arguments":{"path":"src/logic.rs"}})));
+            run.event("tool_error","path does not exist",Some(serde_json::json!({
+                "call_id":"read-failed","name":"read_file","succeeded":false,
+                "result":"path does not exist"})));
+            run.event("tool_started","",Some(serde_json::json!({
+                "id":"write-repair","name":"write_file",
+                "arguments":{"path":"src/logic.rs","content":"fixed"}})));
+            run.event("tool_result","write completed",Some(serde_json::json!({
+                "call_id":"write-repair","name":"write_file","succeeded":true,
+                "result":"write completed"})));
+            run.event("tool_started","",Some(serde_json::json!({
+                "id":"read-postflight","name":"read_file",
+                "arguments":{"path":"src/logic.rs"}})));
+            run.event("tool_result","postflight completed",Some(serde_json::json!({
+                "call_id":"read-postflight","name":"read_file","succeeded":true,
+                "result":"fixed"})));
             run.event("verification",if verified{"PASS"}else{"REVISE"},None);
             store.put(run).await.unwrap();
         }

@@ -2,6 +2,7 @@
 //! Never accepts commands or tokens from browser input, and is loopback-only.
 use crate::{domain::now_ms,engine::Engine};
 use axum::{extract::State,http::StatusCode,routing::{get,post},Json,Router};
+use serde::Deserialize;
 use serde_json::{json,Value};
 use std::{process::Stdio,sync::{Arc,OnceLock},time::Duration};
 use tokio::{io::{AsyncRead,AsyncReadExt,AsyncWriteExt},process::Command,
@@ -88,14 +89,16 @@ async fn capture<R:AsyncRead+Unpin>(mut stream:R,login:Arc<Login>){
  }
 }
 fn public(progress:&Progress)->Value{
- json!({"phase":progress.phase,"message":progress.message,
-  "verificationUrl":"https://github.com/login/device","userCode":progress.code,
-  "startedAt":progress.started_ms})
+ json!({"phase":progress.phase,"status":progress.phase,
+  "source":"github","requiresInput":false,
+  "message":progress.message,"url":"https://github.com/login/device",
+  "verificationUrl":"https://github.com/login/device",
+  "userCode":progress.code,"startedAt":progress.started_ms})
 }
 async fn status()->Json<Value>{
  let current=active().lock().await.clone();
  match current{Some(login)=>Json(public(&*login.progress.lock().await)),
-  None=>Json(json!({"phase":"idle"}))}
+  None=>Json(json!({"phase":"idle","status":"idle","source":"github"}))}
 }
 async fn start(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  if !crate::frontend_oauth::local_cli_eligible(&engine.settings){
@@ -119,6 +122,7 @@ async fn start(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  }),cancel:Mutex::new(Some(tx))});
  *slot=Some(login.clone());drop(slot);
  let worker=login.clone();
+ let linked_engine=Arc::clone(&engine);
  tokio::spawn(async move{
   if let Some(reader)=child.stdout.take(){tokio::spawn(capture(reader,worker.clone()));}
   if let Some(reader)=child.stderr.take(){tokio::spawn(capture(reader,worker.clone()));}
@@ -136,7 +140,16 @@ async fn start(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let _=child.kill().await;("failed","GitHub 인증을 10분 안에 완료하지 못했습니다.")
    }
   };
-  phase(&worker,state,message).await;
+  // Main frontend requires a usable Dominion account after a local gh login.
+  let (state,message)=if state=="completed"{
+   match crate::frontend_oauth::import_github_cli(State(linked_engine)).await{
+    Ok(_)=>(state,message.to_owned()),
+    Err((_,payload))=>("failed",payload.0["error"].as_str()
+       .unwrap_or("GitHub CLI token could not be imported into Dominion")
+       .to_owned())
+   }
+  }else{(state,message.to_owned())};
+  phase(&worker,state,&message).await;
   *worker.cancel.lock().await=None;
  });
  let payload={
@@ -154,8 +167,20 @@ async fn cancel(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  }
  Ok(Json(json!({"ok":true})))
 }
+#[derive(Deserialize)]
+struct ContinueInput{input:String}
+/// Native gh login already receives the PTY newline at launch. Only the
+/// browser's fixed enter action is accepted; never interpolate shell input.
+async fn continue_login(Json(input):Json<ContinueInput>)->Result<Json<Value>,Fault>{
+ if input.input!="enter"{return Err(bad("only the fixed enter action is supported"));}
+ Ok(status().await)
+}
 pub fn routes()->Router<Arc<Engine>>{
  Router::new()
+  .route("/providers/cli/github/login",post(start))
+  .route("/providers/cli/github/login/status",get(status))
+  .route("/providers/cli/github/login/cancel",post(cancel))
+  .route("/providers/cli/github/login/input",post(continue_login))
   .route("/oauth/github/cli/login",post(start))
   .route("/oauth/github/cli/login/status",get(status))
   .route("/oauth/github/cli/login/cancel",post(cancel))
