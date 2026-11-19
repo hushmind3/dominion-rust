@@ -176,33 +176,6 @@ impl Engine {
         self.model_for_selection(&run.provider_id,&run.model_name)
             .map(|model|model.with_session_affinity(&affinity))
     }
-    /// An optional domain can reserve a normal, inert Run while it commits
-    /// its own durable approval reference. Only the caller that observed that
-    /// commit may activate the reservation. This is a generic SDK boundary:
-    /// the kernel has no knowledge of Money or other domain databases.
-    pub(crate) async fn activate_reserved(
-        self:&Arc<Self>,id:Uuid,domain:&str,receipt:&str)->Result<(),String>{
-        if domain.trim().is_empty()||domain.len()>80||receipt.trim().is_empty()||receipt.len()>200{
-            return Err("domain activation requires a durable receipt reference".into());
-        }
-        self.store.mutate(id,|run|{
-            if run.terminal()||run.status!=RunStatus::Paused
-                || !run.events.iter().any(|event|event.kind=="reserved_unlaunched")
-                || run.events.iter().any(|event|event.kind=="resumed"||event.kind=="model_only"){
-                return Err("Run is not an unlaunched domain reservation".into());
-            }
-            // The domain has committed its own reference before it calls
-            // this method. A crash after this journal write is safe for
-            // ordinary SDK resume: the approval is now durably recorded.
-            if !run.events.iter().any(|event|event.kind=="domain_receipt_committed"){
-                run.event("domain_receipt_committed",
-                    "External domain approval receipt committed; native Run may launch",
-                    Some(json!({"domain":domain,"receipt":receipt})));
-            }
-            Ok(())
-        }).await?;
-        self.launch(id).await
-    }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {
             let mut guard = self.active.lock().await;
@@ -210,12 +183,10 @@ impl Engine {
         }
         let started = self.store.mutate(id, |run| {
             if run.terminal() { return Err("cannot restart finished execution".into()); }
-            // A prepared external-domain Run is *not* a user-approved job.
-            // SDK/HTTP resume, restart wakeups and generic launch callers may
-            // never activate it before the domain's durable receipt is linked.
-            if run.events.iter().any(|event|event.kind=="reserved_unlaunched")
-                && !run.events.iter().any(|event|event.kind=="domain_receipt_committed"){
-                return Err("domain approval receipt not committed; resume through the owning tool".into());
+            // Archived reservations no longer have a live owning adapter.
+            // An old approval receipt cannot authorize new external effects.
+            if run.events.iter().any(|event|event.kind=="reserved_unlaunched"){
+                return Err("retired reserved run cannot be resumed; submit a new task".into());
             }
             if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty() { return Err("interrupted tool may have side effects; reconcile before resuming".into()); }
             if run.waiting_for_children {return Err("delegated workers are still active; parent resumes automatically after settlement".into());}

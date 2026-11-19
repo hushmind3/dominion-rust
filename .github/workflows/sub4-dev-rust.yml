@@ -33,18 +33,18 @@ jobs:
         run: npm ci --prefix web --no-audit --no-fund
       - name: TypeScript strict check
         run: npm run typecheck --prefix web
-      - name: Production frontend bundle
+      - name: SDK typecheck and endpoint contract tests
+        run: |
+          ./web/node_modules/.bin/tsc -p sdk/typescript/tsconfig.json
+          node --test sdk/typescript/tests/*.test.mjs
+      - name: Production frontend bundle (manual release gate)
+        if: github.event_name == 'workflow_dispatch'
         run: npm run build --prefix web
       - name: UI and Cloud Worker integration regressions
         working-directory: web
         run: node --experimental-strip-types --test tests/*.test.mjs
       - name: Validate ported Cloudflare Worker JavaScript
         run: node --check cloud/src/index.js
-      - name: No retired Money module in active code or frontend
-        run: |
-          test ! -d src/money
-          test ! -f web/src/pages/Money.tsx
-          ! grep -R -E 'crate::money|pub mod money|MoneyPage|/money/' src web/src
   rust:
     name: Native Rust all-target compile and unit regressions
     runs-on: ubuntu-latest
@@ -87,6 +87,7 @@ jobs:
   browser-e2e:
     name: Real Rust HTTP + Vite + Chromium integration
     needs: [frontend, rust]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

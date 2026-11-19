@@ -4,9 +4,9 @@ This document records source-level design evidence, not a claim that Dominion ou
 
 ## Repository scope
 
-- Modified only `dominion-sub4`. Source inspected on the five current branch heads at start of work: `main` `816f14a9`; `dominion-sub2` `4b89e06a`; `dominion-sub3` `e9921c13`; `money` `a8e888df`; `dominion-sub4` `dc22c078`.
+- Modified only `dominion-sub4`. Source inspected on four branch heads at start of work: `main` `816f14a9`; `dominion-sub2` `4b89e06a`; `dominion-sub3` `e9921c13`; `dominion-sub4` `dc22c078`.
 - Other branches use the frontend `src/engine/chat/room_context.rs`, `src/engine/rooms.rs` and `src/engine/gateway.rs`. Sub4 uses a separate native Rust `src/group.rs`, `src/frontend_rooms.rs` and `src/provider.rs`. Their tests and paths are *not* equivalent solely because the product screens look alike.
-- `dominion-sub3/src/engine/chat/room_context.rs` separates owner state, prior speaker reply, retrieved evidence, peer history and input component metering. `dominion-sub2` additionally maintains bounded source-indexed peer briefs; `main` and `money` also maintain their own source-ranked context compilers. Our Sub4 previously ranked short owner/peer excerpts but did not keep a speaker's latest reply after the shared rolling window sealed.
+- `dominion-sub3/src/engine/chat/room_context.rs` separates owner state, prior speaker reply, retrieved evidence, peer history and input component metering. `dominion-sub2` additionally maintains bounded source-indexed peer briefs; `main` maintains its own source-ranked context compiler. Our Sub4 previously ranked short owner/peer excerpts but did not keep a speaker's latest reply after the shared rolling window sealed.
 - Previous Sub4 benchmark `9×3` failed because `maxTurns` erroneously capped lifetime `room.rounds`, despite intended per-owner allowance. Fix and 30-message regression are in `src/group.rs`, `src/frontend_rooms.rs`, `src/frontend_rooms/fanout_tests.rs`. `lifetimeMaxResponses` now independently limits total lifetime responses.
 
 ## 2026 official/open-source comparator code

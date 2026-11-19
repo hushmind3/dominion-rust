@@ -36,11 +36,6 @@ export interface DelegateRun extends CreateRun { read_only?: boolean }
 export interface MemoryEntry {
   id: string; scope: string; title: string; content: string; created_at_ms: number; updated_at_ms: number;
 }
-export interface MoneyEvidence { sourceId?:string; url?:string; claim?:string; publishedAt?:string; sourceName?:string; kind?:string; contentStatus?:string; }
-export interface MoneySignal { id:string; title:string; url:string; description?:string; sourceName?:string; publishedAt?:string; verification?:string; topics?:string[];changeTags?:string[]; }
-export interface MoneyDraft { id:string; title:string; customer?:string; offer?:string; whyPay?:string; implementationPlan?:string; firstPaymentStep?:string; counterfactual?:string; evidenceStatus?:string; evidence?:MoneyEvidence[]; origin?:string; status?:string; implementationRunId?:string; }
-export interface MoneyReport {drafts:MoneyDraft[]; sourceCount?:number; modelCalls?:number; reasoningRunId?:string|null; reasoningStatus?:RunStatus; inferenceCostKrw?:number; inferenceError?:string; searchedAt?:string; message?:string;}
-export interface MoneyStats {signals:number; candidates:number; metrics?:number; lastCatalog?:{newMetrics?:number;capturedAt?:string}|null; lastIngest?:{capturedAt?:string;found?:number;new?:number}|null; automation?:{enabled:boolean;periodMinutes?:number};}
 export interface OwnerProfile { name: string; avatar: string; updated_at_ms: number }
 /** Exact 2026 main frontend view schemas backed by Rust state. */
 export interface MainAgent {
@@ -256,52 +251,6 @@ export class Dominion {
       this.request<{deleted:boolean;id:string}>('DELETE','/memory/'+encodeURIComponent(id)+'?scope='+encodeURIComponent(scope)),
   };
 
-  /** Money source archive, causal lead shortlist, and optional native model call. */
-  readonly money = {
-    latest:()=>this.request<MoneyReport>('GET','/money/find'),
-    stats:()=>this.request<MoneyStats>('GET','/money/stats'),
-    candidates:(options:{status?:'all'|'draft'|'held'|'rejected'|'implementation_requested';q?:string;offset?:number}={})=>{
-      const params=new URLSearchParams();
-      if(options.status)params.set('status',options.status);
-      if(options.q)params.set('q',options.q);
-      if(options.offset)params.set('offset',String(options.offset));
-      return this.request<{items:MoneyDraft[];hasMore:boolean;nextOffset:number}>(
-        'GET','/money/candidates'+(params.size?'?'+params.toString():''));
-    },
-    priceHistory:(id:string)=>this.request<Array<{
-      id:string;status:string;spreadKrw:number|null;issues:string[];
-      tradeVerified:false;sourceChecks:Record<string,unknown>}>>(
-        'GET','/money/candidates/'+encodeURIComponent(id)+'/prices'),
-    comparePrice:(id:string,input:{buyer:Record<string,unknown>;
-      supplier:Record<string,unknown>;costs:Record<string,unknown>;fxAsOf?:string})=>
-      this.request<{id:string;status:string;spreadKrw:number|null;issues:string[];
-        tradeVerified:false;sourceChecks:Record<string,unknown>}>(
-        'POST','/money/candidates/'+encodeURIComponent(id)+'/price-compare',input),
-    decide:(id:string,action:'hold'|'restore'|'reject',reason='')=>
-      this.request<MoneyDraft>('POST','/money/candidates/'+encodeURIComponent(id)+'/decision',{action,reason}),
-    settings:()=>this.request<{enabled:boolean}>('GET','/money/settings'),
-    setEnabled:(enabled:boolean)=>this.request<{enabled:boolean}>('POST','/money/settings',{enabled}),
-    sourceHistory:(id:string)=>this.request<{sourceId:string;current:MoneySignal;
-      revisions:MoneySignal[];relatedSameTitle:MoneySignal[];relationStatus:string}>(
-        'GET','/money/sources/'+encodeURIComponent(id)+'/history'),
-    search:(query:string)=>this.request<{results:MoneySignal[];count:number;query:string;modelCalls:0}>(
-      'GET','/money/search?q='+encodeURIComponent(query)),
-    find:(options:{mode?:'db'|'agent';agentId?:string;budgetKrw?:number}={mode:'db'})=>
-      this.request<MoneyReport>('POST','/money/find',options),
-    collect:(force=false)=>this.request<{
-      rss?:{found:number;new:number};catalog?:{newMetrics:number;newSignals:number};
-      rssError?:string;catalogError?:string;modelCalls:number;
-    }>('POST','/money/collect',{force}),
-    automation:(enabled:boolean)=>this.request<{enabled:boolean;periodMinutes:number}>(
-      'POST','/money/automation',{enabled}),
-    reject:(id:string)=>this.request<MoneyDraft>(
-      'POST','/money/candidates/'+encodeURIComponent(id)+'/reject',{}),
-    implement:(id:string,options:{approved:true;agentId:string;budgetKrw:number})=>
-      this.request<{id:string;status:RunStatus;costKrw?:number;reused:boolean}>(
-        'POST','/money/candidates/'+encodeURIComponent(id)+'/implement',options),
-    cancelInference:()=>this.request<{id:string;status:RunStatus}>(
-      'POST','/money/inference/cancel',{}),
-  };
   readonly groups = {
     create: (input: CreateGroup) => this.request<GroupRoom>('POST','/groups',input),
     list: () => this.request<GroupRoom[]>('GET','/groups'),

@@ -116,17 +116,6 @@ impl Dominion {
         self.engine.store.put(run.clone()).await?;
         Ok(run)
     }
-    /// Reserve an inert Run while a domain adapter commits its own approval
-    /// reference. This avoids auto-starting orphaned jobs after a crash.
-    pub(crate) async fn reserve_unlaunched_run(&self,input:CreateRun,
-        options:RunOptions)->Result<Run,String>{
-        if options.model_only{return Err("model-only turn cannot be reserved for implementation".into());}
-        let mut run=self.configured_run(input,options)?;
-        run.status=RunStatus::Paused;
-        run.event("reserved_unlaunched","Run is reserved pending durable domain approval receipt",None);
-        self.engine.store.put(run.clone()).await?;
-        Ok(run)
-    }
     /// The same SDK launch path is used for direct SDK, browser jobs and
     /// frontend "SDK Run" jobs. Model-only turns keep their own provider path.
     pub async fn submit_selected(&self,input:CreateRun,options:RunOptions)->Result<Run,String>{
@@ -346,60 +335,40 @@ mod tests {
 
 
 
+
     #[tokio::test]
-    async fn reserved_unlaunched_run_is_not_auto_resumed_on_restart(){
-        let root=std::env::temp_dir().join(format!("dominion-reserved-{}",Uuid::new_v4()));
+    async fn retired_reserved_runs_cannot_be_reactivated_after_restart(){
+        let root=std::env::temp_dir().join(format!("dominion-retired-reservation-{}",Uuid::new_v4()));
         let mut settings=Settings::from_env().unwrap();
         settings.data_dir=root.join("data");
         settings.workspace_dir=root.join("workspace");
         let sdk=Dominion::open(settings.clone()).await.unwrap();
-        let reserved=sdk.reserve_unlaunched_run(CreateRun{
-            instruction:"Unlaunched approved candidate".into(),
-            budget_krw:Some(25.0),max_steps:Some(5)
-        },RunOptions::default()).await.unwrap();
-        assert_eq!(reserved.status,RunStatus::Paused);
-        assert!(reserved.events.iter().any(|event|event.kind=="reserved_unlaunched"));
-        let reopened=Dominion::open(settings).await.unwrap();
-        let restored=reopened.get(reserved.id).await.unwrap();
-        assert_eq!(restored.status,RunStatus::Paused);
-        assert!(!restored.events.iter().any(|event|event.kind=="recovered_ready"));
-        // No owning-domain receipt: the ordinary SDK resume cannot start a
-        // model request or side effect, even if someone guesses the Run ID.
-        let error=reopened.resume(reserved.id).await.unwrap_err();
-        assert!(error.contains("domain approval receipt not committed"));
-        let still_reserved=reopened.get(reserved.id).await.unwrap();
-        assert_eq!(still_reserved.status,RunStatus::Paused);
-        assert!(!still_reserved.events.iter().any(|event|event.kind=="resumed"));
-        drop(reopened);drop(sdk);
-        cleanup_test_dir(root).await;
-    }
-    #[tokio::test]
-    async fn committed_domain_receipt_survives_restart_without_extra_worker(){
-        let root=std::env::temp_dir().join(format!("dominion-domain-receipt-{}",Uuid::new_v4()));
-        let mut settings=Settings::from_env().unwrap();
-        settings.data_dir=root.join("data");
-        settings.workspace_dir=root.join("workspace");
-        let sdk=Dominion::open(settings.clone()).await.unwrap();
-        let run=sdk.reserve_unlaunched_run(CreateRun{
-            instruction:"Prepare a candidate artifact".into(),
-            budget_krw:Some(11.0),max_steps:Some(5)
-        },RunOptions::default()).await.unwrap();
-        sdk.engine.store.mutate(run.id,|saved|{
-            saved.event("domain_receipt_committed",
-                "External domain approval receipt committed",Some(json!({
-                    "domain":"example_extension","receipt":"candidate-1"
-                })));
-            Ok(())
-        }).await.unwrap();
+        let mut reserved_ids=Vec::new();
+        for has_old_receipt in [false,true] {
+            let mut run=Run::new(CreateRun{
+                instruction:"Historical inactive reservation".into(),
+                budget_krw:Some(25.0),max_steps:Some(5),
+            },sdk.engine.settings.max_steps).unwrap();
+            run.status=RunStatus::Paused;
+            run.event("reserved_unlaunched","Historical inactive reservation",None);
+            if has_old_receipt {
+                run.event("domain_receipt_committed",
+                    "Historical approval no longer has an owning module",
+                    Some(json!({"domain":"retired","receipt":"old-record"})));
+            }
+            reserved_ids.push(run.id);
+            sdk.engine.store.put(run).await.unwrap();
+        }
         drop(sdk);
         let reopened=Dominion::open(settings).await.unwrap();
-        let restored=reopened.get(run.id).await.unwrap();
-        assert_eq!(restored.status,RunStatus::Paused);
-        assert_eq!(restored.events.iter()
-            .filter(|event|event.kind=="domain_receipt_committed").count(),1);
-        // The engine recognizes the prior committed receipt, but an
-        // untouched reserved Run does not auto-run on process restart.
-        assert!(!restored.events.iter().any(|event|event.kind=="resumed"));
+        for id in reserved_ids {
+            let restored=reopened.get(id).await.unwrap();
+            assert_eq!(restored.status,RunStatus::Paused);
+            assert!(!restored.events.iter().any(|event|event.kind=="recovered_ready"));
+            let error=reopened.resume(id).await.unwrap_err();
+            assert!(error.contains("retired reserved run cannot be resumed"));
+            assert_eq!(reopened.get(id).await.unwrap().status,RunStatus::Paused);
+        }
         drop(reopened);
         cleanup_test_dir(root).await;
     }

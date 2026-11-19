@@ -16,7 +16,7 @@ Dominion Sub4 is a **Rust-native, local-first AI agent execution harness** with 
 - **SDKs:** `src/sdk.rs` and `sdk/typescript/`; typed native or HTTP entry points rather than duplicated task schedulers.
 - **Main user interface:** `web/` is synced to the current main React navigation and pages, including model exploration, accounts, memory, rooms and chat. Hugging Face public GGUF/MLX search, revision-pinned downloads, pause/resume/cancel, local file registration, installed-model removal and local OS pickers are bridged into the Rust API. Imported GGUF models run via the loopback Ollama adapter inside the same Rust Run orchestration; a native MLX execution driver, automatic model-engine installers and other main-backend-only integrations still require separate work.
 
-The main Chat's manual compact command persists a bounded excerpt of older messages without deleting the original transcript. The manual Learn command saves explicit owner messages as provenance-labeled global memory. These are native projections, not hidden model summarization or a second agent scheduler. The former **Money/business-opportunity discovery** feature has been removed from the executable, APIs, SDK, frontend and its tests. Existing `money.sqlite` data on a user's disk is **not automatically deleted**. No data migration or automated source collection is launched for that retired feature.
+The main Chat's manual compact command persists a bounded excerpt of older messages without deleting the original transcript. The manual Learn command saves explicit owner messages as provenance-labeled global memory. These are native projections, not hidden model summarization or a second agent scheduler.
 
 ## Develop and verify
 
@@ -46,6 +46,6 @@ DOMINION Cloud free inference uses a shared D1 daily request allowance. Explicit
 
 ## CI and status
 
-[Sub4 frontend and Rust development CI](.github/workflows/sub4-dev-rust.yml) runs TypeScript checking, a production Vite build, UI tests, all-target Rust compilation, native library tests and the benchmark contract. [Manual macOS/Windows checks](.github/workflows/check.yml) remain a separate release/platform gate.
+[Sub4 frontend and Rust development CI](.github/workflows/sub4-dev-rust.yml) runs frontend and SDK TypeScript checks, SDK/Worker/UI tests, all-target Rust checks, native library tests and the benchmark contract. Production bundles and real-browser end-to-end runs are reserved for a manually dispatched gate, keeping branch-push feedback focused. [Manual macOS/Windows checks](.github/workflows/check.yml) remain a separate release/platform gate.
 
 **Verification must be read from the specific GitHub Actions run.** Source alignment, tests present in the repository, and locally verified execution are different claims. This branch does not claim release readiness or full parity with the main backend.

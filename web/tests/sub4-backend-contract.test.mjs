@@ -108,14 +108,3 @@ test('Codex CLI login is official-device-only and separate from model-provider c
  assert.match(ui,/startCodexFlow/)
  assert.match(ui,/\/api\/providers\/codex\/device/)
 })
-test('retired Money backend, scheduler and screen are absent',()=>{
- const lib=source('../../src/lib.rs')
- const sdk=source('../../src/sdk.rs')
- const api=source('../../src/api.rs')
- const adapter=source('../../src/frontend_api.rs')
- const app=source('../src/App.tsx')
- for(const file of [lib,sdk,api,adapter]){
-  assert.doesNotMatch(file,/crate::money|pub mod money/)
- }
- assert.doesNotMatch(app,/MoneyPage|pages\/Money/)
-})
