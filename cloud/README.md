@@ -222,6 +222,13 @@ inference/payment paths and does not bill any real customer.
 The sitewide `FREE_GLOBAL_DAILY_LIMIT` (default 500 requests per UTC day)
 uses the existing atomic D1 `free_budget_daily` counter, independent of each
 member's `FREE_DAILY_LIMIT`. Rejects with HTTP 429 when the operator's
-shared free allowance is exhausted. Failed pre-inference quota checks and
-failed upstream calls release the global reservation. This request ceiling
-is separate from paid micro-KRW allowances and supplier billing.
+shared free allowance is exhausted. Failed pre-inference quota checks and explicit upstream 400/401/403/404/422
+rejections release the global reservation. After inference dispatch, transport
+failures, 429 and 5xx outcomes retain the admitted shared and per-member slots,
+because the provider may have billed the operator. The free-auto router does
+not call another supplier after an ambiguous result; a known pre-inference
+rejection may safely fall back to the next model. Error JSON carries
+`quotaRetained: true` when the result is unknown. Retaining a quota slot is
+not proof of provider billing and this request allowance is not a
+token-denominated spending cap. This request ceiling is separate from
+paid micro-KRW allowances and supplier billing.
