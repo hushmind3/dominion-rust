@@ -192,7 +192,7 @@ fn mlx_option(siblings:&[Value])->Option<Value>{
     Some(json!({"id":"mlx","format":"mlx","label":format!("MLX · {shards} shards"),
         "quantization":"","bytes":bytes,"files":files,"shards":shards}))
 }
-fn detail_row(repo:&str,doc:&Value)->Value{
+pub(crate) fn detail_row(repo:&str,doc:&Value)->Value{
     let siblings=doc["siblings"].as_array().cloned().unwrap_or_default();
     let mut options=gguf_options(&siblings);
     if let Some(mlx)=mlx_option(&siblings){options.push(mlx);}

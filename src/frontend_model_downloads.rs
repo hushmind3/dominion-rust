@@ -27,6 +27,8 @@ struct Job{
     id:String,repo:String,option_id:String,revision:String,format:String,
     status:String,downloaded:u64,total:u64,current:String,error:String,
     installed_id:Option<String>,started_at:String,files:Vec<String>,
+    #[serde(default)]generation:u64,
+    #[serde(default)]sizes:Vec<u64>,
 }
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -48,6 +50,14 @@ impl Installed{
 struct Snapshot{jobs:HashMap<String,Job>,installed:HashMap<String,Installed>}
 type Shared=Arc<Mutex<Snapshot>>;
 static MANAGERS:OnceLock<Mutex<HashMap<PathBuf,Shared>>>=OnceLock::new();
+static INFLIGHT:OnceLock<Mutex<HashMap<String,Arc<Mutex<()>>>>>=OnceLock::new();
+async fn job_gate(id:&str)->Arc<Mutex<()>>{
+    let global=INFLIGHT.get_or_init(||Mutex::new(HashMap::new()));
+    let mut entries=global.lock().await;
+    if entries.len()>128{entries.retain(|_,gate|Arc::strong_count(gate)>1);}
+    Arc::clone(entries.entry(id.to_owned())
+        .or_insert_with(||Arc::new(Mutex::new(()))))
+}
 fn base(settings:&Settings)->PathBuf{settings.data_dir.join("model-library")}
 fn snapshot_file(root:&FilePath)->PathBuf{root.join("index.json")}
 fn persist(root:&FilePath,state:&Snapshot)->Result<(),String>{
@@ -114,33 +124,50 @@ fn job_dir(root:&FilePath,id:&str)->Result<PathBuf,String>{
     Uuid::parse_str(id).map_err(|_|"invalid model job ID")?;
     Ok(root.join("files").join(id))
 }
-fn stopped(s:&Snapshot,id:&str)->bool{
-    s.jobs.get(id).is_none_or(|j|j.status!="downloading")
+fn stopped(s:&Snapshot,id:&str,generation:u64)->bool{
+    s.jobs.get(id).is_none_or(|j|
+        j.status!="downloading"||j.generation!=generation)
 }
-async fn update_job(root:&FilePath,shared:&Shared,id:&str,
+fn disk_progress(root:&FilePath,job:&Job)->u64{
+    let Ok(dir)=job_dir(root,&job.id)else{return 0;};
+    job.files.iter().enumerate().map(|(i,file)|{
+        let path=dir.join(file);
+        let part=path.with_extension(format!("{}part",path.extension()
+            .and_then(|e|e.to_str()).map_or(String::new(),|s|format!("{s}."))));
+        let bytes=fs::metadata(&path).or_else(|_|fs::metadata(&part))
+            .map(|m|m.len()).unwrap_or(0);
+        let size=job.sizes.get(i).copied().unwrap_or(0);
+        if size>0{bytes.min(size)}else{bytes}
+    }).sum::<u64>().min(job.total)
+}
+async fn update_job(root:&FilePath,shared:&Shared,id:&str,generation:u64,
     f:impl FnOnce(&mut Job))->Result<bool,String>{
     let mut snap=shared.lock().await;
     let Some(job)=snap.jobs.get_mut(id)else{return Ok(false)};
-    if job.status!="downloading"{return Ok(false);}
+    if job.status!="downloading"||job.generation!=generation{return Ok(false);}
     f(job);
     persist(root,&snap)?;
     Ok(true)
 }
-async fn job_failed(root:&FilePath,shared:&Shared,id:&str,reason:String){
-    let _=update_job(root,shared,id,|j|{
+async fn job_failed(root:&FilePath,shared:&Shared,id:&str,generation:u64,reason:String){
+    let _=update_job(root,shared,id,generation,|j|{
         j.status="failed".into();
         j.error=reason.chars().take(500).collect();
     }).await;
 }
-async fn download_file(root:&FilePath,shared:&Shared,id:&str,repo:&str,
-    revision:&str,filename:&str)->Result<(),String>{
+async fn download_file(root:&FilePath,shared:&Shared,id:&str,generation:u64,
+    repo:&str,revision:&str,filename:&str,expected:u64)->Result<(),String>{
     let dest=job_dir(root,id)?.join(filename);
     let part=dest.with_extension(format!("{}part",dest.extension()
         .and_then(|e|e.to_str()).map_or(String::new(),|s|format!("{s}."))));
     if let Some(parent)=dest.parent(){
         async_fs::create_dir_all(parent).await.map_err(|e|e.to_string())?;
     }
-    if dest.is_file(){return Ok(());}
+    if dest.is_file(){
+        let existing=async_fs::metadata(&dest).await.map_err(|e|e.to_string())?;
+        if expected==0||existing.len()==expected{return Ok(());}
+        return Err("existing Hub model file has the wrong length".into());
+    }
     let offset=async_fs::metadata(&part).await.map(|m|m.len()).unwrap_or(0);
     let url=format!("https://huggingface.co/{repo}/resolve/{revision}/{filename}");
     let client=reqwest::Client::builder().timeout(std::time::Duration::from_secs(90))
@@ -166,7 +193,7 @@ async fn download_file(root:&FilePath,shared:&Shared,id:&str,repo:&str,
     let mut written=prior;
     let mut checkpoint=prior;
     loop{
-        if stopped(&*shared.lock().await,id){return Err("download paused or cancelled".into());}
+        if stopped(&*shared.lock().await,id,generation){return Err("download paused or cancelled".into());}
         let chunk=response.chunk().await.map_err(|e|format!("Hub stream: {e}"))?;
         let Some(chunk)=chunk else{break};
         if written.saturating_add(chunk.len() as u64)>MAX_BYTES{
@@ -176,33 +203,44 @@ async fn download_file(root:&FilePath,shared:&Shared,id:&str,repo:&str,
         written+=chunk.len() as u64;
         if written.saturating_sub(checkpoint)>=16*1024*1024{
             let delta=written.saturating_sub(checkpoint);
-            let ok=update_job(root,shared,id,|j|{j.downloaded=j.downloaded.saturating_add(delta);}).await?;
+            let ok=update_job(root,shared,id,generation,|j|{
+                j.downloaded=j.downloaded.saturating_add(delta);
+            }).await?;
             if !ok{return Err("download paused or cancelled".into());}
             checkpoint=written;
         }
     }
     out.sync_all().await.map_err(|e|e.to_string())?;
     drop(out);
-    if stopped(&*shared.lock().await,id){return Err("download paused or cancelled".into());}
+    if stopped(&*shared.lock().await,id,generation){return Err("download paused or cancelled".into());}
+    if expected>0&&written!=expected{
+        return Err(format!("Hub file length differs from metadata: got {written}, expected {expected}"));
+    }
     async_fs::rename(&part,&dest).await.map_err(|e|e.to_string())?;
     let final_delta=written.saturating_sub(checkpoint);
-    let _=update_job(root,shared,id,|j|{
+    let _=update_job(root,shared,id,generation,|j|{
         j.downloaded=j.downloaded.saturating_add(final_delta);
     }).await?;
     Ok(())
 }
-async fn worker(root:PathBuf,shared:Shared,id:String){
+async fn worker(root:PathBuf,shared:Shared,id:String,generation:u64){
+    // Pause+resume must not leave two writers touching one .part file.
+    let gate=job_gate(&id).await;
+    let _held=gate.lock().await;
     let job={shared.lock().await.jobs.get(&id).cloned()};
     let Some(job)=job else{return};
-    for filename in &job.files{
-        if !update_job(&root,&shared,&id,|j|j.current=filename.clone())
+    if job.status!="downloading"||job.generation!=generation{return;}
+    for (index,filename) in job.files.iter().enumerate(){
+        if !update_job(&root,&shared,&id,generation,|j|j.current=filename.clone())
             .await.unwrap_or(false){return;}
-        if let Err(error)=download_file(&root,&shared,&id,&job.repo,&job.revision,filename).await{
-            job_failed(&root,&shared,&id,error).await;return;
+        let expected=job.sizes.get(index).copied().unwrap_or(0);
+        if let Err(error)=download_file(&root,&shared,&id,generation,
+            &job.repo,&job.revision,filename,expected).await{
+            job_failed(&root,&shared,&id,generation,error).await;return;
         }
     }
     let mut snap=shared.lock().await;
-    if stopped(&snap,&id){return;}
+    if stopped(&snap,&id,generation){return;}
     let installed_id=format!("hf-{id}");
     let files=job.files.iter().map(|f|job_dir(&root,&id).unwrap()
         .join(f).to_string_lossy().to_string()).collect::<Vec<_>>();
@@ -220,7 +258,9 @@ async fn worker(root:PathBuf,shared:Shared,id:String){
     }
     let _=persist(&root,&snap);
 }
-fn spawn(root:PathBuf,shared:Shared,id:String){tokio::spawn(worker(root,shared,id));}
+fn spawn(root:PathBuf,shared:Shared,id:String,generation:u64){
+    tokio::spawn(worker(root,shared,id,generation));
+}
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
 struct DownloadRequest{
@@ -242,12 +282,27 @@ async fn download(State(engine):State<Arc<Engine>>,Json(q):Json<DownloadRequest>
     if remote["sha"].as_str()!=Some(q.revision.as_str()){
         return Err(conflict("model revision changed; refresh details before downloading"));
     }
+    // The browser may specify a quantization, but may not forge a partial
+    // shard group or omit required MLX config/tokenizer files.
+    let parsed=crate::frontend_huggingface::detail_row(&q.repo,&remote);
+    let exact=parsed["options"].as_array().into_iter().flatten().any(|option|{
+        option["id"].as_str()==Some(q.option_id.as_str())
+            &&option["format"].as_str()==Some(q.format.as_str())
+            &&option["files"].as_array().is_some_and(|files|{
+                files.iter().filter_map(Value::as_str).collect::<Vec<_>>()
+                    ==q.files.iter().map(String::as_str).collect::<Vec<_>>()
+            })
+    });
+    if !exact{return Err(bad("model files differ from the complete Hub option; refresh model details"));}
     let siblings=remote["siblings"].as_array().ok_or_else(||bad("Hub did not return file metadata"))?;
     let mut total=0u64;
+    let mut sizes=Vec::new();
     for file in &q.files{
         let actual=siblings.iter().find(|v|v["rfilename"].as_str()==Some(file.as_str()))
             .ok_or_else(||bad(format!("selected Hub file is absent: {file}")))?;
-        total=total.saturating_add(actual["size"].as_u64().unwrap_or(0));
+        let size=actual["size"].as_u64().unwrap_or(0);
+        sizes.push(size);
+        total=total.saturating_add(size);
     }
     if total==0||total>MAX_BYTES{return Err(bad("missing or oversized model file sizes"));}
     let (root,shared)=state(&engine.settings).await.map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
@@ -256,7 +311,7 @@ async fn download(State(engine):State<Arc<Engine>>,Json(q):Json<DownloadRequest>
         revision:q.revision,format:q.format,status:"downloading".into(),
         downloaded:0,total,current:String::new(),error:String::new(),
         installed_id:None,started_at:crate::frontend_state::timestamp(now_ms()),
-        files:q.files};
+        files:q.files,generation:0,sizes};
     {
         let mut snapshot=shared.lock().await;
         if snapshot.jobs.values().filter(|j|j.status=="downloading").count()>=2{
@@ -269,7 +324,7 @@ async fn download(State(engine):State<Arc<Engine>>,Json(q):Json<DownloadRequest>
         snapshot.jobs.insert(id.clone(),job.clone());
         persist(&root,&snapshot).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
     }
-    spawn(root,shared,id);
+    spawn(root,shared,id,0);
     Ok(Json(json!(job)))
 }
 async fn jobs(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
@@ -291,11 +346,16 @@ async fn job_action(State(engine):State<Arc<Engine>>,
         }
         _=>return Err(conflict("this model job cannot perform the requested transition"))
     }
+    job.generation=job.generation.saturating_add(1);
+    if job.status=="downloading"{
+        job.downloaded=disk_progress(&root,job);
+    }
     let resumed=job.status=="downloading";
+    let generation=job.generation;
     let output=json!(job);
     persist(&root,&snap).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
     drop(snap);
-    if resumed{spawn(root,shared,id);}
+    if resumed{spawn(root,shared,id,generation);}
     Ok(Json(output))
 }
 async fn installed(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
@@ -492,7 +552,7 @@ mod tests{
             option_id:"a.gguf".into(),revision:"sha".into(),format:"gguf".into(),
             status:"downloading".into(),downloaded:10,total:100,current:"a.gguf".into(),
             error:String::new(),installed_id:None,started_at:"time".into(),
-            files:vec!["a.gguf".into()]};
+            files:vec!["a.gguf".into()],generation:0,sizes:vec![100]};
         let value=json!(&j);
         assert_eq!(value["optionId"],"a.gguf");
         assert_eq!(value["downloaded"],10);
