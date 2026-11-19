@@ -710,7 +710,7 @@ fn validate_completion(protocol:&str,reason:Option<&str>,
     has_text:bool,has_calls:bool)->Result<(),String>{
  let valid=match (protocol,reason){
   ("openai",Some("stop"))|("anthropic",Some("end_turn"|"stop_sequence"))=>
-   has_text||has_calls,
+   has_text&&!has_calls, // A final answer must never smuggle a live tool call.
   ("openai",Some("tool_calls"))|("anthropic",Some("tool_use"))=>
    has_calls,
   ("openai"|"anthropic",None)=>has_text||has_calls, // local mock/compat
@@ -1049,6 +1049,13 @@ mod tests {
     fn incomplete_or_filtered_provider_output_never_looks_like_completion(){
         assert!(validate_completion("openai",Some("stop"),true,false).is_ok());
         assert!(validate_completion("openai",Some("tool_calls"),false,true).is_ok());
+        assert!(validate_completion("openai",Some("tool_calls"),true,true).is_ok());
+        // 2026 agent failure pattern: final + tool calls must not execute
+        // side-effects on this turn or leave unmatched calls for the next.
+        assert!(validate_completion("openai",Some("stop"),true,true).is_err());
+        assert!(validate_completion("openai",Some("stop"),false,true).is_err());
+        assert!(validate_completion("anthropic",Some("end_turn"),true,true).is_err());
+        assert!(validate_completion("anthropic",Some("stop_sequence"),false,true).is_err());
         assert!(validate_completion("openai",None,true,false).is_ok());
         assert!(validate_completion("openai",Some("length"),true,false).is_err());
         assert!(validate_completion("openai",Some("tool_calls"),false,false).is_err());
