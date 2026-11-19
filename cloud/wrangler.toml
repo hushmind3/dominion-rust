@@ -1,0 +1,40 @@
+name = "dominion-cloud"
+main = "src/index.js"
+compatibility_date = "2026-11-18"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dominion-cloud"
+database_id = "edc9c387-310e-4660-aac7-db53f9da5d17"
+
+# Set GOOGLE_CLIENT_ID and ALLOWED_ORIGIN in the Cloudflare dashboard.
+# Set SESSION_SECRET and UPSTREAM_API_KEY using wrangler secret put.
+# Optional centralized free-model routing (no end-user provider account needed):
+# UPSTREAM_URL=https://openrouter.ai/api/v1 (set as Worker variable)
+# UPSTREAM_API_KEY=<operator-owned key> (set as Worker secret)
+# UPSTREAM_FREE_DISCOVERY=1 (set as Worker variable to discover verified :free models)
+# FREE_DAILY_LIMIT=20 (per free account per UTC day)\n# PRO_DAILY_LIMIT=50 (per active Pro account per UTC day)\n# PRO_MONTHLY_LIMIT=500 (per active Pro account per UTC calendar month)\n# Limits apply to centrally funded free-model inference; paid models still require prepaid credits.
+# Direct provider routing (OpenRouter is NOT required):
+# Set secrets OPENAI_API_KEY, DEEPSEEK_API_KEY, GROQ_API_KEY,
+# TOGETHER_API_KEY, MISTRAL_API_KEY individually as needed.
+# PAID_MODELS_JSON is an operator-managed Worker variable, for example:
+# [{"id":"deepseek-chat","provider":"deepseek","name":"DeepSeek Chat",
+#   "input_micro_krw":1,"output_micro_krw":2}]
+# Example prices are placeholders, NOT actual provider prices.
+# Pricing units are micro-KRW per token (1000 micro-KRW = 1 KRW).
+# Models only appear if their provider secret is configured.
+# PAID_DAILY_BUDGET_MICRO_KRW sets an optional operator budget ceiling.
+# Paid requests require prepaid user credits. No auto-charging of user cards.
+# Paid streaming and tool calls are not yet enabled.
+
+[ai]
+binding = "AI"
+
+# Refresh the free-model catalog every fifteen minutes.
+[triggers]
+crons = ["*/15 * * * *"]
+
+# Hybrid routing: OPENROUTER_API_KEY is the single aggregator secret.
+# Add {"id":"openrouter/<model>","provider":"openrouter","upstream_model":"<provider/model>",
+# "input_micro_krw":<integer>,"output_micro_krw":<integer>} to PAID_MODELS_JSON.
+# Direct providers remain optional. Never place provider API keys in frontend variables.

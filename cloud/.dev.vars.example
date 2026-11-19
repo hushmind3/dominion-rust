@@ -1,0 +1,8 @@
+# Copy to .dev.vars locally. NEVER commit real secrets.
+GOOGLE_CLIENT_ID="your-google-web-client-id.apps.googleusercontent.com"
+ALLOWED_ORIGIN="http://localhost:5173"
+UPSTREAM_URL="https://openrouter.ai/api/v1"
+UPSTREAM_API_KEY="replace-with-upstream-key"
+FREE_MODELS_JSON="[]"
+FREE_DAILY_LIMIT="10"
+# Paid inference stays disabled until real pricing and balance settlement are configured.
