@@ -1075,7 +1075,7 @@ mod tests {
             Json(json!({"choices":[{"finish_reason":"stop","message":{
                 "role":"assistant","content":"Task completed.",
                 "tool_calls":[{"id":"call_should_not_run","type":"function",
-                    "function":{"name":"write_file","arguments":"{\\\"path\\\":\\\"unexpected.txt\\\",\\\"content\\\":\\\"unsafe\\\"}"}}]
+                    "function":{"name":"write_file","arguments":r#"{"path":"unexpected.txt","content":"unsafe"}"#}}]
             }}],"usage":{"prompt_tokens":100,"completion_tokens":40}}))
         }
         let count=Arc::new(AtomicUsize::new(0));
