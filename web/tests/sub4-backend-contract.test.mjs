@@ -46,6 +46,28 @@ test('Hugging Face browsing has a real safe Rust read-only metadata adapter',()=
  assert.match(routes,/huggingface\.co\/api\/models/)
  assert.match(runtime,/crate::frontend_huggingface::routes\(\)/)
 })
+test('main model library controls are backed by persistent native Rust download and OS picker',()=>{
+ const ui=source('../src/components/ModelExplorer.tsx')
+ const model=source('../../src/frontend_local_models.rs')
+ const downloads=source('../../src/frontend_model_downloads.rs')
+ const system=source('../../src/frontend_system.rs')
+ const picker=source('../../src/frontend_native_picker.rs')
+ for(const route of ['/model-library/download','/model-library/jobs',
+  '/model-library/import','/model-library/installed/{id}']){
+  assert.ok(downloads.includes(route),'missing route '+route)
+ }
+ assert.match(downloads,/prepare_for_load\(/)
+ assert.match(downloads,/job_gate\(/)
+ assert.match(downloads,/raw_repo_details\(/)
+ assert.match(model,/frontend_model_downloads::list/)
+ assert.match(model,/frontend_model_downloads::prepare_for_load/)
+ assert.match(ui,/\/api\/model-library\/jobs\//)
+ assert.match(ui,/\/api\/model-library\/download/)
+ assert.match(ui,/\/api\/model-library\/runtime\/load/)
+ assert.match(picker,/\/model-library\/pick-file/)
+ assert.match(system,/frontend_native_picker::pick\(&engine\.settings,true\)/)
+ assert.doesNotMatch(system,/Json\(json!\(\{"path":engine\.settings\.workspace_dir\}/)
+})
 test('retired Money backend, scheduler and screen are absent',()=>{
  const lib=source('../../src/lib.rs')
  const sdk=source('../../src/sdk.rs')

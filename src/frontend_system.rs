@@ -227,10 +227,8 @@ async fn update_unavailable()->(StatusCode,Json<Value>){
 async fn dev_job_missing()->(StatusCode,Json<Value>){
  (StatusCode::NOT_FOUND,Json(json!({"error":"developer job not found"})))
 }
-async fn pick_folder(State(engine):State<Arc<Engine>>)->Json<Value>{
- // A headless server cannot open a native picker. Report the connected
- // workspace instead of inventing a path.
- Json(json!({"path":engine.settings.workspace_dir}))
+async fn pick_folder(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
+ crate::frontend_native_picker::pick(&engine.settings,true).await
 }
 async fn browser_status()->Json<Value>{
  Json(json!({"status":{"available":false,"running":false},

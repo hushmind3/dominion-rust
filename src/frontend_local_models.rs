@@ -112,13 +112,14 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/model-library/runtimes",get(runtimes))
   .merge(crate::frontend_huggingface::routes())
   .merge(crate::frontend_model_downloads::routes())
+  .merge(crate::frontend_native_picker::routes())
 }
 async fn installed(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let result=ollama_get("/api/tags").await.ok();
  let mut list=result.as_ref().and_then(|value|value["models"].as_array()).map(|rows|rows.iter().filter_map(|row|{
   let id=row["name"].as_str().or_else(||row["model"].as_str())?;
   if !valid_model(id){return None;}
-  Some(json!({"id":id,"repo":id,"label":id,"format":row["details"]["format"].as_str().unwrap_or("ollama"),
+  Some(json!({"id":id,"repo":id,"label":id,"format":"gguf",
    "bytes":row["size"].as_u64().unwrap_or(0),"source":"ollama"}))
  }).collect::<Vec<_>>()).unwrap_or_default();
  let managed=crate::frontend_model_downloads::list(&engine.settings).await

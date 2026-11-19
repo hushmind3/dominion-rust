@@ -169,7 +169,15 @@ async fn download_file(root:&FilePath,shared:&Shared,id:&str,generation:u64,
         return Err("existing Hub model file has the wrong length".into());
     }
     let offset=async_fs::metadata(&part).await.map(|m|m.len()).unwrap_or(0);
-    let url=format!("https://huggingface.co/{repo}/resolve/{revision}/{filename}");
+    // Encode path segments instead of treating Hub filenames as URL syntax.
+    let mut url=reqwest::Url::parse("https://huggingface.co")
+        .map_err(|e|e.to_string())?;
+    {
+        let mut segments=url.path_segments_mut()
+            .map_err(|_|"Hub URL has no path segments")?;
+        for part in repo.split('/').chain(["resolve",revision])
+            .chain(filename.split('/')){segments.push(part);}
+    }
     let client=reqwest::Client::builder().timeout(std::time::Duration::from_secs(90))
         .redirect(reqwest::redirect::Policy::limited(5))
         .build().map_err(|e|e.to_string())?;
@@ -403,17 +411,53 @@ async fn import(State(engine):State<Arc<Engine>>,Json(input):Json<ImportRequest>
 }
 async fn remove(State(engine):State<Arc<Engine>>,
     Path(id):Path<String>)->Result<Json<Value>,Fault>{
-    let (root,shared)=state(&engine.settings).await.map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
-    let mut snap=shared.lock().await;
-    let record=snap.installed.get(&id).cloned()
-        .ok_or_else(||fault(StatusCode::NOT_FOUND,"model not registered in managed library"))?;
-    if record.ollama_model.as_deref()==crate::frontend_local_models::selected(&engine.settings).as_deref(){
-        return Err(conflict("unload the currently active model before removing it"));
+    let (root,shared)=state(&engine.settings).await
+        .map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+    let record=shared.lock().await.installed.get(&id).cloned();
+    let selected=crate::frontend_local_models::selected(&engine.settings);
+    if let Some(ref installed)=record{
+        if installed.ollama_model.as_deref()==selected.as_deref(){
+            return Err(conflict("unload the currently active model before removing it"));
+        }
+    }else if selected.as_deref()==Some(id.as_str()){
+        return Err(conflict("unload the currently active Ollama model before deleting it"));
     }
-    snap.installed.remove(&id);
-    persist(&root,&snap).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+    let target=if let Some(ref installed)=record{
+        installed.ollama_model.as_deref()
+    }else{Some(id.as_str())};
+    if let Some(model)=target{
+        if model.len()>240||model.chars().any(char::is_control){
+            return Err(bad("invalid model identifier"));
+        }
+        let tags=crate::frontend_local_models::ollama_get("/api/tags").await
+            .map_err(|e|fault(StatusCode::BAD_GATEWAY,e))?;
+        let present=tags["models"].as_array().is_some_and(|entries|entries.iter()
+            .any(|e|e["name"].as_str()==Some(model)
+                ||e["model"].as_str()==Some(model)));
+        if present{
+            let endpoint=crate::frontend_local_models::endpoint().map_err(bad)?;
+            let response=reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(90))
+                .redirect(reqwest::redirect::Policy::none()).build()
+                .map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?
+                .delete(format!("{endpoint}/api/delete"))
+                .json(&json!({"model":model})).send().await
+                .map_err(|e|fault(StatusCode::BAD_GATEWAY,e.to_string()))?;
+            if !response.status().is_success(){
+                return Err(fault(StatusCode::BAD_GATEWAY,
+                    format!("Ollama model deletion returned HTTP {}",response.status())));
+            }
+        }else if record.is_none(){
+            return Err(fault(StatusCode::NOT_FOUND,"Ollama model is no longer installed"));
+        }
+    }
+    let Some(installed)=record else{return Ok(Json(json!({"ok":true})))};
+    let mut snap=shared.lock().await;
+    if snap.installed.remove(&id).is_some(){
+        persist(&root,&snap).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+    }
     drop(snap);
-    if record.source=="huggingface"{
+    if installed.source=="huggingface"{
         if let Some(job_id)=id.strip_prefix("hf-"){
             let dir=job_dir(&root,job_id).map_err(bad)?;
             if dir.exists(){async_fs::remove_dir_all(dir).await.map_err(|e|
