@@ -31,3 +31,7 @@ cargo test --locked --lib
 [서브4 프런트·백엔드 개발 CI](.github/workflows/sub4-dev-rust.yml) · [macOS/Windows 수동 점검](.github/workflows/check.yml) · [9명 방 3턴 검증 기준](docs/SUB4_ROOM_FANOUT_MEASUREMENT_2026-11-19.md)
 
 **유의:** 메인과 서브4는 Rust 백엔드 구조가 다릅니다. 프런트의 전체 소스 동기화가 새로 추가된 메인 서버 기능까지 구현됐다는 뜻은 아닙니다. 실행 성공 여부와 기능 호환 범위는 해당 커밋 CI 및 API 테스트 결과로 구분합니다.
+
+## CLI 인증 범위
+
+공식 Codex CLI 기기 인증은 로컬 서버에서만 실행하며 토큰을 웹에 전달하지 않습니다. CLI 로그인 상태가 성공이어도 서브4 Rust 실행 커널의 모델 제공자/API 연결을 자동 생성하지 않습니다. 실제 모델 호출에는 별도로 등록된 Rust 제공자 연결이 필요합니다.

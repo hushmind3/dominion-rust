@@ -383,8 +383,8 @@ export function ModelHub(){
      hint={item.hint}
     >
      {item.id==='codex'&&<>
-      <Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}><LogIn size={13}/> {item.connected?'재로그인':'브라우저 로그인'}</Button>
-      <Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}><KeyRound size={13}/> 기기 코드 로그인</Button>
+      <Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)||!item.available} onClick={()=>void startCodexLogin()}><LogIn size={13}/> {item.connected?'재로그인':'브라우저 로그인'}</Button>
+      <Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)||!item.available} onClick={()=>void startCodexDevice()}><KeyRound size={13}/> 기기 코드 로그인</Button>
      </>}
      {item.id==='opencode'&&<SelectInput aria-label="OpenCode 로그인 제공자" className="!w-auto !min-w-[128px] !py-1 !text-[12px]" value={openCodeAuthProvider} onChange={event=>setOpenCodeAuthProvider(event.target.value)}>
       <option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="google">Google</option><option value="github-copilot">GitHub Copilot</option>

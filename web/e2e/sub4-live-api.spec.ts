@@ -6,6 +6,7 @@ test('main model menu has live, typed Rust endpoints for models and installation
   '/api/health','/api/status','/api/providers',
   '/api/model-library/installed','/api/model-library/jobs',
   '/api/model-library/runtime','/api/model-library/runtimes',
+  '/api/providers/cli','/api/providers/codex/login/status',
   '/api/skills','/api/mcp','/api/capabilities','/api/oauth/providers'
  ];
  for(const endpoint of endpoints){
@@ -20,6 +21,9 @@ test('main model menu has live, typed Rust endpoints for models and installation
  }
  const runtimes=await (await request.get('/api/model-library/runtimes')).json();
  expect(Array.isArray(runtimes.items)).toBeTruthy();
+ const cli=await (await request.get('/api/providers/cli')).json();
+ expect(cli.find((item:{id:string})=>item.id==='codex')).toBeTruthy();
+ expect(JSON.stringify(cli)).not.toContain('access_token');
  const health=await (await request.get('/api/health')).json();
  expect(health.engine).toBe('rust');
  await page.goto('/#/models');

@@ -105,6 +105,9 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .fallback(|| async {
             (StatusCode::NOT_FOUND,Json(json!({"error":"unknown native API endpoint"})))
         })
+        .method_not_allowed_fallback(||async{
+            (StatusCode::METHOD_NOT_ALLOWED,Json(json!({"error":"HTTP method not allowed for this native API endpoint"})))
+        })
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine), authorize));
     // Main's React/Vite build is the canonical UI; Rust serves the built files.
     // The development Vite server proxies API calls to this same router.

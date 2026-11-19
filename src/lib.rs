@@ -33,6 +33,7 @@ pub mod frontend_api;
 pub mod frontend_rooms;
 pub mod provider_registry;
 pub mod frontend_providers;
+pub mod frontend_codex_login;
 pub mod frontend_provider_public;
 pub mod frontend_extensions;
 pub mod frontend_growth;

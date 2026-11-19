@@ -93,6 +93,9 @@ pub fn router()->Router<Arc<Engine>>{
         .merge(crate::frontend_skill_import::routes())
         .merge(crate::frontend_oauth::routes())
         .fallback(unsupported_endpoint)
+        .method_not_allowed_fallback(||async{
+            (StatusCode::METHOD_NOT_ALLOWED,Json(json!({"error":"HTTP method not allowed for this UI API endpoint"})))
+        })
 }
 async fn unsupported_endpoint()->Fault{
     unsupported("This main frontend action has no native Rust implementation yet; the UI is preserved without fabricated functionality.")
