@@ -481,7 +481,7 @@ async function proxy(request, env, user) {
   let admission;
   try {
     admission = await env.DB.prepare(
-      'INSERT INTO operator_daily_budget(day,reserved) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET reserved=reserved+excluded.reserved WHERE reserved<=? RETURNING reserved'
+      'INSERT INTO paid_budget_daily(day,reserved_micro_krw) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET reserved_micro_krw=reserved_micro_krw+excluded.reserved_micro_krw WHERE reserved_micro_krw<=? RETURNING reserved_micro_krw'
     ).bind(budgetDay,reserve,dailyBudget-reserve).first();
   } catch {
     return err('Operator daily budget ledger requires D1 schema migration', 503);
@@ -491,7 +491,7 @@ async function proxy(request, env, user) {
   let creditHeld = false;
   const release = async amount => {
     if (amount <= 0) return;
-    await env.DB.prepare('UPDATE operator_daily_budget SET reserved=MAX(0,reserved-?) WHERE day=?')
+    await env.DB.prepare('UPDATE paid_budget_daily SET reserved_micro_krw=MAX(0,reserved_micro_krw-?) WHERE day=?')
       .bind(amount,budgetDay).run();
   };
   try {
@@ -547,7 +547,7 @@ async function proxy(request, env, user) {
     await env.DB.batch([
       env.DB.prepare('UPDATE accounts SET credits=credits+? WHERE id=?').bind(reserve-charge,user.id),
       env.DB.prepare('UPDATE usage SET charged=?,status=? WHERE id=? AND status=?').bind(charge,status,id,'reserved'),
-      env.DB.prepare('UPDATE operator_daily_budget SET reserved=MAX(0,reserved-?) WHERE day=?')
+      env.DB.prepare('UPDATE paid_budget_daily SET reserved_micro_krw=MAX(0,reserved_micro_krw-?) WHERE day=?')
         .bind(reserve-charge,budgetDay)
     ]);
   }

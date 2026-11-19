@@ -21,7 +21,7 @@ function database(credits=1000000){
       if(sql.includes('FROM sessions s JOIN accounts'))return{id:'google:verified',credits:state.credits}
       if(sql.includes('FROM identity_verifications'))return{verified_at:123,provider:'portone'}
       if(sql.includes('FROM subscriptions'))return null
-      if(sql.startsWith('INSERT INTO operator_daily_budget')){
+      if(sql.startsWith('INSERT INTO paid_budget_daily')){
        const amount=Number(args[1]),available=Number(args[2])
        if(state.budget>available)return null
        state.budget+=amount;state.admissions++
@@ -48,7 +48,7 @@ function database(credits=1000000){
        assert.ok(receipt)
        receipt.charged=Number(args[0]);receipt.status=args[1];return{success:true}
       }
-      if(sql.startsWith('UPDATE operator_daily_budget SET reserved=')){
+      if(sql.startsWith('UPDATE paid_budget_daily SET reserved=')){
        state.budget=Math.max(0,state.budget-Number(args[0]));return{success:true}
       }
       throw Error('unexpected run SQL: '+sql)

@@ -196,7 +196,7 @@ independent of this optional account feature.
 
 **Before deploying the revised Cloud Worker**, apply the updated
 `cloud/schema.sql` to the existing D1 database. The new
-`operator_daily_budget` table supports atomic, conditional daily reservations
+`paid_budget_daily` table supports atomic, conditional daily reservations
 in integer micro-KRW. Paid requests fail closed with HTTP 503 if this
 migration is absent. Set `PAID_DAILY_BUDGET_MICRO_KRW` and supplier-verified
 token tariffs before enabling paid models.
