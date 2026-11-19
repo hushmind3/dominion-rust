@@ -182,7 +182,7 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
   }
   document.head.appendChild(script)
   return()=>{active=false;script.remove()}
- },[showLoginOptions,googleClientId]
+ },[showLoginOptions,googleClientId])
  async function logout(){
   const oldToken=token
   sessionStorage.removeItem('dominion_cloud_session')
