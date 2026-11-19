@@ -246,6 +246,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compacted_chat_evidence_persists_separately_from_transcript(){
+        let root=std::env::temp_dir().join(format!("dominion-compact-{}",Uuid::new_v4()));
+        let store=FrontendStore::open(root.clone(),"native").unwrap();
+        store.mutate(|state|{
+            state.compacted.insert("session-a".into(),ChatCompaction{
+                through:17,excerpt:"user: keep the exact owner decision".into()
+            });
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(store.compacted("session-a").await.unwrap().through,17);
+        drop(store);
+        let reopened=FrontendStore::open(root.clone(),"native").unwrap();
+        let excerpt=reopened.compacted("session-a").await.unwrap();
+        assert_eq!(excerpt.excerpt,"user: keep the exact owner decision");
+        assert!(reopened.snapshot().await.sessions.is_empty(),
+            "context projection must not create or delete transcript messages");
+        drop(reopened);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn rejected_snapshot_change_does_not_publish_partial_state(){
         let root=std::env::temp_dir().join(format!("dominion-frontend-reject-{}",Uuid::new_v4()));
         let store=FrontendStore::open(root.clone(),"test-model").unwrap();

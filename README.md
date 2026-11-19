@@ -14,9 +14,9 @@ Dominion Sub4 is a **Rust-native, local-first AI agent execution harness** with 
 - **Tools and MCP:** `src/tools.rs`, `src/mcp.rs`, `src/tool_discovery.rs`; explicit scope and approval for side effects.
 - **Persistent context and memory:** `src/context.rs`, `src/knowledge.rs`; user corrections and durable evidence survive restarts.
 - **SDKs:** `src/sdk.rs` and `sdk/typescript/`; typed native or HTTP entry points rather than duplicated task schedulers.
-- **Main user interface:** `web/` is synced to the current main React navigation and pages, including model exploration, accounts, memory, rooms and chat. Hugging Face public GGUF/MLX metadata search and model details are wired to a read-only Rust endpoint; the main branch's full managed model download/MLX runtime pipeline is not part of this independent backend.
+- **Main user interface:** `web/` is synced to the current main React navigation and pages, including model exploration, accounts, memory, rooms and chat. Hugging Face public GGUF/MLX search, revision-pinned downloads, pause/resume/cancel, local file registration, installed-model removal and local OS pickers are bridged into the Rust API. Imported GGUF models run via the loopback Ollama adapter inside the same Rust Run orchestration; a native MLX execution driver, automatic model-engine installers and other main-backend-only integrations still require separate work.
 
-The former **Money/business-opportunity discovery** feature has been removed from the executable, APIs, SDK, frontend and its tests. Existing `money.sqlite` data on a user's disk is **not automatically deleted**. No data migration or automated source collection is launched for that retired feature.
+The main Chat's manual compact command persists a bounded excerpt of older messages without deleting the original transcript. The manual Learn command saves explicit owner messages as provenance-labeled global memory. These are native projections, not hidden model summarization or a second agent scheduler. The former **Money/business-opportunity discovery** feature has been removed from the executable, APIs, SDK, frontend and its tests. Existing `money.sqlite` data on a user's disk is **not automatically deleted**. No data migration or automated source collection is launched for that retired feature.
 
 ## Develop and verify
 

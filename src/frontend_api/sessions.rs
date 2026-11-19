@@ -227,7 +227,7 @@ pub(super) async fn learn_session(State(engine):State<Arc<Engine>>,
         &format!("User-selected chat evidence {id}"),&evidence).await.map_err(bad)?;
     Ok(Json(json!({"result":{"memories":1,"skill":false},
         "memoryId":saved.id,"source":"owner_explicit_chat_learning",
-        "message":"사용자 발언 {}개를 원문 근거로 기억에 저장했습니다.",
+        "message":format!("사용자 발언 {}개를 원문 근거로 기억에 저장했습니다.",notes.len()),
         "ownerMessages":notes.len()})))
 }
 

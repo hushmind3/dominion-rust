@@ -68,6 +68,33 @@ test('main model library controls are backed by persistent native Rust download 
  assert.match(system,/frontend_native_picker::pick\(&engine\.settings,true\)/)
  assert.doesNotMatch(system,/Json\(json!\(\{"path":engine\.settings\.workspace_dir\}/)
 })
+test('main Chat learning and context compaction use the same native durable session store',()=>{
+ const ui=source('../src/pages/Chat.tsx')
+ const router=source('../../src/frontend_api.rs')
+ const sessions=source('../../src/frontend_api/sessions.rs')
+ const chat=source('../../src/frontend_api/chat.rs')
+ const state=source('../../src/frontend_state.rs')
+ assert.match(ui,/\/api\/sessions\/'\+current\+'\/compact/)
+ assert.match(ui,/\/api\/sessions\/'\+current\+'\/learn/)
+ assert.match(router,/\/sessions\/\{id\}\/compact/)
+ assert.match(router,/\/sessions\/\{id\}\/learn/)
+ assert.match(sessions,/fn compact_session\(/)
+ assert.match(sessions,/fn learn_session\(/)
+ assert.match(sessions,/engine\.knowledge\.remember\("global"/)
+ assert.match(state,/pub compacted:HashMap<String,ChatCompaction>/)
+ assert.match(chat,/frontend\.compacted\(&record\.id\)/)
+})
+test('legacy learning panels only show real native trace evidence, never auto-adopt',()=>{
+ const ui=source('../src/pages/memory/Growth.tsx')
+ const adapter=source('../../src/frontend_growth.rs')
+ for(const route of ['/transfer','/improvements','/algorithms',
+  '/experiment-requests','/policy-searches','/algorithms/evaluations']){
+  assert.ok(adapter.includes(route),'no read-only native bridge for '+route)
+ }
+ assert.match(adapter,/strategy::from_run/)
+ assert.match(adapter,/"automaticAdoption":false/)
+ assert.match(ui,/\/api\/transfer/)
+})
 test('retired Money backend, scheduler and screen are absent',()=>{
  const lib=source('../../src/lib.rs')
  const sdk=source('../../src/sdk.rs')
