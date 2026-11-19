@@ -366,6 +366,102 @@ pub(crate) async fn find(settings:&Settings,id:&str)->Result<Option<Installed>,S
     let (_,shared)=state(settings).await?;
     Ok(shared.lock().await.installed.get(id).cloned())
 }
+
+pub(crate) async fn list(settings:&Settings)->Result<Vec<Value>,String>{
+    let (_,shared)=state(settings).await?;
+    let mut models=shared.lock().await.installed.values().map(Installed::public)
+        .collect::<Vec<_>>();
+    models.sort_by(|a,b|a["label"].as_str().cmp(&b["label"].as_str()));
+    Ok(models)
+}
+static IMPORT_LOCK:OnceLock<Mutex<()>>=OnceLock::new();
+/// Resolve the UI's managed GGUF ID into a model running on the existing
+/// loopback Ollama adapter. The native Rust agent kernel remains unchanged.
+pub(crate) async fn prepare_for_load(settings:&Settings,id:&str)
+    ->Result<Option<String>,String>{
+    let Some(initial)=find(settings,id).await? else{return Ok(None)};
+    if initial.format!="gguf"{
+        return Err("This model is MLX; a native MLX runtime is not installed. The GGUF/Ollama runner cannot execute it".into());
+    }
+    let lock=IMPORT_LOCK.get_or_init(||Mutex::new(()));
+    let _held=lock.lock().await;
+    let Some(record)=find(settings,id).await? else{
+        return Err("model was removed during preparation".into());
+    };
+    if let Some(alias)=record.ollama_model.as_deref(){
+        if let Ok(tags)=crate::frontend_local_models::ollama_get("/api/tags").await{
+            if tags["models"].as_array().is_some_and(|rows|rows.iter().any(|r|
+                r["name"].as_str()==Some(alias)||r["model"].as_str()==Some(alias))){
+                return Ok(Some(alias.to_owned()));
+            }
+        }
+    }
+    if record.files.is_empty()||record.files.len()>MAX_FILES{
+        return Err("model has no registered files".into());
+    }
+    let mut paths=Vec::new();
+    for file in &record.files{
+        let path=fs::canonicalize(file).map_err(|e|format!("local GGUF unavailable: {e}"))?;
+        if !path.is_file()||path.extension().is_none_or(|v|
+            !v.eq_ignore_ascii_case("gguf")){
+            return Err("GGUF files are missing or incomplete".into());
+        }
+        paths.push(path);
+    }
+    let first=paths.first().ok_or("GGUF model has no first shard")?;
+    let reference=if paths.len()==1{first.clone()}else{
+        let parent=first.parent().ok_or("split GGUF path has no parent")?;
+        if paths.iter().any(|path|path.parent()!=Some(parent)){
+            return Err("split GGUF shards must share one directory".into());
+        }
+        let name=first.file_name().and_then(|v|v.to_str())
+            .ok_or("split GGUF filename is invalid")?;
+        let (prefix,rest)=name.split_once("-00001-of-")
+            .ok_or("split GGUF first shard is invalid")?;
+        let expected=rest.strip_suffix(".gguf")
+            .and_then(|s|s.parse::<usize>().ok())
+            .ok_or("split GGUF shard count is invalid")?;
+        if expected!=paths.len()||expected>256{
+            return Err("split GGUF shard count mismatch".into());
+        }
+        for (i,path) in paths.iter().enumerate(){
+            let name=path.file_name().and_then(|v|v.to_str()).unwrap_or("");
+            if name!=format!("{prefix}-{:05}-of-{expected:05}.gguf",i+1){
+                return Err("split GGUF missing or reordered shard".into());
+            }
+        }
+        parent.join(format!("{prefix}-*.gguf"))
+    };
+    let source=reference.to_string_lossy();
+    if source.chars().any(char::is_control)||source.contains('"'){
+        return Err("GGUF file path contains unsupported control/quote characters".into());
+    }
+    let model_name=format!("dominion-{}",id.replace(['-',':'],""));
+    let directory=base(settings).join("modelfiles");
+    async_fs::create_dir_all(&directory).await.map_err(|e|e.to_string())?;
+    let file=directory.join(format!("{model_name}.Modelfile"));
+    async_fs::write(&file,format!("FROM \"{source}\"\n")).await
+        .map_err(|e|e.to_string())?;
+    let endpoint=crate::frontend_local_models::endpoint()?;
+    let output=tokio::time::timeout(std::time::Duration::from_secs(600),
+        tokio::process::Command::new("ollama").args(["create",&model_name,"-f"])
+            .arg(&file).env("OLLAMA_HOST",&endpoint)
+            .kill_on_drop(true).output()).await
+        .map_err(|_|"Ollama GGUF registration exceeded 10 minutes")?
+        .map_err(|e|format!("Ollama CLI unavailable: {e}"))?;
+    if !output.status.success(){
+        return Err(format!("Ollama could not import the GGUF: {}",
+            String::from_utf8_lossy(&output.stderr).chars().take(400).collect::<String>()));
+    }
+    let (root,shared)=state(settings).await?;
+    let mut snap=shared.lock().await;
+    if let Some(stored)=snap.installed.get_mut(id){
+        stored.ollama_model=Some(model_name.clone());
+        persist(&root,&snap)?;
+    }
+    Ok(Some(model_name))
+}
+
 pub fn routes()->Router<Arc<Engine>>{
     Router::new()
         .route("/model-library/jobs",get(jobs))

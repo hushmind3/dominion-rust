@@ -11,7 +11,7 @@ type Fault=(StatusCode,Json<Value>);
 fn bad(code:StatusCode,error:impl Into<String>)->Fault{
  (code,Json(json!({"error":error.into()})))
 }
-fn endpoint()->Result<String,String>{
+pub(crate) fn endpoint()->Result<String,String>{
  let raw=std::env::var("DOMINION_OLLAMA_URL").unwrap_or_else(|_|"http://127.0.0.1:11434".into());
  let url=reqwest::Url::parse(&raw).map_err(|e|e.to_string())?;
  let loopback=url.host_str().is_some_and(|host|host=="localhost"||
@@ -79,7 +79,7 @@ async fn client()->Result<(reqwest::Client,String),String>{
   .redirect(reqwest::redirect::Policy::none()).build().map_err(|e|e.to_string())?;
  Ok((http,host))
 }
-async fn ollama_get(route:&str)->Result<Value,String>{
+pub(crate) async fn ollama_get(route:&str)->Result<Value,String>{
  let (http,host)=client().await?;
  let result=http.get(format!("{host}{route}")).timeout(Duration::from_secs(8))
   .send().await.map_err(|e|format!("Ollama unavailable: {e}"))?;
@@ -114,11 +114,8 @@ pub fn routes()->Router<Arc<Engine>>{
   .merge(crate::frontend_model_downloads::routes())
 }
 async fn installed(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
- let result=match ollama_get("/api/tags").await{
-  Ok(data)=>data,
-  Err(_)=>return Ok(Json(json!([]))), // No Ollama process or models are installed.
- };
- let mut list=result["models"].as_array().map(|rows|rows.iter().filter_map(|row|{
+ let result=ollama_get("/api/tags").await.ok();
+ let mut list=result.as_ref().and_then(|value|value["models"].as_array()).map(|rows|rows.iter().filter_map(|row|{
   let id=row["name"].as_str().or_else(||row["model"].as_str())?;
   if !valid_model(id){return None;}
   Some(json!({"id":id,"repo":id,"label":id,"format":row["details"]["format"].as_str().unwrap_or("ollama"),
