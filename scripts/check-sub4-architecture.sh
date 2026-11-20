@@ -168,7 +168,7 @@ required_count src/product/frontend_api.rs 'merge\(crate::addons::routes\(addons
 required_count src/product/frontend_api.rs 'merge\(crate::frontend_channels|merge\(crate::frontend_extensions|merge\(crate::frontend_oauth' 0
 required_count src/product/mod.rs 'pub addons:Arc<addons::Host>' 1
 required_count src/product/group.rs 'pub struct RoomReadCursor' 1
-required_count src/product/group.rs 'room[.]read_cursors[.]insert' 1
+required_count src/product/group.rs 'room[.]read_cursors[.]insert[(]participant[.]name' 1
 required_count src/product/group.rs 'room[.]read_cursors[.]clear' 1
 required_count src/product/coordination.rs 'unread_range[(]' 1
 required_count src/product/frontend_rooms.rs 'crate::addons::dispatch_room' 3
