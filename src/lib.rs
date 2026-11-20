@@ -1,5 +1,6 @@
 //! Dominion native Rust SDK and owned execution runtime.
 pub mod addons;
+pub mod product;
 pub use addons::{channels as frontend_channels, connected_tools,
     extensions as frontend_extensions, github_cli_login, github_work,
     google_workspace, mcp, oauth as frontend_oauth,

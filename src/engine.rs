@@ -1,17 +1,9 @@
-use crate::{program_session,mcp::{McpCallOutcome,McpProgress},hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
+use crate::{program_session,mcp::{McpCallOutcome,McpProgress},hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch};
 use serde_json::{json, Value};
 use std::{collections::{HashMap,HashSet}, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
 use uuid::Uuid;
 
-/// An execution-local snapshot of external owner notes. The process-local
-/// knowledge generation invalidates it after any successful owner edit.
-struct FocusedMemory{
-    revision:u64,
-    scope:String,
-    query:String,
-    body:String,
-}
 mod delegation;
 #[cfg(test)]
 mod tests;
@@ -25,21 +17,23 @@ const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's
 pub struct Engine {
     pub settings: Settings,
     pub store: Arc<Store>,
-    pub groups: Arc<crate::group::Groups>,
-    pub addons: Arc<crate::addons::Host>,
-    pub knowledge: Arc<Knowledge>,
-    pub owner_profile: Arc<crate::profile::OwnerProfileStore>,
-    pub frontend: Arc<crate::frontend_state::FrontendStore>,
-    pub providers: Arc<crate::provider_registry::Registry>,
+    /// All GUI, memory, account, room and model-catalog services live outside
+    /// the Run kernel. The Deref compatibility surface does not own a runner.
+    product: crate::product::ProductHost,
 
     hooks: RwLock<HookChain>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
     cancellation: Mutex<HashMap<Uuid,watch::Sender<bool>>>,
     active_notify: Notify,
-    focused_memory:Mutex<HashMap<Uuid,FocusedMemory>>,
     delegate_lock: Mutex<()>,
     wake_tx: mpsc::UnboundedSender<Uuid>,
+}
+// Existing SDK/HTTP adapters retain product field access without moving
+// persistence or UI catalogs into the Run kernel. They are owned by ProductHost.
+impl std::ops::Deref for Engine {
+    type Target=crate::product::ProductHost;
+    fn deref(&self)->&Self::Target{&self.product}
 }
 impl Engine {
     pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>) -> Result<Arc<Self>, String> {
@@ -56,15 +50,11 @@ impl Engine {
         groups:Arc<crate::group::Groups>,
         mcp:Arc<crate::mcp::Mcp>)->Result<Arc<Self>,String>{
         let model=ModelClient::new(&settings)?;
-        let knowledge=Arc::new(Knowledge::open(settings.data_dir.clone())?);
-        let owner_profile=Arc::new(crate::profile::OwnerProfileStore::open(settings.data_dir.clone())?);
-        let frontend=Arc::new(crate::frontend_state::FrontendStore::open(settings.data_dir.clone(),&settings.main.name)?);
-        let providers=Arc::new(crate::provider_registry::Registry::open(settings.data_dir.clone())?);
-        let addons=crate::addons::Host::open(&settings,mcp)?;
+        let product=crate::product::ProductHost::open(&settings,groups,mcp)?;
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
-        let engine=Arc::new(Self { settings, store, groups, addons, knowledge, owner_profile, frontend, providers, hooks,
-            model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), focused_memory:Mutex::new(HashMap::new()), delegate_lock: Mutex::new(()), wake_tx });
+        let engine=Arc::new(Self { settings, store, product, hooks,
+            model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
         // a Weak reference, so it does not keep an abandoned engine alive.
@@ -103,70 +93,14 @@ impl Engine {
         });
         Ok(engine)
     }
-    /// Search once per Run instruction/knowledge revision rather than
-    /// re-lowercasing all persisted notes for every model turn. The last two
-    /// owner corrections can retarget memory; model/tool text cannot.
-    async fn focused_notes(&self,run:&Run)->String{
-        let scope=run.repository.as_deref().unwrap_or("global");
-        let changes=run.messages.iter().rev().filter_map(|message|{
-            if message["role"]!="user"{return None;}
-            message["content"].as_str()?.strip_prefix("New user instruction:")
-        }).take(2).collect::<Vec<_>>();
-        let goal=run.instruction.chars().take(1600).collect::<String>();
-        let owner=changes.into_iter().rev()
-            .map(|change|change.chars().take(450).collect::<String>())
-            .collect::<Vec<_>>().join(" ");
-        // Only classified persisted failures are used as retrieval control
-        // signals. Arbitrary tool output never becomes a trusted query or
-        // new instruction. A changed failure invalidates cached recall.
-        let failure=crate::repair_guidance::advise(run)
-            .map(|advice|advice.kind.replace('_'," "))
-            .unwrap_or_default();
-        let query=format!("goal:{goal}\nowner:{owner}\nfailure:{failure}");
-        let revision=self.knowledge.revision();
-        {
-            let cache=self.focused_memory.lock().await;
-            if let Some(saved)=cache.get(&run.id){
-                if saved.revision==revision&&saved.scope==scope&&saved.query==query{
-                    return saved.body.clone();
-                }
-            }
-        }
-        let limit=if failure.is_empty(){4}else{2};
-        let notes=self.knowledge.search_context(scope,&goal,&owner,&failure,limit).await;
-        let body=notes.iter().map(|note|format!("- {}: {}",
-            note.title,note.content.chars().take(650).collect::<String>()))
-            .collect::<Vec<_>>().join("\n");
-        // A concurrent memory edit invalidates the snapshot on the next
-        // model turn. Never mark a stale result as freshly retrieved.
-        if self.knowledge.revision()==revision{
-            self.focused_memory.lock().await.insert(run.id,FocusedMemory{
-                revision,scope:scope.to_string(),query,body:body.clone(),
-            });
-        }
-        body
-    }
     /// Attach a synchronous, fail-closed policy/receipt hook to this runtime.
     /// The native SDK and HTTP share the same engine and hook chain.
     pub async fn register_tool_hook(&self, hook:Arc<dyn ToolHook>){self.hooks.write().await.add(hook);}
 
-    /// Resolve the exact persisted provider/model identity for this run.
-    /// Provider credentials never enter run journals or frontend responses.
-    /// Single model-routing authority for chat, rooms and native agent runs.
-    /// A selected local model is the same actual Ollama endpoint everywhere.
+    /// Model and provider catalogs belong to the product host, not the
+    /// native instruction/execute/verify kernel.
     pub fn model_for_selection(&self,provider:&str,model:&str)->Result<ModelClient,String>{
-        if provider.is_empty()||provider=="dominion-native" {
-            if let Some(local)=crate::frontend_local_models::native_override(&self.settings,model){
-                return self.model.with_primary_protocol(local,"openai");
-            }
-        }
-        let settings=self.providers.resolve(provider,model,&self.settings.main)?;
-        if provider.is_empty()||provider=="dominion-native"{
-            Ok(self.model.clone())
-        }else{
-            let record=self.providers.get(provider).ok_or("provider registry entry unavailable")?;
-            self.model.with_primary_protocol(settings,&record.kind)
-        }
+        self.product.model_for_selection(&self.settings,&self.model,provider,model)
     }
     pub fn model_for_run(&self,run:&Run)->Result<ModelClient,String>{
         // Every native Run receives a durable UUID-bound routing identity.

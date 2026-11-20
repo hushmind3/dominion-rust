@@ -39,6 +39,13 @@ required_count src/addons/oauth.rs 'route.*oauth/providers/\{id\}' 0
 required_count src/addons/github_cli_login.rs 'route.*oauth/github/cli/login' 0
 required_count web/src/components/DominionCloudAccount.tsx 'disabled=\{!socialLogin\.' 0
 required_count web/src/pages/Models.tsx 'startCliLogin|importCli\(' 0
+# The execution Engine must own native Run state, not application products.
+required_count src/engine.rs 'product: crate::product::ProductHost' 1
+required_count src/engine.rs 'pub groups:|pub addons:|pub knowledge:|pub frontend:|pub providers:|pub owner_profile:' 0
+required_count src/engine.rs 'frontend_local_models::|provider_registry::|frontend_state::|Knowledge::open' 0
+required_count src/product.rs 'pub struct ProductHost' 1
+required_count src/product.rs 'pub fn model_for_selection' 1
+required_count src/product.rs 'async fn focused_notes' 1
 # Optional integrations must never merge individually into the core API.
 required_count src/frontend_api.rs 'merge\(crate::addons::routes\(addons_enabled\)\)' 1
 required_count src/frontend_api.rs 'merge\(crate::frontend_channels|merge\(crate::frontend_extensions|merge\(crate::frontend_oauth' 0

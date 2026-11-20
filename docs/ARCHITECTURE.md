@@ -149,3 +149,37 @@ This is a structural boundary and code-loading isolation, not evidence that
 a channel delivery, an OAuth flow or a paid model response was tested in
 production. Real HTTP and Chromium end-to-end checks remain separate gates.
 
+
+## 2026-11-20 — Instruction kernel vs application services (Sub4)
+
+The Rust `Engine` no longer owns a room collection, UI transcript
+store, editable owner profile, provider registry, memory database, or MCP
+registry as distinct execution-kernel responsibilities. The one
+`ProductHost` field in `src/product.rs` owns these optional product concerns.
+Its `model_for_selection` adapts user-selected provider/local model settings;
+`focused_notes` looks up opt-in memory and caches projections. Neither can
+schedule or authorize a Run.
+
+```text
+Human language -> Core Engine (Run, provider request, tool plan,
+                           admission, journal, verification/recovery)
+                                  |
+                           product boundary
+                                  |
+       +--------------------------+---------------------------+
+       |                          |                           |
+  Model catalog & UI      Memory/Owner profile        Rooms/Group UX
+       |
+     addons::Host  -> MCP / OAuth / connected accounts / outbound channels
+```
+
+Callers retain `engine.frontend`, `engine.groups`, and similar compatibility
+field access through a Rust `Deref` to `ProductHost`, to avoid breaking
+existing HTTP/SDK routing and stable data formats. **This is an ownership
+extraction, not yet a separate library or subprocess**. Code review should
+treat `src/engine.rs` as the Run executor and `src/product.rs` as the
+application adapter; new product state must not be added directly to Engine.
+`DOMINION_ADDONS_ENABLED` continues to control external integrations.
+
+No second scheduler, tool effect journal, approvals, independent agent
+execution runtime, or new UI navigation were introduced by this change.
