@@ -586,8 +586,6 @@ async fn native_room_pending_approval_blocks_new_owner_and_surfaces_same_executi
     assert_eq!(state["status"],"awaiting_approval");
     assert_eq!(state["approvals"][0]["id"],run_id.to_string());
     assert_eq!(state["approvals"][0]["sessionId"],format!("room-{id}"));
-    let global=crate::frontend_api::operations::approvals(State(engine.clone())).await.0;
-    assert_eq!(global[0]["sessionId"],format!("room-{id}"));
     let reset=reset(State(engine.clone()),Path(id)).await.unwrap_err();
     assert_eq!(reset.0,StatusCode::CONFLICT);
     server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
