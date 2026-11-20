@@ -9,9 +9,6 @@ use sha2::{Sha256,Digest};
 use std::{path::{Component,Path},sync::Arc,time::Duration};
 use uuid::Uuid;
 type Fault=(StatusCode,Json<Value>);
-fn bad(message:impl Into<String>)->Fault{
- (StatusCode::BAD_REQUEST,Json(json!({"error":message.into()})))
-}
 fn fail(message:impl Into<String>)->Fault{
  (StatusCode::BAD_GATEWAY,Json(json!({"error":message.into()})))
 }
@@ -139,21 +136,12 @@ async fn import_public(engine:&Arc<Engine>,requested:&str)->Result<Value,String>
 #[derive(Deserialize)]
 struct ImportRepo{repo:String}
 #[derive(Deserialize)]
-struct ImportCatalog{id:String}
 pub fn routes()->Router<Arc<Engine>>{
  Router::new().route("/skills/import-repo",post(import_repo))
-  .route("/skill-catalog/import",post(import_catalog))
 }
 async fn import_repo(State(engine):State<Arc<Engine>>,Json(input):Json<ImportRepo>)
  ->Result<Json<Value>,Fault>{
  import_public(&engine,&input.repo).await.map(Json).map_err(fail)
-}
-async fn import_catalog(State(engine):State<Arc<Engine>>,Json(input):Json<ImportCatalog>)
- ->Result<Json<Value>,Fault>{
- // Catalog IDs must be explicit repository selectors; arbitrary URLs,
- // generated code and installer commands are not accepted.
- repo_id(&input.id).map_err(bad)?;
- import_public(&engine,&input.id).await.map(Json).map_err(fail)
 }
 #[cfg(test)]
 mod tests{

@@ -282,6 +282,14 @@ async fn skill_export(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
 mod ownership_tests {
     use super::*;
     #[test]
+    fn mcp_bearer_field_matches_live_browser_contract(){
+        let input: McpDraft=serde_json::from_value(json!({
+            "name":"Remote MCP", "url":"https://example.org/mcp",
+            "bearerToken":"test-token", "enabled":true
+        })).unwrap();
+        assert_eq!(input.bearer_token.as_deref(),Some("test-token"));
+    }
+    #[test]
     fn native_mcp_alias_resolves_to_persisted_managed_id() {
         let uuid="2b35e369-1c79-498f-b850-439af3cdb024";
         let registered=vec![(format!("mcp__{}__",server_key(uuid)),uuid.into())];
