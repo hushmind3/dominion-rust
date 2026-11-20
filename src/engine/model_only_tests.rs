@@ -1,6 +1,7 @@
 //! Native no-tools chat must use the same Engine worker and cancellation
 //! contract as autonomous work. Mock provider = no paid model calls.
 use super::*;
+use crate::store::Store;
 use axum::{extract::State,routing::post,Json,Router};
 use std::sync::atomic::{AtomicUsize,Ordering};
 use tokio::time::{timeout,Duration};

@@ -2,6 +2,7 @@
 //! two edited source files, and a final verified artifact. The model is fake;
 //! this tests kernel behavior rather than claiming frontier model capability.
 use super::*;
+use crate::store::Store;
 use axum::{extract::State,routing::post,Json,Router};
 use std::sync::atomic::{AtomicUsize,Ordering};
 

@@ -1,7 +1,7 @@
 //! Optional product-facing SDK methods: sessions, profiles, rooms, memory,
 //! skill catalogs and integration discovery. Does not create another Run loop.
 use super::*;
-use crate::group::{NewRoom,Room,Say};
+use crate::group::{Groups,NewRoom,Room,Say};
 use axum::Router;
 
 pub(super) fn apply_pending_product_restore(settings:&Settings)->Result<(),String>{

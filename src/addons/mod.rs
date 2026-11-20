@@ -118,8 +118,9 @@ mod tests{
         let call=ToolCall{id:"blocked-remote".into(),
             name:"mcp__test-server__search".into(),arguments:serde_json::json!({})};
         let (_sender,receiver)=tokio::sync::watch::channel(false);
+        let port=Arc::new(crate::ports::RunStorePort::new(store.clone()));
         let outcome=host.invoke_external(
-            &settings,&store,Uuid::new_v4(),&call,receiver).await.unwrap();
+            &settings,&port,Uuid::new_v4(),&call,receiver).await.unwrap();
         assert!(matches!(outcome,crate::domain::ToolEffectOutcome::Settled(Err(_))),
             "disabled external requests must not reach remote IO");
         let groups=Arc::new(Groups::open(root.join("groups")).await.unwrap());
