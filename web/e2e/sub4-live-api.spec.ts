@@ -75,15 +75,23 @@ test('native UI memories can be created, read and deleted without leaving stale 
  expect((await after.json()).some((row:{id:string})=>row.id===memory.id)).toBeFalsy();
 });
 
-test('learning panels show native structured evidence instead of missing APIs',async({page,request})=>{
- for(const endpoint of ['/api/experience','/api/improvements','/api/transfer',
-  '/api/algorithms','/api/algorithms/evaluate',
-  '/api/algorithms/evaluations','/api/optimizers',
-  '/api/policies','/api/policy-searches','/api/experiment-requests']){
+test('native learning endpoints work and removed RSI endpoints explicitly reject without fake success',async({page,request})=>{
+ for(const endpoint of ['/api/experience','/api/transfer']){
   const response=await request.get(endpoint);
   expect(response.ok(),endpoint+' returned '+response.status()).toBeTruthy();
   expect(response.headers()['content-type']||'').toContain('application/json');
   await response.json();
+ }
+ // The 2026 trimmed Rust kernel intentionally retired the old RSI and
+ // experiment managers. A real 501 JSON error is correct, not a fake 200
+ // that makes React show an empty or misleading data-driven panel.
+ for(const endpoint of ['/api/improvements','/api/algorithms','/api/algorithms/evaluate',
+   '/api/algorithms/evaluations','/api/optimizers','/api/policies',
+   '/api/policy-searches','/api/experiment-requests']){
+  const response=await request.get(endpoint);
+  expect(response.status(),endpoint+' should be explicitly retired').toBe(501);
+  expect(response.headers()['content-type']||'').toContain('application/json');
+  expect((await response.json()).error).toBeTruthy();
  }
  await page.goto('/#/memory');
  await expect(page.locator('#root')).toBeVisible();

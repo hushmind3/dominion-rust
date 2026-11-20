@@ -69,7 +69,7 @@ test('outbound channel setup exposes only supported inputs and verifies after sa
  await dialog.getByLabel(/Bot Token/).fill('123456:fixture-token')
  await dialog.getByLabel(/Chat ID/).fill('-100123456')
  await dialog.getByRole('button',{name:'설정 저장'}).click()
- await expect(page.getByText('운영 알림')).toBeVisible()
+ await expect(page.getByText('운영 알림',{exact:true})).toBeVisible()
  await expect(telegram.getByText('송신 설정됨')).toBeVisible()
  expect(fixture.requests).toHaveLength(1)
  expect(fixture.requests[0].roomId).toBe(roomId)
