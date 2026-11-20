@@ -313,7 +313,7 @@ test('exact native cache boundary overrides heuristic and excludes newest questi
   assert.equal((await worker.fetch(call('5'),env)).status,200)
   assert.equal(calls[1].messages[5].content,messages[5].content,
    'last changing user turn must never become an explicit cache write')
-  assert.equal(calls[1].messages[2].content[0].prompt_cache_breakpoint.mode,'explicit',
+  assert.equal(calls[1].messages[4].content[0].prompt_cache_breakpoint.mode,'explicit',
    'invalid anchor retains old-client deterministic stable-profile fallback')
  }finally{globalThis.fetch=old}
 })
