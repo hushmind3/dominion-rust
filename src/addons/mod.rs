@@ -109,9 +109,19 @@ mod tests{
         assert_eq!(injected.server_count(),0,"disabled host must drop stale remote endpoints");
         assert!(host.tool_definitions(&settings).await.is_empty());
         assert!(host.extensions.skill_list().await.is_empty());
-        assert!(!host.supports_connected("github_write_file"));
+        assert!(host.handles_tool("mcp__test-server__search"));
+        assert!(host.needs_external_approval("mcp__test-server__search"));
 
         let store=Arc::new(Store::open(root.join("runs")).await.unwrap());
+        // A previously advertised MCP tool cannot escape through the
+        // builtin executor after its extension host is disabled.
+        let call=ToolCall{id:"blocked-remote".into(),
+            name:"mcp__test-server__search".into(),arguments:serde_json::json!({})};
+        let (_sender,receiver)=tokio::sync::watch::channel(false);
+        let outcome=host.invoke_external(
+            &settings,&store,Uuid::new_v4(),&call,receiver).await.unwrap();
+        assert!(matches!(outcome,crate::domain::ToolEffectOutcome::Settled(Err(_))),
+            "disabled external requests must not reach remote IO");
         let groups=Arc::new(Groups::open(root.join("groups")).await.unwrap());
         let engine=Engine::new(settings,store,groups).unwrap();
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
