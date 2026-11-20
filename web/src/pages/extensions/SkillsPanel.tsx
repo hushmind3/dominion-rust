@@ -3,6 +3,7 @@ import {Action,Empty,Panel,StateTag,Subheading} from '../../components/UI'
 import {Button,TextInput} from '../../components/Primitives'
 import {ArrowRight,BookOpenText,Check,Plus,Search,Trash2} from 'lucide-react'
 import {t,useLocale} from '../../i18n'
+import {useState} from 'react'
 
 type Props={
  repo:string;setRepo:(v:string)=>void;repoBusy:boolean;importRepo:()=>Promise<void>;
@@ -14,13 +15,14 @@ type Props={
 
 export function SkillsPanel(p:Props){
  useLocale()
+ const [pending,setPending]=useState('')
  const {repo,setRepo,repoBusy,importRepo,skills,addSkillTemplate,filteredSkills,skillCategories,skillCategory,setSkillCategory,skillQuery,setSkillQuery,setSkillEdit,setError,setMessage}=p
  return (
-  <>
   <>
     <Panel className="mb-4 p-4">
       <div className="flex flex-wrap items-center gap-2">
         <TextInput
+          className="min-w-[180px] flex-1" aria-label={t('sp.repoPlaceholder')}
           value={repo}
           onChange={(e) => setRepo(e.target.value)}
           placeholder={t('sp.repoPlaceholder')}
@@ -42,6 +44,7 @@ export function SkillsPanel(p:Props){
       {skillCategories.map((category) => (
         <Button
           key={category}
+          aria-pressed={skillCategory===category}
           variant={skillCategory === category ? "primary" : "ghost"}
           onClick={() => setSkillCategory(category)}
           className="!px-3 !py-1.5 !text-[12px]"
@@ -53,6 +56,7 @@ export function SkillsPanel(p:Props){
     <div className="mb-5 flex items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] px-3 py-2">
       <Search size={17} className="text-[#A79C8E]" />
       <TextInput
+        aria-label={t('sp.searchPlaceholder')}
         value={skillQuery}
         onChange={(e) => setSkillQuery(e.target.value)}
         placeholder={t('sp.searchPlaceholder')}
@@ -60,7 +64,8 @@ export function SkillsPanel(p:Props){
     </div>
     <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       {filteredSkills.map((template) => {
-        const exists = skills.value.some((x:any) => x.name === template.name);
+        const installed=skills.value.find((x:any)=>x.name===template.name||x.name===template.canonicalName||x.name===template.nameEn);
+        const exists=Boolean(installed);
         return (
           <Panel
             key={template.name}
@@ -75,17 +80,25 @@ export function SkillsPanel(p:Props){
               {exists ? (
                 <Button
                   variant="secondary"
+                  disabled={Boolean(pending)}
                   onClick={async () => {
-                    const target = skills.value.find((x: any) => x.name === template.name);
-                    if (!target) return;
-                    await del("/api/skills/" + target.id);
-                    await skills.reload();
+                    if(!installed||!window.confirm(t('sp.confirmDelete',{name:installed.name})))return
+                    setPending(template.name)
+                    try{
+                      await del("/api/skills/"+encodeURIComponent(installed.id))
+                      await skills.reload()
+                      setMessage(t('ext.skillDeleted',{name:installed.name}))
+                    }catch(e){setError((e as Error).message)}
+                    finally{setPending('')}
                   }}
                 >
                   {t('sp.cancel')}
                 </Button>
               ) : (
-                <Button variant="secondary" onClick={() => void addSkillTemplate(template)}>
+                <Button variant="secondary" disabled={Boolean(pending)} onClick={async()=>{
+                  setPending(template.name)
+                  try{await addSkillTemplate(template)}finally{setPending('')}
+                }}>
                   {t('sp.install')}
                 </Button>
               )}
@@ -134,7 +147,7 @@ export function SkillsPanel(p:Props){
                       ...x,
                       enabled: !x.enabled,
                     });
-                    skills.reload();
+                    await skills.reload();
                   } catch (e) {
                     setError((e as Error).message);
                   }
@@ -183,8 +196,6 @@ export function SkillsPanel(p:Props){
         </Panel>
       )}
     </div>
-  </>
-
   </>
  )
 }
