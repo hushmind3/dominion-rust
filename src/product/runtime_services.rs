@@ -3,13 +3,22 @@
 use super::ProductHost;
 use crate::{config::Settings,domain::{Run,ToolCall,ToolEffectOutcome},
     ports::RunStorePort,provider::{ModelClient,Reply},
-    runtime_services::{RuntimeServices,ServiceFuture}};
+    runtime_services::{RuntimeServices,ServiceFuture,ModelCapabilities,CapabilitySupport}};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::watch;
 use uuid::Uuid;
 
 impl RuntimeServices for ProductHost {
+    fn model_capabilities(&self,run:&Run)->ModelCapabilities{
+        let tool_calling=self.providers.get(&run.provider_id)
+            .filter(|entry|entry.enabled&&entry.model==run.model_name)
+            .and_then(|entry|entry.tool_calling);
+        ModelCapabilities{
+            tool_calling:CapabilitySupport::from(tool_calling),
+            ..ModelCapabilities::default()
+        }
+    }
     fn select_model(&self,settings:&Settings,base:&ModelClient,
         provider:&str,model:&str)->Result<ModelClient,String>{
         ProductHost::model_for_selection(self,settings,base,provider,model)

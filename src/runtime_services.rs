@@ -10,9 +10,32 @@ use uuid::Uuid;
 
 pub type ServiceFuture<'a,T> = Pin<Box<dyn Future<Output=T>+Send+'a>>;
 
+/// Exact endpoint/model capability. Never inferred from a model's name.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub enum CapabilitySupport{#[default] Unknown,Supported,Unsupported}
+impl From<Option<bool>> for CapabilitySupport{
+    fn from(value:Option<bool>)->Self{
+        match value {Some(true)=>Self::Supported,
+                     Some(false)=>Self::Unsupported,None=>Self::Unknown}
+    }
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct ModelCapabilities{
+    pub tool_calling:CapabilitySupport,
+    pub parallel_tool_calls:CapabilitySupport,
+    pub streaming:CapabilitySupport,
+    pub prompt_cache:CapabilitySupport,
+    pub vision:CapabilitySupport,
+    pub context_window:Option<u32>,
+}
+
 /// The host may supply alternative memory, provider routing, or connected
 /// tools, but it cannot override the native journal/approval/policy checks.
 pub trait RuntimeServices:Send+Sync {
+    /// Unknown is backwards-compatible; Unsupported is a hard runtime gate.
+    fn model_capabilities(&self,_run:&Run)->ModelCapabilities{
+        ModelCapabilities::default()
+    }
     fn select_model(&self,settings:&Settings,base:&ModelClient,
         provider:&str,model:&str)->Result<ModelClient,String>;
     /// The native loop requests an inference receipt through this host port.

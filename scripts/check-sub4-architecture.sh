@@ -130,6 +130,9 @@ required_count src/engine.rs 'self[.](knowledge|addons|providers)[.]' 0
 required_count src/harness/runner.rs 'self[.](knowledge|addons|providers)[.]' 0
 required_count src/runtime_services.rs 'pub trait RuntimeServices' 1
 required_count src/runtime_services.rs 'fn complete' 1
+required_count src/runtime_services.rs 'pub enum CapabilitySupport' 1
+required_count src/harness/runner.rs 'model_capability_denied' 1
+required_count src/product/runtime_services.rs 'fn model_capabilities' 1
 required_count src/product/runtime_services.rs 'fn complete' 1
 required_count src/harness/runner.rs 'selected[.]complete|selected_model[.]complete|model_for_run' 0
 required_count src/product/runtime_services.rs 'impl RuntimeServices for ProductHost' 1

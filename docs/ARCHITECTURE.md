@@ -471,3 +471,15 @@ This is a deterministic *index* on source events, not a synthetic
 LLM-memory replacement and not an instruction to forward every
 speaker message into every other speaker's prompt. Room context
 projection retains existing bounded/cacheable source excerpts.
+
+### Capability-aware local/API inference (2026-11-20)
+
+The host ports now advertise typed `ModelCapabilities`, with
+`Unknown` / `Supported` / `Unsupported` states. Capabilities are never
+invented from model names or vendor marketing. The provider registry
+optionally stores `toolCalling: true|false` for the exact selected
+endpoint/model; older entries remain unknown and backward compatible.
+An explicit `false` rejects tool-capable agent requests before charging
+a model call and persists a `model_capability_denied` Run event.
+Tool-free chat continues to work. A changed endpoint, protocol or model
+does not inherit an old tool capability declaration.

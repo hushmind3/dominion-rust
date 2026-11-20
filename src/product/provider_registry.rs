@@ -21,6 +21,9 @@ pub struct Provider {
     #[serde(default)]pub reflection:bool,
     #[serde(default)]pub reflection_model:String,
     #[serde(default)]pub requests_per_minute:u32,
+    /// Exact model/endpoint tool-call declaration; None = untested.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub tool_calling:Option<bool>,
 }
 #[derive(Default,Clone,Serialize,Deserialize)]
 struct Snapshot{entries:HashMap<String,Provider>}
@@ -44,6 +47,7 @@ pub struct Draft{
     #[serde(default)]pub reflection:bool,
     #[serde(default)]pub reflection_model:Option<String>,
     #[serde(default)]pub requests_per_minute:u32,
+    #[serde(default)]pub tool_calling:Option<bool>,
 }
 fn default_kind()->String{"openai".into()}
 fn enabled()->bool{true}
@@ -178,12 +182,17 @@ impl Registry{
         if key.len()>8192||key.contains('\r')||key.contains('\n'){
             return Err("invalid provider credential".into());
         }
+        let retained_capability=if same_binding&&old.as_ref()
+            .is_some_and(|previous|previous.model==draft.model.trim()){
+            old.as_ref().and_then(|previous|previous.tool_calling)
+        }else{None};
         let record=Provider{
             id:id.clone(),name:draft.name.trim().into(),base_url,
             kind:draft.kind,model:draft.model.trim().into(),api_key:key,
             enabled:draft.enabled,local:loopback,reflection:draft.reflection,
             reflection_model:draft.reflection_model.unwrap_or_default(),
             requests_per_minute:draft.requests_per_minute,
+            tool_calling:draft.tool_calling.or(retained_capability),
         };
         next.entries.insert(id,record.clone());
         store(&self.file,&next)?;
@@ -234,6 +243,7 @@ pub fn public(record:&Provider)->serde_json::Value{
         "local":record.local,"hasKey":!record.api_key.is_empty()||record.local,
         "reflection":record.reflection,"reflectionModel":record.reflection_model,
         "requestsPerMinute":record.requests_per_minute,
+        "toolCalling":record.tool_calling,
         "pricing":"unconfigured"
     })
 }
@@ -328,8 +338,42 @@ mod tests{
             kind:kind.into(),model:"test-model".into(),api_key:key.map(str::to_owned),
             credential_source_id:None,
             enabled:true,local:false,reflection:false,reflection_model:None,
-            requests_per_minute:0,
+            requests_per_minute:0,tool_calling:None,
         }
+    }
+
+
+    #[test]
+    fn tool_support_is_bound_to_exact_model_and_endpoint_and_survives_restart(){
+        let root=std::env::temp_dir().join(format!("dominion-capability-binding-{}",Uuid::new_v4()));
+        let registry=Registry::open(root.clone()).unwrap();
+        let mut first=draft(None,"https://model.example.test/v1","openai",None);
+        first.tool_calling=Some(false);
+        let saved=registry.upsert(first).unwrap();
+        assert_eq!(saved.tool_calling,Some(false));
+        assert_eq!(public(&saved)["toolCalling"],false);
+        let same=registry.upsert(draft(Some(saved.id.clone()),
+            "https://model.example.test/v1","openai",None)).unwrap();
+        assert_eq!(same.tool_calling,Some(false),
+            "omitted capability must keep exact model/endpoint declaration");
+        drop(registry);
+        let reopened=Registry::open(root.clone()).unwrap();
+        assert_eq!(reopened.get(&saved.id).unwrap().tool_calling,Some(false));
+        let moved=reopened.upsert(draft(Some(saved.id.clone()),
+            "https://other.example.test/v1","openai",None)).unwrap();
+        assert_eq!(moved.tool_calling,None,
+            "a new endpoint must never inherit a tool compatibility claim");
+        let mut explicit=draft(Some(saved.id.clone()),
+            "https://other.example.test/v1","openai",None);
+        explicit.tool_calling=Some(true);
+        let supported=reopened.upsert(explicit).unwrap();
+        assert_eq!(supported.tool_calling,Some(true));
+        let switched=reopened.upsert(draft(Some(saved.id.clone()),
+            "https://other.example.test/v1","anthropic",None)).unwrap();
+        assert_eq!(switched.tool_calling,None,
+            "a different protocol also resets prior assumptions");
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

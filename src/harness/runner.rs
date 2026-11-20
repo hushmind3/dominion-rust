@@ -301,6 +301,22 @@ impl Engine {
                 &run,allowed_native,allowed_external,&self.settings.denied_tools);
             Self::admit_algorithm_catalog(&authorized,&presentation.tools)?;
             let catalog=presentation.tools;
+            // Operator-declared incompatibility: fail before charging any
+            // tool-capable inference. Unknown legacy capabilities continue.
+            if !catalog.is_empty() && self.services.model_capabilities(&run)
+                .tool_calling==crate::runtime_services::CapabilitySupport::Unsupported {
+                self.store.mutate(id,|current|{
+                    if current.status==RunStatus::Running{
+                        current.status=RunStatus::Failed;
+                        current.event("model_capability_denied",
+                            "Selected model explicitly does not support tool calls",
+                            Some(json!({"provider":run.provider_id,
+                                "model":run.model_name,"tools_requested":catalog.len()})));
+                    }
+                    Ok(())
+                }).await?;
+                return Ok(());
+            }
             let schema_chars_saved=policy_saved.saturating_add(presentation.saved_chars);
             let projection=self.algorithm.project_context(&run,self.settings.context_max_chars)?;
             let mut outbound=projection.messages.clone();

@@ -649,8 +649,15 @@ async fn workflow_loop_identity_is_pinned_before_queued_work_resumes(){
 
 /// An embedding host can substitute model/memory/tool capabilities without
 /// touching the native Run state machine or production ProductHost.
-struct DenyOnlyServices;
+struct DenyOnlyServices{
+    tool_calling:crate::runtime_services::CapabilitySupport,
+}
 impl crate::runtime_services::RuntimeServices for DenyOnlyServices{
+    fn model_capabilities(&self,_run:&Run)->crate::runtime_services::ModelCapabilities{
+        crate::runtime_services::ModelCapabilities{
+            tool_calling:self.tool_calling,..Default::default()
+        }
+    }
     fn select_model(&self,_settings:&Settings,_base:&ModelClient,
         _provider:&str,_model:&str)->Result<ModelClient,String>{
         Err("injected model route selected".into())
@@ -716,7 +723,9 @@ async fn runtime_injects_model_and_memory_without_reaching_product_backend(){
     let mcp=Arc::new(crate::mcp::Mcp::new(Vec::new()).unwrap());
     let engine=Engine::new_with_runtime_services(settings,backend,groups,mcp,
         Arc::new(crate::algorithms::DefaultAlgorithm::default()),
-        Arc::new(dominion_agent_algo::ReActLoop),Arc::new(DenyOnlyServices)).unwrap();
+        Arc::new(dominion_agent_algo::ReActLoop),Arc::new(DenyOnlyServices{
+            tool_calling:crate::runtime_services::CapabilitySupport::Unknown,
+        })).unwrap();
     assert_eq!(engine.model_for_selection("any","model").err().unwrap(),
         "injected model route selected");
     assert_eq!(engine.services.memory_search("global","note",5).await,
@@ -744,5 +753,48 @@ async fn runtime_injects_model_and_memory_without_reaching_product_backend(){
     }
     drop(sdk);
     drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
+async fn explicitly_no_tool_model_is_denied_before_billable_agent_turn(){
+    let root=std::env::temp_dir().join(format!("dominion-capability-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    settings.addons_enabled=false;
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+    let backend:Arc<dyn crate::ports::RunRepository>=store.clone();
+    let mcp=Arc::new(crate::mcp::Mcp::new(Vec::new()).unwrap());
+    let engine=Engine::new_with_runtime_services(settings,backend,groups,mcp,
+        Arc::new(crate::algorithms::DefaultAlgorithm::default()),
+        Arc::new(dominion_agent_algo::ReActLoop),Arc::new(DenyOnlyServices{
+            tool_calling:crate::runtime_services::CapabilitySupport::Unsupported
+        })).unwrap();
+    let sdk=crate::sdk::Dominion::from_engine(Arc::clone(&engine));
+    for model_only in [false,true]{
+        let mut run=Run::new(CreateRun{
+            instruction:"Inspect repository".into(),max_steps:Some(3),
+            budget_krw:Some(100.0),
+        },3).unwrap();
+        run.model_only=model_only;
+        let id=run.id;
+        engine.store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        let outcome=sdk.wait(id,std::time::Duration::from_secs(8)).await.unwrap();
+        if model_only {
+            assert_eq!(outcome.status,RunStatus::Completed,
+                "tool-free chat is compatible with non-tool models");
+            assert_eq!(outcome.input_tokens,3);
+        }else{
+            assert_eq!(outcome.status,RunStatus::Failed,
+                "agent models that cannot accept tool schemas must fail closed");
+            assert_eq!(outcome.input_tokens,0,"no unsupported paid call");
+            assert!(outcome.events.iter()
+                .any(|event|event.kind=="model_capability_denied"));
+        }
+    }
+    drop(sdk);drop(engine);
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
