@@ -434,6 +434,34 @@ struct SayInput{
   client_message_id:String,
   #[serde(default)]reasoning_language:Option<String>,
 }
+/// Shared owner-message admission for synchronous and background fanout.
+async fn admit_owner_message(
+    engine:&Arc<Engine>,id:Uuid,input:&SayInput
+)->Result<(Room,bool,usize,Vec<String>),Fault>{
+    if input.input.trim().is_empty(){return Err(bad("room message cannot be empty"));}
+    if input.reasoning_language.as_deref().is_some_and(|value|
+        !matches!(value,"ko"|"default"|"original")){
+        return Err(bad("unsupported reasoning language"));
+    }
+    let requested=input.agent_ids.clone();
+    let mut recipients=requested.clone();
+    if recipients.is_empty(){
+        let room=engine.groups.get(id).await.ok_or_else(missing)?;
+        let content=input.input.to_lowercase();
+        let members=room.participants.iter()
+            .map(|participant|participant.name.as_str()).collect::<HashSet<_>>();
+        for agent in engine.frontend.agents().await{
+            if members.contains(agent.id.as_str())&&!agent.name.is_empty()
+                &&content.contains(&format!("@{}",agent.name.to_lowercase())){
+                recipients.push(agent.id);
+            }
+        }
+    }
+    let (room,inserted,index)=engine.groups.say_once(
+        id,input.input.trim().to_owned(),&input.client_message_id,recipients
+    ).await.map_err(bad)?;
+    Ok((room,inserted,index,requested))
+}
 pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,usize),Fault>{
   let before=engine.groups.get(id).await.ok_or_else(missing)?;
   let config=config_of(&before);
@@ -441,6 +469,10 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
   let expected=scheduled.len();
   let mut room=before;
   let mut turns=0;
+  // Snapshot participant metadata once. Resolve credentials at each dispatch.
+  let agent_configs=if !config.auto_models&&!config.models.is_empty(){
+      None
+  }else{Some(engine.frontend.agents().await)};
   // One client message gets at most maxTurns responses. Retries operate on
   // the remaining allowance and never reset it or spend on a duplicate turn.
   let owner=room.messages.iter().rposition(|m|m.speaker=="user");
@@ -450,24 +482,25 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
     else{config.max_turns.saturating_sub(already_generated)};
   for agent_id in scheduled.into_iter().take(allowance){
     if room.status==RoomStatus::Finished{break;}
-    // Read exact-scope durable notes. They influence subsequent turns as
-    // explicitly lower-trust task context, never as system instructions.
-    let notes=engine.knowledge.list(&format!("room:{id}")).await;
-    let excerpts=notes.iter().take(4).map(|n|format!("{}: {}",n.title,n.content))
-        .collect::<Vec<_>>().join("\n");
-    let excerpt=if excerpts.chars().count()>1250{
-        excerpts.chars().take(1250).collect::<String>()
-    }else{excerpts};
-    engine.groups.set_knowledge_context(id,excerpt).await.map_err(bad)?;
+    // Refresh scoped evidence when auto-learning may change it mid-turn.
+    if turns==0||config.auto_learning{
+        let notes=engine.knowledge.list(&format!("room:{id}")).await;
+        let excerpts=notes.iter().take(4).map(|n|format!("{}: {}",n.title,n.content))
+            .collect::<Vec<_>>().join("\n");
+        let excerpt=if excerpts.chars().count()>1250{
+            excerpts.chars().take(1250).collect::<String>()
+        }else{excerpts};
+        engine.groups.set_knowledge_context(id,excerpt).await.map_err(bad)?;
+    }
     let (provider,model)=if !config.auto_models && !config.models.is_empty(){
         let selected=&config.models[room.rounds%config.models.len()];
         (selected.get("providerId").and_then(Value::as_str).unwrap_or("").to_owned(),
          selected.get("model").and_then(Value::as_str).unwrap_or("").to_owned())
     }else{
-        let agent=engine.frontend.agents().await.into_iter()
-            .find(|a|a.id==agent_id)
+        let agent=agent_configs.as_ref()
+            .and_then(|agents|agents.iter().find(|agent|agent.id==agent_id))
             .ok_or_else(||bad("selected room agent was deleted"))?;
-        (agent.provider_id,agent.model)
+        (agent.provider_id.clone(),agent.model.clone())
     };
     let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?
         .with_session_affinity(&format!("dominion-room-{id}"));
@@ -528,39 +561,23 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   let _lease=engine.groups.try_frontend_turn(id).ok_or_else(||(
     StatusCode::CONFLICT,Json(json!({"error":
       "room turn already running; inspect /state before resending"}))))?;
-  if input.input.trim().is_empty(){return Err(bad("room message cannot be empty"));}
-  if input.reasoning_language.as_deref().is_some_and(|v|!matches!(v,"ko"|"default"|"original")){
-    return Err(bad("unsupported reasoning language"));
-  }
-  let mut recipients=input.agent_ids;
-  let requested_initial=recipients.clone();
-  if recipients.is_empty() {
-    // Main RoomsPage accepts plain @DisplayName mentions as well as
-    // explicit selected agent IDs. Resolve them against real room members.
-    let room=engine.groups.get(id).await.ok_or_else(missing)?;
-    let text=input.input.to_lowercase();
-    for agent in engine.frontend.agents().await {
-      if room.participants.iter().any(|p|p.name==agent.id) &&
-          !agent.name.is_empty() &&
-          text.contains(&format!("@{}",agent.name.to_lowercase())){
-        recipients.push(agent.id);
-      }
-    }
-  }
-  let (before,inserted,index)=engine.groups.say_once(
-    id,input.input.trim().to_owned(),&input.client_message_id,recipients
-  ).await.map_err(bad)?;
+  let (before,inserted,index,requested_initial)=
+      admit_owner_message(&engine,id,&input).await?;
   // Retry only the original owner turn; stale clientMessageIds may never
   // schedule replies for a newer user message.
   let newest=before.messages.iter().rposition(|m|m.speaker=="user")==Some(index);
-  let (room,_new_turns,_new_expected)=if newest
-      &&before.status==RoomStatus::Open
-      &&!speakers_for_owner_turn(&before).is_empty(){
-    generate(&engine,id).await?
+  let should_generate=newest&&before.status==RoomStatus::Open
+      &&!speakers_for_owner_turn(&before).is_empty();
+  let (room,_new_turns,_new_expected)=if should_generate{
+      generate(&engine,id).await?
   }else{(before,0,0)};
   let (expected,turns)=owner_turn_progress(&room,index,
       if requested_initial.is_empty(){&room.recipients}else{&requested_initial});
-  if inserted{crate::frontend_channels::dispatch_room(&engine,&room).await;}
+  // generate() has already dispatched completed replies; avoid a second
+  // outbound-channel scan when handling a synchronous owner turn.
+  if inserted&&!should_generate{
+      crate::frontend_channels::dispatch_room(&engine,&room).await;
+  }
   let message=message_rows(&room).get(index).cloned().ok_or_else(||failed("stored message disappeared".into()))?;
   Ok(Json(json!({
     "room":room_view(&room),"message":message,
@@ -595,27 +612,8 @@ async fn send_background(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
       "error":"another room owner turn is running; inspect /state before resending"
     }))));
   };
-  if input.input.trim().is_empty(){return Err(bad("room message cannot be empty"));}
-  if input.reasoning_language.as_deref().is_some_and(|v|
-    !matches!(v,"ko"|"default"|"original")){
-    return Err(bad("unsupported reasoning language"));
-  }
-  let mut recipients=input.agent_ids;
-  let requested_initial=recipients.clone();
-  if recipients.is_empty(){
-    let room=engine.groups.get(id).await.ok_or_else(missing)?;
-    let content=input.input.to_lowercase();
-    for agent in engine.frontend.agents().await{
-      if room.participants.iter().any(|p|p.name==agent.id)
-        &&!agent.name.is_empty()
-        &&content.contains(&format!("@{}",agent.name.to_lowercase())){
-        recipients.push(agent.id);
-      }
-    }
-  }
-  let (room,inserted,index)=engine.groups.say_once(id,
-    input.input.trim().to_owned(),&input.client_message_id,recipients)
-    .await.map_err(bad)?;
+  let (room,inserted,index,requested_initial)=
+      admit_owner_message(&engine,id,&input).await?;
   let newest=room.messages.iter().rposition(|m|m.speaker=="user")==Some(index);
   let started=newest&&room.status==RoomStatus::Open
     &&!speakers_for_owner_turn(&room).is_empty();

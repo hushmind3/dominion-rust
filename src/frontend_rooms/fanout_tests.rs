@@ -451,3 +451,56 @@ async fn third_owner_turn_upstream_400_retains_exact_failed_speaker_and_resumes_
     drop(engine);
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+#[tokio::test]
+async fn sync_and_background_share_message_validation_and_targeted_admission(){
+    let (engine,id,requests,server,root)=setup(10,"discussion").await;
+    let sync_invalid=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Target one agent".into(),agent_ids:vec!["agent-1".into()],
+        client_message_id:"invalid-sync".into(),reasoning_language:Some("unsupported".into())
+    })).await.unwrap_err();
+    let background_invalid=send_background(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Target one agent".into(),agent_ids:vec!["agent-1".into()],
+        client_message_id:"invalid-background".into(),reasoning_language:Some("unsupported".into())
+    })).await.unwrap_err();
+    assert_eq!(sync_invalid.0,StatusCode::BAD_REQUEST);
+    assert_eq!(background_invalid.0,StatusCode::BAD_REQUEST);
+    for (is_background,key) in [(false,"bad-sync-target"),(true,"bad-background-target")]{
+        let input=SayInput{input:"Target absent agent".into(),
+            agent_ids:vec!["not-a-member".into()],client_message_id:key.into(),
+            reasoning_language:None};
+        let rejected=if is_background{
+            send_background(State(engine.clone()),Path(id),Json(input)).await.unwrap_err()
+        }else{
+            send(State(engine.clone()),Path(id),Json(input)).await.unwrap_err()
+        };
+        assert_eq!(rejected.0,StatusCode::BAD_REQUEST);
+    }
+    assert!(engine.groups.get(id).await.unwrap().messages.is_empty());
+    assert_eq!(requests.load(Ordering::SeqCst),0);
+
+    let synchronous=send(State(engine.clone()),Path(id),Json(SayInput{
+        input:"First targeted response".into(),agent_ids:vec!["agent-1".into()],
+        client_message_id:"valid-sync".into(),reasoning_language:None
+    })).await.unwrap().0;
+    assert_eq!(synchronous["job"]["result"]["actualResponses"],1);
+    let background=send_background(State(engine.clone()),Path(id),Json(SayInput{
+        input:"Second targeted response".into(),agent_ids:vec!["agent-2".into()],
+        client_message_id:"valid-background".into(),reasoning_language:None
+    })).await.unwrap();
+    assert_eq!(background.0,StatusCode::ACCEPTED);
+    let mut completed=false;
+    for _ in 0..150{
+        let room=engine.groups.get(id).await.unwrap();
+        if room.messages.len()==4&&!engine.groups.frontend_turn_active(id){
+            assert_eq!(room.messages[1].speaker,"agent-1");
+            assert_eq!(room.messages[3].speaker,"agent-2");
+            completed=true;break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(completed,"background targeted fanout should finish");
+    assert_eq!(requests.load(Ordering::SeqCst),2);
+    server.abort();drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
