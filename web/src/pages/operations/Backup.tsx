@@ -110,7 +110,6 @@ export function BackupPanel() {
           <KeyRound size={15}/> {busy === 'backupKeys' ? t('ops.backup.rotating') : t('ops.backup.rotateKeys')}
         </Button>
       </div>
-
     </div>
     <label className="mt-3 flex items-center gap-2 text-[11px] text-[#5C544A]">
       <TextInput type="checkbox" checked={keepOld} onChange={event => setKeepOld(event.target.checked)}/>
