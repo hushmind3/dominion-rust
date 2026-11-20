@@ -48,13 +48,26 @@ for old in src/api.rs src/build_identity.rs; do
   exit 1
  fi
 done
+# The root is the instruction/Run/kernel contract, not a feature dumping ground.
+# New application components belong in src/product/, external integrations in
+# src/addons/. A *new core primitive* must be explicitly reviewed here.
+if [[ -e src/product.rs ]]; then
+ echo "ERROR: product host must live under src/product/mod.rs" >&2
+ exit 1
+fi
+for candidate in src/*.rs; do
+ case "${candidate##*/}" in
+ acceptance.rs|config.rs|context.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|loop_guard.rs|main.rs|policy.rs|program_ir.rs|program_session.rs|provider.rs|read_program.rs|repair_guidance.rs|sandbox.rs|sdk.rs|store.rs|tool_batch.rs|tool_discovery.rs|tool_schema.rs|tools.rs|verification.rs|workspace.rs) ;;
+ *) echo "ERROR: unexpected root module $candidate (classify core vs product/addons)" >&2; exit 1 ;;
+ esac
+done
 # The execution Engine must own native Run state, not application products.
 required_count src/engine.rs 'product: crate::product::ProductHost' 1
 required_count src/engine.rs 'pub groups:|pub addons:|pub knowledge:|pub frontend:|pub providers:|pub owner_profile:' 0
 required_count src/engine.rs 'frontend_local_models::|provider_registry::|frontend_state::|Knowledge::open' 0
-required_count src/product.rs 'pub struct ProductHost' 1
-required_count src/product.rs 'pub fn model_for_selection' 1
-required_count src/product.rs 'async fn focused_notes' 1
+required_count src/product/mod.rs 'pub struct ProductHost' 1
+required_count src/product/mod.rs 'pub fn model_for_selection' 1
+required_count src/product/mod.rs 'async fn focused_notes' 1
 # GitHub collaboration/skills/strategy evidence are optional adapters, not
 # additional Run schedulers or core-owned product features.
 for entry in src/github_collab.rs src/skills.rs src/strategy.rs src/strategy; do
@@ -83,7 +96,7 @@ required_count src/sdk/product.rs 'pub async fn (chat_sessions|create_group|reme
 # Optional integrations must never merge individually into the core API.
 required_count src/product/frontend_api.rs 'merge\(crate::addons::routes\(addons_enabled\)\)' 1
 required_count src/product/frontend_api.rs 'merge\(crate::frontend_channels|merge\(crate::frontend_extensions|merge\(crate::frontend_oauth' 0
-required_count src/product.rs 'pub addons:Arc<addons::Host>' 1
+required_count src/product/mod.rs 'pub addons:Arc<addons::Host>' 1
 required_count src/product/frontend_rooms.rs 'crate::addons::dispatch_room' 3
 required_count web/src/pages/Connections.tsx 'lazy\(\(\)=>import\(' 4
 for legacy in src/mcp.rs src/mcp/tests.rs src/frontend_channels.rs src/frontend_extensions.rs \

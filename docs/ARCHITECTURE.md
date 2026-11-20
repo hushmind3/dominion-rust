@@ -155,7 +155,7 @@ production. Real HTTP and Chromium end-to-end checks remain separate gates.
 The Rust `Engine` no longer owns a room collection, UI transcript
 store, editable owner profile, provider registry, memory database, or MCP
 registry as distinct execution-kernel responsibilities. The one
-`ProductHost` field in `src/product.rs` owns these optional product concerns.
+`ProductHost` field in `src/product/mod.rs` owns these optional product concerns.
 Its `model_for_selection` adapts user-selected provider/local model settings;
 `focused_notes` looks up opt-in memory and caches projections. Neither can
 schedule or authorize a Run.
@@ -177,7 +177,7 @@ Callers retain `engine.frontend`, `engine.groups`, and similar compatibility
 field access through a Rust `Deref` to `ProductHost`, to avoid breaking
 existing HTTP/SDK routing and stable data formats. **This is an ownership
 extraction, not yet a separate library or subprocess**. Code review should
-treat `src/engine.rs` as the Run executor and `src/product.rs` as the
+treat `src/engine.rs` as the Run executor and `src/product/mod.rs` as the
 application adapter; new product state must not be added directly to Engine.
 `DOMINION_ADDONS_ENABLED` continues to control external integrations.
 
@@ -223,3 +223,8 @@ router types, frontend restore handlers, local model picker metadata or
 provider catalog pricing logic. Stable public paths and HTTP endpoints are
 retained through reexports. Model choice validation still occurs before
 launch; price uncertainty still emits the same persistent event.
+
+Root-module allowlisting in `scripts/check-sub4-architecture.sh`
+prevents new product or integration source files from silently appearing
+beside the native execution modules. A genuinely new core primitive requires
+an explicit architecture-guard change and code review.
