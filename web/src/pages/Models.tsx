@@ -1,5 +1,5 @@
 import {useEffect,useMemo,useRef,useState} from 'react'
-import {ArrowRight,Check,Cloud,HardDrive,KeyRound,LogIn,Plus,RefreshCw,Search,Settings2,ShieldCheck,Sparkles,UserRound,X} from 'lucide-react'
+import {Check,Cloud,HardDrive,KeyRound,LogIn,Plus,RefreshCw,Search,Settings2,ShieldCheck,Sparkles,X} from 'lucide-react'
 import {Provider,del,get,post} from '../api'
 import {Button,TextInput,SelectInput} from '../components/Primitives'
 import {FormField,Notice,refresh,useRemote} from '../components/UI'
@@ -8,14 +8,13 @@ import {ModelExplorer} from '../components/ModelExplorer'
 import {DominionCloudAccount} from '../components/DominionCloudAccount'
 import {ModelPicker} from '../components/ModelPicker'
 import {OAuthConnectionCard} from '../components/OAuthConnectionCard'
-import {CliAuthProgress, type CliAuthStatus} from '../components/CliAuthProgress'
 import {ReasoningSelect} from '../components/ReasoningSelect'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {t,useLocale} from '../i18n'
 
 type PresetCategory='free'|'cloud'|'local'
 type ProviderPreset={name:string;baseUrl:string;kind:string;local:boolean;integration?:'freellmapi'|'opencode-go';free?:boolean;requestsPerMinute?:number;category:PresetCategory;auth?:'key'|'none';note?:string}
-type CliCredential={id:string;name:string;available:boolean;supported:boolean;connected?:boolean;importAvailable?:boolean;accountId?:string;model?:string;hint?:string;loginSupported?:boolean;loginMethod?:'browser'|'browser-cli'|'api-key'}
+type CliCredential={id:string;name:string;available:boolean;cliAuthenticated?:boolean;hint?:string}
 type FreeCatalogModel={id:string;free?:boolean|null;freeStatus?:string;freeSource?:string}
 type FreeCatalogProvider={providerId:string;providerName:string;reachable:boolean;error?:string;models:FreeCatalogModel[]}
 type FreeCatalog={status?:string;updatedAt?:string;providers:FreeCatalogProvider[];counts?:{free:number;paid:number;unknown:number}}
@@ -76,50 +75,10 @@ export function ModelHub(){
  const [modal,setModal]=useState(false),[presetMode,setPresetMode]=useState(false)
  const [edit,setEdit]=useState<Provider|null>(null)
  const [tab,setTab]=useState<Tab>('providers'),[category,setCategory]=useState<'all'|PresetCategory>('all'),[query,setQuery]=useState('')
- const [loginPending,setLoginPending]=useState(false),[loginUrl,setLoginUrl]=useState(''),[loginMessage,setLoginMessage]=useState(''),[deviceCode,setDeviceCode]=useState<{userCode:string;verificationUrl:string}|null>(null)
+ const [loginPending,setLoginPending]=useState(false),[loginMessage,setLoginMessage]=useState(''),[deviceCode,setDeviceCode]=useState<{userCode:string;verificationUrl:string}|null>(null)
  const freeCatalog=useRemote<FreeCatalog>('/api/providers/free-catalog',{providers:[]})
  const [freeBusy,setFreeBusy]=useState(false)
  const [oauthBusy,setOauthBusy]=useState('')
- const [cliAuth,setCliAuth]=useState<CliAuthStatus|null>(null)
- const cliLoginPopup=useRef<Window|null>(null)
- const cliLoginPopupUrl=useRef('')
- const [openCodeAuthProvider,setOpenCodeAuthProvider]=useState('openai')
- const [cliModelCatalog,setCliModelCatalog]=useState<Record<string,string[]>>({})
- const [cliModelSelection,setCliModelSelection]=useState<Record<string,string>>({})
- const [cliModelBusy,setCliModelBusy]=useState('')
- const cliModelRequested=useRef(new Set<string>())
- const fetchCliModels=async(source:string)=>{
-  const providerId='cli-'+source
-  setCliModelBusy(source)
-  try{
-   const rows=await get<{id:string}[]>('/api/providers/'+providerId+'/models')
-   const available=rows.map(r=>r.id).filter(Boolean)
-   const defaultChoice=source==='gemini'?'auto':'default'
-   const options=[defaultChoice,...available.filter(model=>model!==defaultChoice)]
-   setCliModelCatalog(old=>({...old,[source]:options}))
-   setCliModelSelection(old=>({...old,[source]:old[source]&&options.includes(old[source])?old[source]:defaultChoice}))
-  }catch(e){setError((e as Error).message)}
-  finally{setCliModelBusy('')}
- }
- useEffect(()=>{
-  if(tab!=='oauth')return
-  for(const item of cli.value){
-   if(!item.connected||!['claude','gemini','opencode'].includes(item.id)||cliModelRequested.current.has(item.id))continue
-   cliModelRequested.current.add(item.id)
-   void fetchCliModels(item.id)
-  }
- },[tab,cli.value])
- const saveCliModel=async(source:string)=>{
-  const model=cliModelSelection[source]
-  if(!model)return
-  setCliModelBusy(source)
-  try{
-   await post('/api/providers/cli/'+source+'/model',{model})
-   await Promise.all([providers.reload(),cli.reload()])
-   setLoginMessage('사용할 모델을 저장했습니다. 이제 채팅에서 바로 선택할 수 있습니다.')
-  }catch(e){setError((e as Error).message)}
-  finally{setCliModelBusy('')}
- }
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const [defaultEffort,setDefaultEffort]=useState('')
  const editModels=useProviderModels(modal&&edit?edit.id:'')
@@ -130,8 +89,6 @@ export function ModelHub(){
  }
  const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':p?.integration==='opencode-go'?'opencode-go':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setDefaultEffort(String(p?.reasoningEffort||''));setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
  const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setDefaultModel('');setDefaultEffort('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setAccountId('');setTestResult(null);setError('');setModal(true)}
- const goProvider=providers.value.find(p=>p.integration==='opencode-go'||p.baseUrl.includes('opencode.ai/zen/go')||p.baseUrl.includes('opencode.ai/inference/go'))
- const connectOpencodeGo=()=>{if(goProvider)open(goProvider);else openPreset(opencodeGoPreset)}
  const needsNewKey=presetMode&&!freePreset&&(!local||integration==='freellmapi')
  const testConnection=async()=>{
   if(testBusy||!baseUrl.trim())return
@@ -176,7 +133,7 @@ export function ModelHub(){
   if(oauthBusy)return
   // Only the documented first-party device verification page may open.
   const popup=openBrowser?window.open('about:blank','_blank'):null
-  setOauthBusy('codex-device');setError('');setLoginMessage('');setLoginUrl('');setDeviceCode(null)
+  setOauthBusy('codex-device');setError('');setLoginMessage('');setDeviceCode(null)
   try{
    const started=await post<{user_code?:string;verification_url?:string;status?:string;message?:string}>('/api/providers/codex/device',{})
    if(started.status==='success'){
@@ -221,87 +178,12 @@ export function ModelHub(){
   },1500)
   return()=>{alive=false;clearInterval(timer)}
  },[loginPending])
- const startCliLogin=async(source:string)=>{
-  if(oauthBusy)return
-  // Open synchronously from the user click, as with Codex OAuth. Creating the
-  // tab after the asynchronous Rust request would trigger popup blocking.
-  const popup=window.open('about:blank','_blank')
-  if(popup){
-   popup.document.title='DOMINION · 로그인 연결 중'
-   popup.document.body.textContent='공식 로그인 페이지를 준비하고 있습니다…'
-  }
-  cliLoginPopup.current=popup
-  cliLoginPopupUrl.current=''
-  setOauthBusy('login-'+source);setError('');setLoginMessage('')
-  setCliAuth({source,status:'starting',message:'공식 로그인 창을 준비 중입니다.'})
-  try{
-   const started=await post<CliAuthStatus>('/api/providers/cli/'+encodeURIComponent(source)+'/login',{provider:source==='opencode'?openCodeAuthProvider:undefined})
-   setCliAuth(started)
-  }catch(e){popup?.close();cliLoginPopup.current=null;setCliAuth(null);setError((e as Error).message)}
-  finally{setOauthBusy('')}
- }
- useEffect(()=>{
-  if(!cliAuth)return
-  if(cliAuth.url && cliLoginPopupUrl.current!==cliAuth.url){
-   const popup=cliLoginPopup.current
-   if(popup && !popup.closed){
-    popup.location.href=cliAuth.url
-    cliLoginPopupUrl.current=cliAuth.url
-    cliLoginPopup.current=null
-   }
-  }
-  if(['completed','failed','cancelled'].includes(cliAuth.status)){
-   cliLoginPopup.current?.close()
-   cliLoginPopup.current=null
-  }
- },[cliAuth?.url,cliAuth?.status])
- useEffect(()=>{
-  if(!cliAuth||['completed','failed','cancelled'].includes(cliAuth.status))return
-  let live=true
-  const source=cliAuth.source
-  const timer=setInterval(()=>{
-   void get<CliAuthStatus>('/api/providers/cli/'+encodeURIComponent(source)+'/login/status').then(next=>{
-    if(!live)return
-    setCliAuth(current=>current?.source===source?next:current)
-    if(['completed','failed','cancelled'].includes(next.status)){
-     void cli.reload().then(()=>providers.reload()).then(()=>{
-      if(next.status==='completed')void fetchCliModels(source)
-     })
-     if(next.status==='completed')setLoginMessage('로그인 완료. 모델 목록을 불러옵니다.')
-    }
-   }).catch(e=>{if(live)setError((e as Error).message)})
-  },1200)
-  return()=>{live=false;clearInterval(timer)}
- },[cliAuth?.source,cliAuth?.status])
- const sendCliInput=async(input:string)=>{
-  if(!cliAuth)return
-  try{await post('/api/providers/cli/'+encodeURIComponent(cliAuth.source)+'/login/input',{input})}
-  catch(e){setError((e as Error).message)}
- }
- const cancelCliAuth=async()=>{
-  if(!cliAuth)return
-  try{
-   await post('/api/providers/cli/'+encodeURIComponent(cliAuth.source)+'/login/cancel',{})
-   setCliAuth({...cliAuth,status:'cancelled',message:'로그인을 취소했습니다.'})
-  }catch(e){setError((e as Error).message)}
- }
  const refreshFreeCatalog=async()=>{
   if(freeBusy)return
   setFreeBusy(true);setError('')
   try{const next=await post<FreeCatalog>('/api/providers/free-catalog/refresh',{});freeCatalog.setValue(next)}
   catch(e){setError((e as Error).message)}
   finally{setFreeBusy(false)}
- }
- const importCli=async(source:string)=>{
-  if(oauthBusy)return
-  setOauthBusy(source);setError('')
-  try{
-   const saved=await post<Provider&{importedCount?:number;skipped?:string[]}>('/api/providers/cli/import',{source})
-   setSavedId(saved.id);await Promise.all([providers.reload(),cli.reload()]);refresh()
-   if(source==='opencode-go')setLoginMessage('OpenCode Go 키를 DOMINION에 저장했습니다. 모델을 선택하고 연결을 검사하세요.')
-   else if(saved.importedCount&&saved.importedCount>1)setLoginMessage(`API 키 ${saved.importedCount}개를 가져왔습니다.`)
-  }catch(e){setError((e as Error).message)}
-  finally{setOauthBusy('')}
  }
  const visiblePresets=useMemo(()=>providerPresets.filter(preset=>{
   if(tab==='local'&&preset.category!=='local')return false
@@ -317,6 +199,7 @@ export function ModelHub(){
   const term=query.trim().toLowerCase()
   return !term||(p.name+' '+p.baseUrl).toLowerCase().includes(term)
  }),[providers.value,query,tab])
+ const codex=cli.value.find(item=>item.id==='codex'&&item.available)
  const tabs:Array<{id:Tab;label:string;count?:number}>= [
   {id:'providers',label:'내 모델',count:providers.value.filter(p=>!p.local).length},
   {id:'cloud',label:'DOMINION Cloud'},
@@ -324,7 +207,7 @@ export function ModelHub(){
   {id:'free',label:'무료 모델',count:freeCatalog.value.counts?.free||0},
   {id:'huggingface',label:'허깅페이스 모델 탐색'},
   {id:'local',label:'로컬',count:providers.value.filter(p=>p.local).length},
-  {id:'oauth',label:'계정 인증'},
+  ...(codex?[{id:'oauth' as const,label:'Codex CLI 인증'}]:[]),
  ]
  return <div className="mx-auto w-full max-w-[1200px] px-4 pt-2 pb-5 sm:px-6 lg:pt-3">
 
@@ -353,55 +236,30 @@ export function ModelHub(){
   </section>}
   {(tab==='cloud'||tab==='connect')&&<div className="mb-4"><DominionCloudAccount key={tab} initialTab={tab==='connect'?'providers':'cloud'} hideManagementNavigation onProviderAdded={providers.reload}/></div>}
 
-  {tab==='oauth'&&<section className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5 shadow-[0_1px_2px_rgba(36,33,29,.04)]">
-   <div className="mb-4"><h2 className="m-0 text-[16px] font-bold text-[#24211D]">{t('models.oauth.title')}</h2><p className="mt-1 text-[12px] text-[#7C7469]">{t('models.oauth.desc')}</p></div>
-   <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-2">
-    {cli.value.map(item=><OAuthConnectionCard
-     key={item.id}
-     title={item.name}
-     status={item.connected?'DOMINION 연결됨':item.available?'CLI 로그인 확인':'로그인 필요'}
-     statusTone={item.connected?'connected':item.available?'available':'disconnected'}
-     accountId={item.accountId}
-     model={item.model}
-     hint={item.hint}
-    >
-     {item.id==='codex'&&<>
-      <Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)||!item.available} onClick={()=>void startCodexLogin()}><LogIn size={13}/> {item.connected?'재로그인':'브라우저 로그인'}</Button>
-      <Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)||!item.available} onClick={()=>void startCodexDevice()}><KeyRound size={13}/> 기기 코드 로그인</Button>
-     </>}
-     {item.id==='opencode'&&<SelectInput aria-label="OpenCode 로그인 제공자" className="!w-auto !min-w-[128px] !py-1 !text-[12px]" value={openCodeAuthProvider} onChange={event=>setOpenCodeAuthProvider(event.target.value)}>
-      <option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="google">Google</option><option value="github-copilot">GitHub Copilot</option>
-     </SelectInput>}
-     {item.loginMethod==='browser-cli'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)||Boolean(cliAuth&&!['completed','failed','cancelled'].includes(cliAuth.status))} onClick={()=>void startCliLogin(item.id)}>{oauthBusy==='login-'+item.id?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.available?'브라우저 재로그인':'브라우저 로그인'}</Button>}
-     {item.id==='opencode-go'&&<Button type="button" variant="primary" size="sm" onClick={connectOpencodeGo}><KeyRound size={13}/> {goProvider?'키 / 모델 설정':'API 키 연결'}</Button>}
-     {item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}><KeyRound size={13}/> {item.id==='opencode-go'?'기존 키 가져오기':'기존 인증 가져오기'}</Button>}
-     {(item.id==='claude'||item.id==='gemini')&&<Button type="button" variant="secondary" size="sm" onClick={()=>openPreset(providerPresets.find(p=>p.name===(item.id==='claude'?'Anthropic':'Google Gemini'))!)}><KeyRound size={13}/> 별도 API 연결(선택)</Button>}
-     {item.connected&&['claude','gemini','opencode'].includes(item.id)&&<div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-[#E7E0D5] bg-white p-2">
-      <SelectInput aria-label={item.name+' 사용 모델 선택'} className="min-w-[145px] flex-1 !py-1 !text-[12px]"
-       value={cliModelSelection[item.id]||item.model||'default'}
-       onChange={event=>setCliModelSelection(old=>({...old,[item.id]:event.target.value}))}>
-       {(!cliModelCatalog[item.id]?.length)&&<option value={item.model||'default'}>{item.model||'CLI 기본 모델'}</option>}
-       {(cliModelCatalog[item.id]||[]).map(model=><option key={model} value={model}>{model}</option>)}
-      </SelectInput>
-      <Button size="sm" type="button" variant="ghost" disabled={Boolean(cliModelBusy)} onClick={()=>void fetchCliModels(item.id)}><RefreshCw size={13}/> 모델 조회</Button>
-      <Button size="sm" type="button" variant="secondary" disabled={Boolean(cliModelBusy)} onClick={()=>void saveCliModel(item.id)}>모델 적용</Button>
-      <a className="rounded-lg bg-[#C96442] px-3 py-2 text-[12px] font-semibold text-white" href={'#/chat?provider=cli-'+item.id+'&model='+encodeURIComponent(cliModelSelection[item.id]||item.model||'default')}>채팅 시작</a>
-     </div>}
-     {item.id==='codex'&&item.connected&&<Button type="button" variant="ghost" size="sm" onClick={()=>{setTab('providers');const p=providers.value.find(p=>p.id==='codex-oauth');if(p)void probe(p)}}><RefreshCw size={13}/> 모델 확인</Button>}
-     {item.id==='opencode-go'&&goProvider?.hasKey&&<Button type="button" variant="ghost" size="sm" disabled={counts[goProvider.id]?.busy} onClick={()=>void probe(goProvider)}><RefreshCw size={13}/> 모델 확인</Button>}
-     <Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void cli.reload()}><RefreshCw size={13}/> 상태 새로고침</Button>
-    </OAuthConnectionCard>)}
-   </div>
-   {cliAuth&&<CliAuthProgress session={cliAuth} onInput={sendCliInput} onCancel={cancelCliAuth}/>}
-   {deviceCode&&<div className="mt-3 rounded-xl border border-[#E7D9C8] bg-[#FFF9F0] px-4 py-3"><div className="text-[11px] text-[#8A775F]">{t('models.oauth.deviceHint')}</div><div className="my-2 font-mono text-[26px] font-bold tracking-[.18em] text-[#A94E30]">{deviceCode.userCode}</div><a className="text-[11px] font-semibold text-[#C96442] hover:underline" href={deviceCode.verificationUrl} target="_blank" rel="noreferrer">{t('models.oauth.openDevice')}</a></div>}
-   {loginPending&&!deviceCode&&<p className="mt-3 rounded-xl border border-[#E7E0DF] bg-[#F7F1E6] px-3 py-2 text-[11px] text-[#7C7469]">{t('models.oauth.loginHint')}{loginUrl&&<> · <a className="font-semibold text-[#C96442] hover:underline" href={loginUrl} target="_blank" rel="noreferrer">{t('models.oauth.openBrowser')}</a></>}</p>}
-   {loginMessage&&<p className="mt-3 rounded-xl border border-[#CFE0CF] bg-[#F4FAF3] px-3 py-2 text-[11px] text-[#4F6F52]">{loginMessage}</p>}
+  {tab==='oauth'&&codex&&<section className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5">
+   <h2 className="mb-3 text-[16px] font-bold text-[#24211D]">Codex CLI 인증</h2>
+   <p className="mb-4 text-[12px] text-[#7C7469]">설치된 Codex CLI의 공식 기기 인증입니다. 모델 API 연결은 내 모델에서 별도로 관리합니다.</p>
+   <OAuthConnectionCard title={codex.name}
+    status={codex.cliAuthenticated?'CLI 인증됨':'CLI 인증 필요'}
+    statusTone={codex.cliAuthenticated?'connected':'available'}
+    hint={codex.hint}>
+    <Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}><LogIn size={13}/> {codex.cliAuthenticated?'재인증':'브라우저 인증'}</Button>
+    <Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}><KeyRound size={13}/> 기기 코드</Button>
+    <Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void cli.reload()}><RefreshCw size={13}/> 상태 갱신</Button>
+   </OAuthConnectionCard>
+   {deviceCode&&<div className="mt-3 rounded-xl border border-[#E7D9C8] bg-[#FFF9F0] px-4 py-3">
+    <div className="text-[11px] text-[#8A775F]">{t('models.oauth.deviceHint')}</div>
+    <div className="my-2 font-mono text-[26px] font-bold tracking-[.18em] text-[#A94E30]">{deviceCode.userCode}</div>
+    <a className="text-[11px] font-semibold text-[#C96442] hover:underline" href={deviceCode.verificationUrl} target="_blank" rel="noreferrer">{t('models.oauth.openDevice')}</a>
+   </div>}
+   {loginPending&&!deviceCode&&<p className="mt-3 rounded-xl border border-[#E7E0DF] bg-[#F7F1E6] px-3 py-2 text-[11px] text-[#7C7469]">{t('models.oauth.loginHint')}</p>}
+   {loginMessage&&<p role="status" className="mt-3 rounded-xl border border-[#CFE0CF] bg-[#F4FAF3] px-3 py-2 text-[11px] text-[#4F6F52]">{loginMessage}</p>}
   </section>}
 
   {(tab==='providers'||tab==='local')&&<section className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5 shadow-[0_1px_2px_rgba(36,33,29,.04)]">
    {tab==='providers'&&<div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="m-0 text-[14px] font-semibold text-[#3A342D]">등록된 API 연결</h2><span className="text-[11px] text-[#7C7469]">{visibleProviders.length}개 연결</span></div>}
 
-   {visibleProviders.length>0&&<details ref={providerList} className="mb-4 rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-3" open><summary className="cursor-pointer text-[12px] font-semibold text-[#3A342D]">{t('models.registeredList',{count:visibleProviders.length})}</summary><div className="mt-2 max-h-[320px] divide-y divide-[#EFE9DF] overflow-auto">{visibleProviders.map(p=><div key={p.id} className="flex flex-wrap items-center gap-3 py-2.5"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#F3EEE5] text-[#C96442]">{p.local?<HardDrive size={15}/>:p.kind==='codex'?<Sparkles size={15}/>:<Cloud size={15}/>}</span><div className="min-w-0 flex-1"><div className="text-[12px] font-semibold text-[#3A342D]">{p.name}{p.kind==='codex'&&<span className="ml-2 rounded bg-[#E9E1F5] px-1.5 py-0.5 text-[9px] font-bold text-[#6B4FA0]">OAuth</span>}{(p.reflection ?? p.learning)&&<span className="ml-2 rounded bg-[#FBE7D8] px-1.5 py-0.5 text-[9px] font-bold text-[#A94E30]">{t('models.review')}</span>}{p.kind!=='cli'&&(!p.local||p.integration==='freellmapi')&&p.hasKey===false&&<span className="ml-2 rounded bg-[#EDE8DE] px-1.5 py-0.5 text-[9px] text-[#8A8176]">{t('models.needKey')}</span>}{!p.enabled&&<span className="ml-2 text-[10px] text-[#A79C8E]">{t('models.disabled')}</span>}</div><div className="mt-0.5 break-all text-[11px] text-[#8A8176]">{p.baseUrl}</div>{p.model&&<div className="mt-0.5 text-[10px] text-[#9C9388]">{t('models.defaultModel')} · {p.model}</div>}{p.requestsPerMinute?<div className="mt-0.5 text-[10px] text-[#9C9388]">{t('models.perMinute',{count:p.requestsPerMinute})}</div>:null}{counts[p.id]?.error&&<div className="mt-1 text-[11px] text-rose-600">{counts[p.id].error}</div>}{counts[p.id]?.info&&<div className="mt-1 text-[11px] text-[#7C7469]">{counts[p.id].info}</div>}{counts[p.id]&&!counts[p.id].busy&&!counts[p.id].error&&!counts[p.id].list.length&&<div className="mt-1 text-[11px] text-[#8A8176]">{t('models.emptyList')}</div>}{(counts[p.id]?.list.length??0)>0&&<div className="mt-1 text-[10px] text-emerald-700">{t('models.recognized',{count:counts[p.id].list.length})} · {counts[p.id].list.slice(0,2).join(', ')}</div>}</div><Button className="rounded-md px-2 py-1 text-[11px] text-[#C96442] hover:bg-[#FBF1EC]" type="button" disabled={counts[p.id]?.busy} onClick={()=>void probe(p)}>{counts[p.id]?.busy?t('models.checking'):t('models.checkModels')}</Button>{savedId===p.id&&<span role="status" className="text-[11px] text-emerald-700">{t('models.saved')}</span>}{p.enabled!==false&&<a className="text-[11px] font-semibold text-[#C96442] hover:underline" href={'#/chat?provider='+encodeURIComponent(p.id)}>{t('models.chatSelect')}</a>}<Button className="rounded-md p-2 text-[#8A8176] hover:bg-[#F3EEE5]" type="button" onClick={()=>p.kind==='cli'?setTab('oauth'):open(p)} aria-label={t('models.dlg.settingsAria',{name:p.name})}><Settings2 size={15}/></Button></div>)}</div></details>}
+   {visibleProviders.length>0&&<details ref={providerList} className="mb-4 rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-3" open><summary className="cursor-pointer text-[12px] font-semibold text-[#3A342D]">{t('models.registeredList',{count:visibleProviders.length})}</summary><div className="mt-2 max-h-[320px] divide-y divide-[#EFE9DF] overflow-auto">{visibleProviders.map(p=><div key={p.id} className="flex flex-wrap items-center gap-3 py-2.5"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#F3EEE5] text-[#C96442]">{p.local?<HardDrive size={15}/>:p.kind==='codex'?<Sparkles size={15}/>:<Cloud size={15}/>}</span><div className="min-w-0 flex-1"><div className="text-[12px] font-semibold text-[#3A342D]">{p.name}{p.kind==='codex'&&<span className="ml-2 rounded bg-[#E9E1F5] px-1.5 py-0.5 text-[9px] font-bold text-[#6B4FA0]">OAuth</span>}{(p.reflection ?? p.learning)&&<span className="ml-2 rounded bg-[#FBE7D8] px-1.5 py-0.5 text-[9px] font-bold text-[#A94E30]">{t('models.review')}</span>}{p.kind!=='cli'&&(!p.local||p.integration==='freellmapi')&&p.hasKey===false&&<span className="ml-2 rounded bg-[#EDE8DE] px-1.5 py-0.5 text-[9px] text-[#8A8176]">{t('models.needKey')}</span>}{!p.enabled&&<span className="ml-2 text-[10px] text-[#A79C8E]">{t('models.disabled')}</span>}</div><div className="mt-0.5 break-all text-[11px] text-[#8A8176]">{p.baseUrl}</div>{p.model&&<div className="mt-0.5 text-[10px] text-[#9C9388]">{t('models.defaultModel')} · {p.model}</div>}{p.requestsPerMinute?<div className="mt-0.5 text-[10px] text-[#9C9388]">{t('models.perMinute',{count:p.requestsPerMinute})}</div>:null}{counts[p.id]?.error&&<div className="mt-1 text-[11px] text-rose-600">{counts[p.id].error}</div>}{counts[p.id]?.info&&<div className="mt-1 text-[11px] text-[#7C7469]">{counts[p.id].info}</div>}{counts[p.id]&&!counts[p.id].busy&&!counts[p.id].error&&!counts[p.id].list.length&&<div className="mt-1 text-[11px] text-[#8A8176]">{t('models.emptyList')}</div>}{(counts[p.id]?.list.length??0)>0&&<div className="mt-1 text-[10px] text-emerald-700">{t('models.recognized',{count:counts[p.id].list.length})} · {counts[p.id].list.slice(0,2).join(', ')}</div>}</div><Button className="rounded-md px-2 py-1 text-[11px] text-[#C96442] hover:bg-[#FBF1EC]" type="button" disabled={counts[p.id]?.busy} onClick={()=>void probe(p)}>{counts[p.id]?.busy?t('models.checking'):t('models.checkModels')}</Button>{savedId===p.id&&<span role="status" className="text-[11px] text-emerald-700">{t('models.saved')}</span>}{p.enabled!==false&&<a className="text-[11px] font-semibold text-[#C96442] hover:underline" href={'#/chat?provider='+encodeURIComponent(p.id)}>{t('models.chatSelect')}</a>}<Button className="rounded-md p-2 text-[#8A8176] hover:bg-[#F3EEE5]" type="button" onClick={()=>open(p)} aria-label={t('models.dlg.settingsAria',{name:p.name})}><Settings2 size={15}/></Button></div>)}</div></details>}
 
    <div className="mb-2 text-[11px] text-[#8A8176]">{tab==='local'?'로컬 실행기 연결':'연결 가능한 업체'} · {visiblePresets.length}개</div>
    <div className="grid max-h-[460px] grid-cols-1 gap-2 overflow-auto sm:grid-cols-2 xl:grid-cols-3">{visiblePresets.map(preset=>{const existing=providers.value.find(p=>sameProvider(p,preset));const needsKey=Boolean(existing&&!preset.free&&(!preset.local||preset.integration==='freellmapi')&&existing.hasKey===false);return <div key={preset.name} className="flex min-w-0 flex-col gap-2 rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] px-3 py-3"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><strong className="block truncate text-[12px] text-[#3A342D]">{preset.name}</strong><small className="block truncate text-[10px] text-[#A79C8E]">{preset.baseUrl.replace(/^https?:\/\//,'')}</small></div><span className={'shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold '+(preset.category==='free'?'bg-emerald-50 text-emerald-700':preset.category==='local'?'bg-[#E9E1F5] text-[#6B4FA0]':'bg-[#EDE8DE] text-[#8A8176]')}>{preset.category==='free'&&preset.free?t('models.filter.free'):preset.category==='local'?t('models.filter.local'):t('models.filter.cloud')}</span></div><div className="flex items-center justify-between gap-2"><small className="min-w-0 truncate text-[10px] text-[#A79C8E]">{existing?(needsKey?t('models.needKey'):existing.enabled===false?t('models.off'):t('models.registered')):(preset.free?t('models.freeProvider'):preset.integration==='freellmapi'?t('models.integrationKey'):preset.local?t('models.local'):t('models.needKey'))}</small><Button variant={existing?'secondary':'primary'} onClick={()=>existing?open(existing):openPreset(preset)} className="!px-2.5 !py-1 !text-[11px]">{existing?(needsKey?t('models.keyInput'):t('models.settings')):t('models.register')}</Button></div></div>})}</div>

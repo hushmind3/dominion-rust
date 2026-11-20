@@ -181,9 +181,6 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/providers/cli/github/login/status",get(status))
   .route("/providers/cli/github/login/cancel",post(cancel))
   .route("/providers/cli/github/login/input",post(continue_login))
-  .route("/oauth/github/cli/login",post(start))
-  .route("/oauth/github/cli/login/status",get(status))
-  .route("/oauth/github/cli/login/cancel",post(cancel))
 }
 #[cfg(test)]
 mod tests{

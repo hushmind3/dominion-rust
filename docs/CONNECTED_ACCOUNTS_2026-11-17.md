@@ -1,12 +1,12 @@
-# Connected Accounts: GitHub and Google Workspace (2026-11-17)
+# Connected Accounts: GitHub and Google Workspace (updated 2026-11-20)
 
 ## Runtime
 
-User → Connections / Accounts → OAuth grant → capability broker → model schema → explicit approval (writes) → durable execution intent → fixed official REST provider → remote read-back → durable receipt. Tokens, OAuth secrets and refresh tokens remain encrypted server-side; never pass them through MCP servers or model prompts.
+User → Connections → Account connections → OAuth grant → capability broker → model schema → explicit approval (writes) → durable execution intent → fixed official REST provider → remote read-back → durable receipt. Tokens, OAuth secrets and refresh tokens remain encrypted server-side; never pass them through MCP servers or model prompts.
 
-## Product-managed one-click login (no end-user API key or Client ID)
+## Product-managed capability connections (no end-user OAuth app keys)
 
-The person using Dominion clicks **GitHub로 로그인** or **Google로 로그인** and approves provider permissions. The OAuth app registration is **a one-time responsibility of the product/service operator**, never the end user.
+The person using Dominion opens the **single Account connections tab** and selects **GitHub 저장소 연결** or **Google Drive·Docs·Sheets 연결**. GitHub OAuth asks for repository access; Google OAuth requests Drive, Docs and Sheets scopes. The user approves the exact requested permissions. End users never enter OAuth application client secrets.
 
 Set the following deployment secrets in the server process (e.g., a secret manager). Never put the secrets in React or public source code:
 
@@ -16,9 +16,9 @@ Set the following deployment secrets in the server process (e.g., a secret manag
 
 GitHub: register the application at https://github.com/settings/developers, with callback `/api/oauth/github/callback`. Google: register a Web OAuth app at https://console.cloud.google.com/apis/credentials, callback `/api/oauth/google/callback`, and enable Drive/Docs/Sheets APIs. The product requests the normal browser consent flow, then stores tokens in its encrypted server-side vault. Google may require OAuth brand/app verification for the requested Workspace scopes.
 
-Legacy encrypted local OAuth app configuration remains readable for existing installations, but ordinary users have no Client ID or secret entry screen. The server-provided credentials always take precedence. OAuth login requests freeze the application identity at authorization start so a configuration rotation cannot silently switch the callback's client.
+Legacy encrypted local OAuth app configuration remains readable for existing installations. The redundant OAuth app setup tab, user-facing client-secret form and obsolete write endpoint have been removed. Server-managed app credentials always take precedence. OAuth login requests freeze the application identity at authorization start so a configuration rotation cannot silently switch the callback's client.
 
-For a **local** installation with the official GitHub CLI installed, the normal **GitHub로 로그인** button launches an official GitHub CLI browser/device login even when the Dominion service has no registered OAuth app. The page shows the one-time code and the fixed `https://github.com/login/device` verification link. Successful CLI login is imported into the existing encrypted account vault using the verified GitHub identity and repo permissions. If the CLI is already authenticated, the same button directly reuses its account. The flow is loopback-only, runs a fixed CLI command with a 10-minute timeout and supports cancel; it is not an arbitrary shell API. Google Workspace still requires a registered OAuth application owned by the product service.
+For a **local** installation with the official GitHub CLI installed, the **GitHub CLI 연결** button launches an official GitHub CLI browser/device login even when the Dominion service has no registered OAuth app. The page shows the one-time code and the fixed `https://github.com/login/device` verification link. Successful CLI login is imported into the existing encrypted account vault using the verified GitHub identity and repo permissions. If the CLI is already authenticated, the same button directly reuses its account. The flow is loopback-only, runs a fixed CLI command with a 10-minute timeout and supports cancel; it is not an arbitrary shell API. Google Workspace still requires a registered OAuth application owned by the product service. Without that setup, **no unusable Google sign-in button is rendered**. The UI reports a connection as ready only when the token has the actual repository/Workspace scopes needed by the corresponding tools. Cloud product sign-in is separate from these connected-tool grants.
 
 ## GitHub tools (12)
 
@@ -43,5 +43,5 @@ Sheets: google_sheets_create, google_sheets_get, google_sheets_update, google_sh
 
 ## Tested vs. not tested
 
-Mock-provider tests cover new REST create/read-back and permission boundaries, and E2E covers OAuth client configuration. Rust SDK, TypeScript and React use the same native engine and event store.
+Mock-provider tests cover new REST create/read-back and permission boundaries, and E2E verifies configured OAuth clients, granted scope URLs and absence of obsolete configuration forms. Rust SDK, TypeScript and React use the same native engine and event store.
 Real user OAuth consent, Google app verification and remote Github/Google live-account mutations require legitimate configured provider credentials and authorization; these were not executed as part of CI.

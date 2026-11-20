@@ -56,16 +56,15 @@ export async function resolveApproval(id: string, allow: boolean) {
  if (!result.resolved) throw Error(result.error ? translateError(result.error) : t('chat.approvalGone'))
 }
 
-export async function openOAuth(id: string) {
- const path = '/api/oauth/' + encodeURIComponent(id)
- if ('__DOMINION_NATIVE__' in window) {
-  await post(path + '/open', {})
-  return
- }
+export async function openOAuth(id: 'github'|'google') {
+ // Request capabilities the agent actually implements. Identity-only
+ // consent produces a token but cannot authorize repository/Workspace tools.
+ const scope = id === 'github' ? '?repository=true' : '?workspace=true'
+ const path = '/api/oauth/' + id
  const popup = window.open('', 'dominion_oauth', 'width=650,height=780')
  if (!popup) throw Error(t('oauth.popupBlocked'))
  try {
-  const {url} = await get<{url: string}>(path + '/start')
+  const {url} = await get<{url: string}>(path + '/start' + scope)
   popup.location.replace(url)
  } catch (error) {
   popup.close()

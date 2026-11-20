@@ -4,8 +4,8 @@ import {del,get,openOAuth,post} from '../api'
 import {Action,Notice,Panel,StateTag,useRemote} from './UI'
 import {t} from '../i18n'
 
-type Provider={id:string;name:string;configured:boolean;connected:boolean;account?:string|null;scope?:string;credentialSource?:'application'|'local'|'missing'}
-type Account={provider:string;displayName:string;hasToken:boolean;scopes:string}
+type Provider={id:string;name:string;configured:boolean;connected:boolean;account?:string|null;scope?:string;credentialSource?:'application'|'local'|'missing';cliAvailable?:boolean}
+type Account={provider:string;displayName:string;hasToken:boolean;scopes:string;repositoryAccess?:boolean;workspaceAccess?:boolean}
 type CliLogin={source:string;status:string;message?:string;url?:string|null;userCode?:string|null;requiresInput?:boolean}
 
 export function ConnectedAccounts(){
@@ -34,13 +34,16 @@ export function ConnectedAccounts(){
  const connect=async(id:string)=>{
   setBusy(id);setError('');setNotice('')
   try{
-   if(id==='github'&&!providers.value.find(p=>p.id===id)?.configured){
+   const provider=providers.value.find(p=>p.id===id)
+   if(id==='github'&&!provider?.configured){
+    if(!provider?.cliAvailable)throw Error(t('conn.quick.appSetupMissing'))
     const result=await post<CliLogin>('/api/providers/cli/github/login',{})
     setGithubCli(result)
     if(result.status==='completed'){refresh();setNotice(t('conn.quick.githubCliSuccess'))}
     return
    }
-   if(!providers.value.find(p=>p.id===id)?.configured)throw Error(t('conn.quick.googleRequiresApp'))
+   if(!provider?.configured)throw Error(t('conn.quick.appSetupMissing'))
+   if(id!=='github'&&id!=='google')throw Error('Unsupported account connector')
    await openOAuth(id)
    setNotice(t('conn.quick.authorizeOpened'))
   }
@@ -54,7 +57,8 @@ export function ConnectedAccounts(){
   catch(e){setError((e as Error).message)}
   finally{setBusy(null)}
  }
- const ordered=[...providers.value].sort((a,b)=>a.id==='github'?-1:b.id==='github'?1:0)
+ const ordered=[...providers.value].filter(p=>p.id==='github'||p.id==='google')
+  .sort((a,b)=>a.id==='github'?-1:b.id==='github'?1:0)
  return <div className="space-y-5">
   <div className="flex flex-wrap items-center justify-between gap-3">
    <div><h2 className="text-[22px] font-bold tracking-tight text-[#24211D]">{t('conn.quick.title')}</h2>
@@ -84,9 +88,10 @@ export function ConnectedAccounts(){
   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
    {ordered.map(provider=>{
     const account=accounts.value.find(a=>a.provider===provider.id&&a.hasToken)
-    const ready=Boolean(account)
+    const ready=Boolean(account&&(provider.id==='github'?account.repositoryAccess:account.workspaceAccess))
+    const available=provider.configured||(provider.id==='github'&&provider.cliAvailable)
     const Icon=provider.id==='github'?Github:Globe2
-    const title=provider.id==='github'?'GitHub':'Google'
+    const title=provider.id==='github'?'GitHub':'Google Workspace'
     return <Panel key={provider.id} className="flex flex-col gap-4 p-5">
      <div className="flex items-start justify-between gap-3">
       <span className="grid size-12 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><Icon size={27}/></span>
@@ -95,11 +100,12 @@ export function ConnectedAccounts(){
      <div><h3 className="text-lg font-bold text-[#24211D]">{title}</h3>
       <p className="mt-1 text-[13px] leading-6 text-[#7C7469]">{t(provider.id==='github'?'conn.quick.githubDescription':'conn.quick.googleDescription')}</p></div>
      {ready&&<p className="flex items-center gap-2 text-sm font-medium text-emerald-700"><CheckCircle2 size={17}/>{account?.displayName||provider.account||title}</p>}
-     {!provider.configured&&<p className="text-xs leading-5 text-amber-800">{t(provider.id==='github'?'conn.quick.githubCliFallback':'conn.quick.appSetupMissing')}</p>}
-     {provider.id==='github'&&!provider.configured&&<a href="https://cli.github.com/" target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-[#C96442] underline">{t('conn.quick.githubCliInstall')}</a>}
+     {account&&!ready&&<p role="status" className="text-xs leading-5 text-amber-800">{t('conn.quick.permissionsMissing')}</p>}
+     {!provider.configured&&<p className="text-xs leading-5 text-amber-800">{provider.id==='github'&&provider.cliAvailable?t('conn.quick.githubCliFallback'):t('conn.quick.appSetupMissing')}</p>}
+     {provider.id==='github'&&!provider.configured&&provider.cliAvailable&&<a href="https://cli.github.com/" target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-[#C96442] underline">{t('conn.quick.githubCliInstall')}</a>}
      <div className="mt-auto flex flex-wrap gap-2 border-t border-[#EFE9DF] pt-4">
-      <Action disabled={busy!==null} onClick={()=>{void connect(provider.id)}}><Link2 size={17}/>{busy===provider.id?t('conn.quick.opening'):ready?t('conn.quick.reconnect'):provider.id==='github'&&!provider.configured?t('conn.quick.githubCliConnect'):t('conn.quick.connect')}<ExternalLink size={14}/></Action>
-      {ready&&<Action variant="secondary" disabled={busy!==null} onClick={()=>{void disconnect(provider.id)}}><Unlink size={15}/>{t('conn.quick.disconnect')}</Action>}
+      {available&&<Action disabled={busy!==null} onClick={()=>{void connect(provider.id)}}><Link2 size={17}/>{busy===provider.id?t('conn.quick.opening'):ready?t('conn.quick.reconnect'):provider.id==='github'&&!provider.configured?t('conn.quick.githubCliConnect'):provider.id==='google'?t('conn.quick.googleConnect'):t('conn.quick.githubConnect')}<ExternalLink size={14}/></Action>}
+      {account&&<Action variant="secondary" disabled={busy!==null} onClick={()=>{void disconnect(provider.id)}}><Unlink size={15}/>{t('conn.quick.disconnect')}</Action>}
      </div>
     </Panel>
    })}

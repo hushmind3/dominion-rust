@@ -30,6 +30,15 @@ required_count src/config.rs 'strategy_trials_enabled' 0
 required_count src/frontend_growth.rs '"/optimizers"' 0
 required_count src/frontend_growth.rs '"/experiment-requests"' 0
 required_count web/src/i18n/errors.ts '영상' 0
+# Do not bring back retired account screens, phantom login buttons, or OAuth app editors.
+required_count web/src/pages/Connections.tsx '<ConnectedAccounts/>' 1
+required_count web/src/pages/Connections.tsx 'oauthEditor|quick-connect|openOAuth' 0
+required_count web/src/api.ts 'workspace=true' 1
+required_count web/src/api.ts 'repository=true' 1
+required_count src/frontend_oauth.rs 'route.*oauth/providers/\{id\}' 0
+required_count src/github_cli_login.rs 'route.*oauth/github/cli/login' 0
+required_count web/src/components/DominionCloudAccount.tsx 'disabled=\{!socialLogin\.' 0
+required_count web/src/pages/Models.tsx 'startCliLogin|importCli\(' 0
 # Do not resurrect an independent agent run loop or retired media/RSI executor.
 for obsolete in \
   src/engine/chat/runtime.rs \

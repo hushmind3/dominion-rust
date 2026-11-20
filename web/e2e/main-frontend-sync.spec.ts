@@ -27,9 +27,9 @@ test('main chat/group switch preserves a mounted conversation and opens native s
 
 test('account connection uses server-owned GitHub and Google OAuth apps, never user keys',async({page})=>{
  await page.goto('/#/connections');
- await page.locator('.connection-tabs button').nth(1).click();
- const github=page.getByRole('button',{name:'GitHub로 로그인'});
- const google=page.getByRole('button',{name:'Google로 로그인'});
+ await page.locator('.connection-tabs').getByRole('button',{name:'계정 연결'}).click();
+ const github=page.getByRole('button',{name:'GitHub 저장소 연결'});
+ const google=page.getByRole('button',{name:'Google Drive·Docs·Sheets 연결'});
  await expect(github).toBeVisible();
  await expect(google).toBeVisible();
  await expect(github).toBeEnabled();
@@ -68,25 +68,23 @@ test('GitHub login falls back to official CLI device flow with no app credential
    {id:'google',configured:false,managed:false,cliAvailable:false}
   ])
  }));
- await page.route('**/api/oauth/github/cli/import',route=>route.fulfill({
-  status:400,contentType:'application/json',body:JSON.stringify({error:'not signed in'})
- }));
- await page.route('**/api/oauth/github/cli/login',route=>route.fulfill({
+ await page.route('**/api/providers/cli/github/login',route=>route.fulfill({
   status:200,contentType:'application/json',
-  body:JSON.stringify({phase:'waiting',userCode:'ABCD-1234',startedAt:100,
+  body:JSON.stringify({phase:'waiting',status:'waiting',source:'github',userCode:'ABCD-1234',startedAt:100,
    message:'GitHub device confirmation'})
  }));
- await page.route('**/api/oauth/github/cli/login/status',route=>route.fulfill({
+ await page.route('**/api/providers/cli/github/login/status',route=>route.fulfill({
   status:200,contentType:'application/json',
-  body:JSON.stringify({phase:'waiting',userCode:'ABCD-1234',startedAt:100,
+  body:JSON.stringify({phase:'waiting',status:'waiting',source:'github',userCode:'ABCD-1234',startedAt:100,
    message:'GitHub device confirmation'})
  }));
- await page.route('**/api/oauth/github/cli/login/cancel',route=>route.fulfill({
+ await page.route('**/api/providers/cli/github/login/cancel',route=>route.fulfill({
   status:200,contentType:'application/json',body:JSON.stringify({ok:true})
  }));
  await page.goto('/#/connections');
- await page.locator('.connection-tabs button').nth(1).click();
- const button=page.getByRole('button',{name:'GitHub로 로그인'});
+ await page.locator('.connection-tabs').getByRole('button',{name:'계정 연결'}).click();
+ await expect(page.getByRole('button',{name:'Google Drive·Docs·Sheets 연결'})).toHaveCount(0);
+ const button=page.getByRole('button',{name:'GitHub CLI 연결'});
  await expect(button).toBeEnabled();
  await button.click();
  await expect(page.getByText('ABCD-1234')).toBeVisible();

@@ -63,45 +63,19 @@ pub async fn all(State(engine):State<Arc<Engine>>)->Json<Value>{
     Json(Value::Array(providers))
 }
 async fn cli(State(engine):State<Arc<Engine>>)->Json<Value>{
- // CLI authorization is not silently imported into native Rust providers.
- let local=crate::frontend_oauth::local_cli_eligible(&engine.settings);
- async fn installed(name:&str)->bool{
-  tokio::time::timeout(Duration::from_secs(4),
-   tokio::process::Command::new(name).arg("--version")
-    .kill_on_drop(true).output()).await.ok()
-    .and_then(Result::ok).is_some_and(|out|out.status.success())
- }
- let (codex,claude,gemini,opencode)=if local{
-  tokio::join!(
-   crate::frontend_codex_login::installed(),
-   installed("claude"),installed("gemini"),installed("opencode"))
- }else{(false,false,false,false)};
- let codex_auth=if codex{
-  crate::frontend_codex_login::authorized().await
- }else{false};
- let go=engine.providers.list().into_iter().find(|p|
-  p.base_url=="https://opencode.ai/inference/go/openai/v1"&&p.enabled
-  &&!p.api_key.is_empty());
- Json(json!([
-  {"id":"codex","name":"Codex CLI","available":codex,
-   "supported":false,"connected":false,"importAvailable":false,
+ // Only installed, supported login workflows are shown. API-key providers
+ // belong to the ordinary provider catalog, not a second fake CLI sign-in.
+ let codex=crate::frontend_oauth::local_cli_eligible(&engine.settings)
+   &&crate::frontend_codex_login::installed().await;
+ let authenticated=codex&&crate::frontend_codex_login::authorized().await;
+ Json(json!([{
+   "id":"codex","name":"Codex CLI","available":codex,
+   "supported":false,"connected":false,"cliAuthenticated":authenticated,
    "loginSupported":codex,
-   "hint":if codex_auth{"Codex CLI 로그인 완료. Rust 모델 제공자는 별도 연결하세요."}
-      else if codex{"공식 Codex CLI 기기 인증 사용 가능."}
-      else{"Codex CLI를 먼저 설치해야 합니다."}},
-  {"id":"claude","name":"Claude Code CLI","available":claude,
-   "supported":false,"connected":false,"importAvailable":false,
-   "hint":"별도 API 키를 등록하면 Rust 모델 호출에 사용할 수 있습니다."},
-  {"id":"gemini","name":"Gemini CLI","available":gemini,
-   "supported":false,"connected":false,"importAvailable":false,
-   "hint":"별도 API 키를 등록하면 Rust 모델 호출에 사용할 수 있습니다."},
-  {"id":"opencode","name":"OpenCode CLI","available":opencode,
-   "supported":false,"connected":false,"importAvailable":false,
-   "hint":"OpenCode CLI 인증은 Rust 모델 제공자로 자동 복사하지 않습니다."},
-  {"id":"opencode-go","name":"OpenCode Go API","available":go.is_some(),
-   "supported":false,"connected":go.is_some(),"importAvailable":false,
-   "hint":"등록된 Go API 키는 Rust 모델 제공자에서 사용됩니다."}
- ]))
+   "hint":if authenticated{"Codex CLI 인증됨 · 모델 제공자 연결은 별도입니다."}
+      else if codex{"공식 Codex CLI 기기 인증을 사용할 수 있습니다."}
+      else{"Codex CLI가 설치되어 있지 않습니다."}
+ }]))
 }
 /// One public, credential-free models.dev snapshot backs both listing and
 /// model discovery. A registered provider is not required to browse models.

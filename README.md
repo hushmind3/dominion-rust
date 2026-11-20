@@ -18,7 +18,7 @@ Dominion Sub4 is a **Rust-native, local-first AI agent execution harness** with 
 
 The main Chat's manual compact command persists a bounded excerpt of older messages without deleting the original transcript. The manual Learn command saves explicit owner messages as provenance-labeled global memory. These are native projections, not hidden model summarization or a second agent scheduler.
 
-[Repository duplication audit and preserved contracts](docs/SUB4_DEDUP_AUDIT_2026-11-20.md) · [Retired subsystem and dependency audit](docs/SUB4_RETIRED_CODE_AUDIT_2026-11-20.md)
+[Repository duplication audit and preserved contracts](docs/SUB4_DEDUP_AUDIT_2026-11-20.md) · [Retired subsystem and dependency audit](docs/SUB4_RETIRED_CODE_AUDIT_2026-11-20.md) · [Frontend and account-sign-in cleanup](docs/SUB4_FRONTEND_AUTH_CLEANUP_2026-11-20.md)
 
 ## Develop and verify
 

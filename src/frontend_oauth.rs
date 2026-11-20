@@ -2,7 +2,7 @@
 //! Access and refresh tokens are encrypted at rest; never returned through API.
 //! Fixed provider endpoints, random single-use state and Google PKCE are required.
 use crate::{config::Settings,domain::now_ms,engine::Engine};
-use axum::{extract::{Path,Query,State},http::{header,StatusCode},routing::{get,post},
+use axum::{extract::{Path,Query,State},http::{header,StatusCode},routing::get,
  response::{IntoResponse,Response},Json,Router};
 use base64::{engine::general_purpose::{STANDARD,URL_SAFE_NO_PAD},Engine as _};
 use chacha20poly1305::{aead::{Aead,KeyInit,OsRng,rand_core::RngCore},Key,XChaCha20Poly1305,XNonce};
@@ -243,13 +243,10 @@ fn html(message:&str)->Response{
 pub fn routes()->Router<Arc<Engine>>{
  Router::new()
   .route("/oauth/providers",get(providers))
-  .route("/oauth/providers/{id}",post(save_app))
   .route("/oauth/connections",get(connections))
    .route("/oauth/{id}",axum::routing::delete(disconnect))
   .route("/oauth/{id}/start",get(start))
   .route("/oauth/{id}/callback",get(callback))
-  .route("/oauth/{id}/open",post(open_unavailable))
-  .route("/oauth/github/cli/import",post(import_github_cli))
   .merge(crate::github_cli_login::routes())
 }
 async fn providers(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
@@ -282,24 +279,6 @@ async fn disconnect(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
  let mut store=read(&engine.settings).map_err(bad)?;
  if store.accounts.remove(&id).is_some(){write(&engine.settings,&store).map_err(bad)?;}
  Ok(Json(json!({"ok":true,"provider":id,"connected":false})))
-}
-#[derive(Deserialize)]
-#[serde(rename_all="camelCase")]
-struct ClientDraft{client_id:String,client_secret:String}
-async fn save_app(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
- Json(draft):Json<ClientDraft>)->Result<Json<Value>,Fault>{
- if !valid_provider(&id){return Err(bad("unsupported OAuth provider"));}
- if draft.client_id.trim().is_empty()||draft.client_id.len()>512||
-  draft.client_secret.is_empty()||draft.client_secret.len()>2048||
-  draft.client_id.chars().any(char::is_control)||
-  draft.client_secret.chars().any(char::is_control){
-  return Err(bad("invalid OAuth client credentials"));
- }
- let _guard=lock();
- let mut state=read(&engine.settings).map_err(bad)?;
- state.apps.insert(id.clone(),App{client_id:draft.client_id,client_secret:draft.client_secret});
- write(&engine.settings,&state).map_err(bad)?;
- Ok(Json(json!({"id":id,"configured":true,"callback":callback_url(&engine.settings,&id).ok()})))
 }
 fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str,repository:bool,workspace:bool)->Result<String,String>{
  let target=if id=="github"{"https://github.com/login/oauth/authorize"}
@@ -469,9 +448,6 @@ pub(crate) async fn import_github_cli(State(engine):State<Arc<Engine>>)->Result<
  });
  write(&engine.settings,&state).map_err(bad)?;
  Ok(Json(json!({"connected":true,"provider":"github","displayName":display})))
-}
-async fn open_unavailable()->Result<Json<Value>,Fault>{
- Err((StatusCode::NOT_IMPLEMENTED,Json(json!({"error":"Native desktop popup requires an installed desktop bridge. Use browser OAuth login."}))))
 }
 #[cfg(test)]
 mod tests{
