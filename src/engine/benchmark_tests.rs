@@ -574,7 +574,8 @@ async fn registered_native_ollama_provider_completes_original_agent_tool_loop(){
         base_url:format!("http://{address}"),kind:"ollama".into(),
         model:"qwen-local".into(),api_key:None,credential_source_id:None,
         enabled:true,local:true,
-        reflection:false,reflection_model:None,requests_per_minute:0
+        reflection:false,reflection_model:None,requests_per_minute:0,
+        tool_calling:Some(true), // this real mock server implements tool calls
     }).unwrap();
     let mut run=Run::new(CreateRun{
         instruction:"List local files and report observed workspace".into(),
