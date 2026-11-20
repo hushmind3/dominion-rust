@@ -10,12 +10,21 @@ export default defineConfig({
  use:{baseURL:'http://127.0.0.1:5173',trace:'retain-on-failure',...devices['Desktop Chrome']},
  webServer:[
   {
+   command:'node e2e/sub4-mock-provider.mjs',
+   url:'http://127.0.0.1:4876/_health',
+   timeout:15_000,
+   reuseExistingServer:!process.env.CI,
+  },
+  {
    command:'cargo run --manifest-path ../Cargo.toml -- --home ..',
    url:'http://127.0.0.1:4317/api/health',
    timeout:360_000,
    reuseExistingServer:!process.env.CI,
    env:{
     DOMINION_BIND:'127.0.0.1:4317',
+    DOMINION_BASE_URL:'http://127.0.0.1:4876/v1',
+    DOMINION_MODEL:'dominion-e2e-local-mock',
+    DOMINION_API_KEY:'',
     DOMINION_DATA_DIR:'./runtime/e2e',
     DOMINION_WORKSPACE_DIR:'./workspace/e2e',
     DOMINION_ACCESS_TOKEN:'',
