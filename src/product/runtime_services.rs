@@ -11,12 +11,16 @@ use uuid::Uuid;
 
 impl RuntimeServices for ProductHost {
     fn model_capabilities(&self,run:&Run)->ModelCapabilities{
-        let tool_calling=self.providers.get(&run.provider_id)
-            .filter(|entry|entry.enabled&&entry.model==run.model_name)
-            .and_then(|entry|entry.tool_calling);
+        let entry=self.providers.get(&run.provider_id)
+            .filter(|entry|entry.enabled&&entry.model==run.model_name);
         ModelCapabilities{
-            tool_calling:CapabilitySupport::from(tool_calling),
-            ..ModelCapabilities::default()
+            tool_calling:CapabilitySupport::from(entry.as_ref().and_then(|p|p.tool_calling)),
+            parallel_tool_calls:CapabilitySupport::from(entry.as_ref()
+                .and_then(|p|p.parallel_tool_calls)),
+            streaming:CapabilitySupport::from(entry.as_ref().and_then(|p|p.streaming)),
+            prompt_cache:CapabilitySupport::from(entry.as_ref().and_then(|p|p.prompt_cache)),
+            vision:CapabilitySupport::from(entry.as_ref().and_then(|p|p.vision)),
+            context_window:entry.and_then(|p|p.context_window)
         }
     }
     fn select_model(&self,settings:&Settings,base:&ModelClient,

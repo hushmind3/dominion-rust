@@ -24,6 +24,17 @@ pub struct Provider {
     /// Exact model/endpoint tool-call declaration; None = untested.
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub tool_calling:Option<bool>,
+    /// Operator-declared endpoint capabilities. Unknown is not support.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub parallel_tool_calls:Option<bool>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub streaming:Option<bool>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub prompt_cache:Option<bool>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub vision:Option<bool>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub context_window:Option<u32>,
 }
 #[derive(Default,Clone,Serialize,Deserialize)]
 struct Snapshot{entries:HashMap<String,Provider>}
@@ -48,6 +59,11 @@ pub struct Draft{
     #[serde(default)]pub reflection_model:Option<String>,
     #[serde(default)]pub requests_per_minute:u32,
     #[serde(default)]pub tool_calling:Option<bool>,
+    #[serde(default)]pub parallel_tool_calls:Option<bool>,
+    #[serde(default)]pub streaming:Option<bool>,
+    #[serde(default)]pub prompt_cache:Option<bool>,
+    #[serde(default)]pub vision:Option<bool>,
+    #[serde(default)]pub context_window:Option<u32>,
 }
 fn default_kind()->String{"openai".into()}
 fn enabled()->bool{true}
@@ -137,6 +153,12 @@ impl Registry{
     pub fn upsert(&self,draft:Draft)->Result<Provider,String>{
         if draft.name.trim().is_empty()||draft.name.len()>120||draft.model.len()>240
             ||draft.requests_per_minute>100_000{return Err("invalid provider name/model/rate".into());}
+        if draft.context_window.is_some_and(|tokens|!(1024..=2_000_000).contains(&tokens)){
+            return Err("declared model context window must be 1024..2000000 tokens".into());
+        }
+        if draft.parallel_tool_calls==Some(true)&&draft.tool_calling==Some(false){
+            return Err("parallel tool support cannot be true when tool calling is explicitly unsupported".into());
+        }
         if !matches!(draft.kind.as_str(),"openai"|"ollama"|"anthropic"){
             return Err("native model client supports OpenAI-compatible, Ollama and Anthropic Messages APIs".into());
         }
@@ -182,17 +204,33 @@ impl Registry{
         if key.len()>8192||key.contains('\r')||key.contains('\n'){
             return Err("invalid provider credential".into());
         }
-        let retained_capability=if same_binding&&old.as_ref()
+        let retained_capabilities=if same_binding&&old.as_ref()
             .is_some_and(|previous|previous.model==draft.model.trim()){
-            old.as_ref().and_then(|previous|previous.tool_calling)
+            old.as_ref()
         }else{None};
+        let retained_capability=retained_capabilities.and_then(|entry|entry.tool_calling);
+        let declared_tools=draft.tool_calling.or(retained_capability);
+        let declared_parallel=draft.parallel_tool_calls.or_else(||
+            retained_capabilities.and_then(|entry|entry.parallel_tool_calls));
+        if declared_parallel==Some(true)&&declared_tools==Some(false){
+            return Err("resolved model capability contract contradicts itself".into());
+        }
         let record=Provider{
             id:id.clone(),name:draft.name.trim().into(),base_url,
             kind:draft.kind,model:draft.model.trim().into(),api_key:key,
             enabled:draft.enabled,local:loopback,reflection:draft.reflection,
             reflection_model:draft.reflection_model.unwrap_or_default(),
             requests_per_minute:draft.requests_per_minute,
-            tool_calling:draft.tool_calling.or(retained_capability),
+            tool_calling:declared_tools,
+            parallel_tool_calls:declared_parallel,
+            streaming:draft.streaming.or_else(||
+                retained_capabilities.and_then(|entry|entry.streaming)),
+            prompt_cache:draft.prompt_cache.or_else(||
+                retained_capabilities.and_then(|entry|entry.prompt_cache)),
+            vision:draft.vision.or_else(||
+                retained_capabilities.and_then(|entry|entry.vision)),
+            context_window:draft.context_window.or_else(||
+                retained_capabilities.and_then(|entry|entry.context_window)),
         };
         next.entries.insert(id,record.clone());
         store(&self.file,&next)?;
@@ -232,7 +270,9 @@ impl Registry{
             name:record.model,base_url:record.base_url,api_key:record.api_key,
             input_krw_per_million:0.0,cached_input_krw_per_million:0.0,
             output_krw_per_million:0.0,cache_write_krw_per_million:0.0,
-            cache_ttl:None,cache_key:None,parallel_tool_calls:fallback.parallel_tool_calls,
+            cache_ttl:None,cache_key:None,
+            parallel_tool_calls:fallback.parallel_tool_calls
+                &&record.parallel_tool_calls!=Some(false),
         })
     }
 }
@@ -244,6 +284,11 @@ pub fn public(record:&Provider)->serde_json::Value{
         "reflection":record.reflection,"reflectionModel":record.reflection_model,
         "requestsPerMinute":record.requests_per_minute,
         "toolCalling":record.tool_calling,
+        "parallelToolCalls":record.parallel_tool_calls,
+        "streaming":record.streaming,
+        "promptCache":record.prompt_cache,
+        "vision":record.vision,
+        "contextWindow":record.context_window,
         "pricing":"unconfigured"
     })
 }
@@ -339,6 +384,8 @@ mod tests{
             credential_source_id:None,
             enabled:true,local:false,reflection:false,reflection_model:None,
             requests_per_minute:0,tool_calling:None,
+            parallel_tool_calls:None,streaming:None,
+            prompt_cache:None,vision:None,context_window:None,
         }
     }
 
@@ -349,6 +396,10 @@ mod tests{
         let registry=Registry::open(root.clone()).unwrap();
         let mut first=draft(None,"https://model.example.test/v1","openai",None);
         first.tool_calling=Some(false);
+        first.parallel_tool_calls=Some(false);
+        first.streaming=Some(true);
+        first.prompt_cache=Some(false);
+        first.context_window=Some(32768);
         let saved=registry.upsert(first).unwrap();
         assert_eq!(saved.tool_calling,Some(false));
         assert_eq!(public(&saved)["toolCalling"],false);
@@ -356,6 +407,10 @@ mod tests{
             "https://model.example.test/v1","openai",None)).unwrap();
         assert_eq!(same.tool_calling,Some(false),
             "omitted capability must keep exact model/endpoint declaration");
+        assert_eq!(same.parallel_tool_calls,Some(false));
+        assert_eq!(same.streaming,Some(true));
+        assert_eq!(same.context_window,Some(32768));
+        assert_eq!(same.prompt_cache,Some(false));
         drop(registry);
         let reopened=Registry::open(root.clone()).unwrap();
         assert_eq!(reopened.get(&saved.id).unwrap().tool_calling,Some(false));
@@ -363,6 +418,9 @@ mod tests{
             "https://other.example.test/v1","openai",None)).unwrap();
         assert_eq!(moved.tool_calling,None,
             "a new endpoint must never inherit a tool compatibility claim");
+        assert_eq!(moved.context_window,None);
+        assert_eq!(moved.streaming,None);
+        assert_eq!(moved.parallel_tool_calls,None);
         let mut explicit=draft(Some(saved.id.clone()),
             "https://other.example.test/v1","openai",None);
         explicit.tool_calling=Some(true);
@@ -372,10 +430,25 @@ mod tests{
             "https://other.example.test/v1","anthropic",None)).unwrap();
         assert_eq!(switched.tool_calling,None,
             "a different protocol also resets prior assumptions");
+        assert_eq!(switched.context_window,None);
+        assert_eq!(switched.streaming,None);
         drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn capability_contract_rejects_invalid_context_and_parallel_contradictions(){
+        let root=std::env::temp_dir().join(format!("dominion-caps-{}",Uuid::new_v4()));
+        let registry=Registry::open(root.clone()).unwrap();
+        let mut invalid=draft(None,"https://caps.example.test/v1","openai",None);
+        invalid.context_window=Some(100);
+        assert!(registry.upsert(invalid).is_err());
+        let mut contradicts=draft(None,"https://caps.example.test/v1","openai",None);
+        contradicts.tool_calling=Some(false);
+        contradicts.parallel_tool_calls=Some(true);
+        assert!(registry.upsert(contradicts).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn changed_provider_endpoint_cannot_inherit_old_credential(){
         let root=std::env::temp_dir()
