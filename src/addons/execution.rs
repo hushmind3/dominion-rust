@@ -2,13 +2,13 @@
 //! remains the native journal in Engine::perform_tool; this module begins no
 //! Run, grants no approval and never retries uncertain remote mutations.
 use super::{Host,connected_tools,mcp::{McpCallOutcome,McpProgress}};
-use crate::{config::Settings,domain::{ToolCall,ToolEffectOutcome},store::Store};
+use crate::{config::Settings,domain::{ToolCall,ToolEffectOutcome},ports::RunStorePort};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{mpsc,watch};
 use uuid::Uuid;
 
-pub async fn invoke(host:&Host,settings:&Settings,store:&Arc<Store>,
+pub async fn invoke(host:&Host,settings:&Settings,store:&Arc<RunStorePort>,
     id:Uuid,call:&ToolCall,cancellation:watch::Receiver<bool>)
     ->Result<ToolEffectOutcome,String>{
     if !host.enabled{
@@ -24,7 +24,7 @@ pub async fn invoke(host:&Host,settings:&Settings,store:&Arc<Store>,
     Err("unsupported external tool adapter".into())
 }
 
-async fn record_mcp_progress(store:&Arc<Store>,id:Uuid,call:&ToolCall,event:&McpProgress){
+async fn record_mcp_progress(store:&Arc<RunStorePort>,id:Uuid,call:&ToolCall,event:&McpProgress){
     let result=store.mutate(id,|run|{
         if run.in_flight.as_ref().is_some_and(|pending|pending.id==call.id){
             run.event("mcp_progress",
@@ -41,7 +41,7 @@ async fn record_mcp_progress(store:&Arc<Store>,id:Uuid,call:&ToolCall,event:&Mcp
         tracing::warn!(%id,"MCP progress event could not be stored: {error}");
     }
 }
-async fn invoke_mcp_with_progress(host:&Host,store:&Arc<Store>,id:Uuid,call:&ToolCall,
+async fn invoke_mcp_with_progress(host:&Host,store:&Arc<RunStorePort>,id:Uuid,call:&ToolCall,
     cancellation:watch::Receiver<bool>)->Result<McpCallOutcome,String>{
     let (tx,mut rx)=mpsc::channel::<McpProgress>(16);
     let remote=host.mcp.call_with_progress(id,call,cancellation,tx);

@@ -31,77 +31,9 @@ async fn persist(root:&Path,run:&Run)->Result<(),String>{
     result
 }
 
-/// A single persisted Run update; no full snapshot or model transcript is copied.
-#[derive(Clone,Debug)]
-pub struct RunUpdate{
-    pub id:Uuid,
-    pub status:RunStatus,
-    pub updated_at_ms:u64,
-}
-impl RunUpdate{
-    fn from_run(run:&Run)->Self{
-        Self{id:run.id,status:run.status.clone(),updated_at_ms:run.updated_at_ms}
-    }
-}
-/// Lightweight status and listing projection: never clone model messages,
-/// tool schemas, read receipts or whole event transcripts for UI polling.
-#[derive(Clone,Debug)]
-pub struct RunHeader {
-    pub id:Uuid,
-    pub instruction:String,
-    pub status:RunStatus,
-    pub provider_id:String,
-    pub model_name:String,
-    pub answer:Option<String>,
-    pub cost_krw:f64,
-    pub created_at_ms:u64,
-    pub updated_at_ms:u64,
-    pub steps:usize,
-    pub input_tokens:u64,
-    pub cached_input_tokens:u64,
-    pub cache_write_tokens:u64,
-    pub cache_unreported_requests:usize,
-    pub output_tokens:u64,
-    pub model_requests:usize,
-    pub unmetered_model_requests:usize,
-    pub tool_calls:usize,
-    pub last_error:Option<String>,
-}
-impl RunHeader {
-    fn from_run(run:&Run)->Self{
-        Self{
-            id:run.id,
-            instruction:run.instruction.clone(),
-            status:run.status.clone(),
-            provider_id:run.provider_id.clone(),
-            model_name:run.model_name.clone(),
-            answer:if run.terminal(){run.answer.clone()}else{None},
-            cost_krw:run.cost_krw,
-            created_at_ms:run.created_at_ms,
-            updated_at_ms:run.updated_at_ms,
-            steps:run.steps,
-            input_tokens:run.input_tokens,
-            cached_input_tokens:run.cached_input_tokens,
-            cache_write_tokens:run.cache_write_tokens,
-            cache_unreported_requests:run.cache_unreported_requests,
-            output_tokens:run.output_tokens,
-            model_requests:run.events.iter().filter(|event|event.kind=="model").count(),
-            unmetered_model_requests:run.events.iter()
-                .filter(|event|event.kind=="model" && event.detail.as_ref()
-                    .and_then(|data|data.get("usage_reported"))
-                    .and_then(serde_json::Value::as_bool)!=Some(true)).count(),
-            tool_calls:run.events.iter().filter(|event|event.kind=="tool_started").count(),
-            last_error:if run.status==RunStatus::Failed{
-                run.events.last().map(|e|e.message.clone())
-            }else{None},
-        }
-    }
-    pub fn terminal(&self)->bool{
-        matches!(self.status,RunStatus::Completed|RunStatus::Failed|RunStatus::Cancelled)
-    }
-}
-#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub struct RunStats{pub total:usize,pub active:usize,pub awaiting_approval:usize}
+// Projection DTOs belong to the pure storage port, never the file backend.
+pub use crate::ports::{RunUpdate,RunHeader,RunStats};
+
 /// The Run map and parent links live behind ONE metadata lock.  A separate
 /// child-index lock would allow budget settlement to see mixed generations.
 struct RunIndex {
@@ -369,5 +301,55 @@ impl Store {
         Ok(run)
     }
 }
+
+// Concrete JSON+fsync adapter belongs to infrastructure, not the core.
+// Existing external users can still create Store::open(data_dir/runs).
+impl crate::ports::RunRepository for Store {
+    fn put(&self,run:Run)->crate::ports::StorageFuture<'_,Result<(),String>>{
+        Box::pin(Store::put(self,run))
+    }
+    fn get(&self,id:Uuid)->crate::ports::StorageFuture<'_,Option<Run>>{
+        Box::pin(Store::get(self,id))
+    }
+    fn has_children(&self,id:Uuid)->crate::ports::StorageFuture<'_,bool>{
+        Box::pin(Store::has_children(self,id))
+    }
+    fn children_of(&self,id:Uuid)->crate::ports::StorageFuture<'_,Vec<Run>>{
+        Box::pin(Store::children_of(self,id))
+    }
+    fn family_of(&self,id:Uuid)->crate::ports::StorageFuture<'_,Vec<Run>>{
+        Box::pin(Store::family_of(self,id))
+    }
+    fn stats(&self)->crate::ports::StorageFuture<'_,RunStats>{
+        Box::pin(Store::stats(self))
+    }
+    fn headers(&self)->crate::ports::StorageFuture<'_,Vec<RunHeader>>{
+        Box::pin(Store::headers(self))
+    }
+    fn strategy_evidence<'a>(&'a self,repository:&'a str)
+        ->crate::ports::StorageFuture<'a,Vec<crate::strategy::StrategyEvidence>>{
+        Box::pin(Store::strategy_evidence(self,repository))
+    }
+    fn pending_approvals(&self)
+        ->crate::ports::StorageFuture<'_,Vec<(Uuid,crate::domain::ToolCall)>>{
+        Box::pin(Store::pending_approvals(self))
+    }
+    fn list(&self)->crate::ports::StorageFuture<'_,Vec<Run>>{
+        Box::pin(Store::list(self))
+    }
+    fn recovery_candidates(&self)->crate::ports::StorageFuture<'_,(Vec<Uuid>,Vec<Uuid>)>{
+        Box::pin(Store::recovery_candidates(self))
+    }
+    fn mutate<'a>(&'a self,id:Uuid,change:crate::ports::RunMutation<'a>)
+        ->crate::ports::StorageFuture<'a,Result<Run,String>>{
+        Box::pin(Store::mutate(self,id,change))
+    }
+    fn subscribe(&self)->broadcast::Receiver<RunUpdate>{Store::subscribe(self)}
+    fn changed<'a>(&'a self,id:Uuid,receiver:&'a mut broadcast::Receiver<RunUpdate>)
+        ->crate::ports::StorageFuture<'a,bool>{
+        Box::pin(Store::changed(self,id,receiver))
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -31,7 +31,10 @@ pub mod policy;
 pub mod provider;
 pub mod sandbox;
 pub mod sdk;
-pub mod store;
+pub mod infrastructure;
+pub mod ports;
+// Public compatibility alias, actual DB implementation is outside the core.
+pub use infrastructure::persistence as store;
 pub mod tools;
 pub mod verification;
 pub mod acceptance;

@@ -17,6 +17,21 @@ required_count src/context.rs '^[[:space:]]*pub fn compact\(' 0
 required_count src/engine.rs '^[[:space:]]*async fn drive\(' 1
 required_count src/engine.rs '^[[:space:]]*async fn perform_tool\(' 1
 required_count src/journal.rs '^[[:space:]]*pub fn begin\(' 1
+# The kernel owns business-state transitions, not the DB or filesystem
+# durability implementation. File I/O is an infrastructure adapter.
+required_count src/engine.rs 'pub store: Arc<RunStorePort>' 1
+required_count src/engine.rs 'store::Store|Store::open|tokio::fs|std::fs|persist\\(' 0
+required_count src/sdk.rs 'Store::open|store::Store' 0
+required_count src/ports.rs 'pub trait RunRepository' 1
+required_count src/ports.rs 'tokio::fs|std::fs|persist\\(' 0
+required_count src/infrastructure/persistence/mod.rs 'impl crate::ports::RunRepository for Store' 1
+required_count src/infrastructure/persistence/mod.rs 'async fn persist\\(' 1
+required_count src/product/bootstrap.rs 'Store::open' 1
+if [[ -e src/store.rs || -e src/store/tests.rs ]]; then
+ echo "ERROR: concrete DB implementation leaked into execution root" >&2
+ exit 1
+fi
+
 required_count src/journal.rs '^[[:space:]]*pub fn finish\(' 1
 # Prevent split admission contracts and duplicate credential-free metadata fetchers.
 required_count src/product/frontend_rooms.rs '^[[:space:]]*async fn admit_owner_message' 1

@@ -243,3 +243,35 @@ The generic settled-versus-uncertain effect contract lives in
 `src/domain.rs`, not the MCP protocol module, while the old
 `mcp::McpCallOutcome` Rust symbol remains a compatibility alias.
 No second agent loop, new effect authorization path or menu was added.
+
+## 2026-11-20 — Storage implementation removed from core (Sub4)
+
+**Storage is infrastructure, not the language execution kernel.**
+The former `src/store.rs` and its file/serialization/fsync tests moved to
+`src/infrastructure/persistence/`, preserving the on-disk
+`data_dir/runs/*.json` format and crash-recovery compatibility. No
+migration or deletion of existing run records is required.
+
+`src/ports.rs` now defines an **object-safe `RunRepository` port** with
+async operations and atomic mutation callbacks, and a `RunStorePort` facade
+that preserves the native executor's generic transactional updates.
+`Engine` holds `Arc<RunStorePort>`, not `Arc<Store>`.
+JSON encoding, directory paths, atomic rename, fsync, startup record recovery
+and per-run write locks belong only to the concrete infrastructure adapter.
+
+Application composition (`src/product/bootstrap.rs`) chooses/opens the
+production repository and injects it through `Engine::new_with_repository`.
+The actual `Dominion::open` boot and product restoration live under
+`src/sdk/product.rs`. The native execution kernel only sees the committed
+Run port. Compatibility `crate::store::Store` remains a re-export, so
+external SDK and HTTP signatures/paths remain stable.
+
+The pure `src/journal.rs` **Run state machine** remains in the kernel:
+approve/deny, begin/finish effect, replay-safety and uncertain external effects
+are *execution semantics*, not database I/O. This distinction preserves
+the original write-ahead-effect safety invariant while allowing future
+storage backends without modifying the executor.
+
+This is an interface/ownership separation within the existing binary;
+it does **not** claim that the production storage is disabled, that files
+are no longer written, or that crashes can safely replay mutating effects.

@@ -64,7 +64,7 @@ impl Host {
         self.enabled && connected_tools::mutates(name)
     }
     pub async fn invoke_external(
-        &self,settings:&Settings,store:&Arc<crate::store::Store>,
+        &self,settings:&Settings,store:&Arc<crate::ports::RunStorePort>,
         id:uuid::Uuid,call:&ToolCall,cancel:tokio::sync::watch::Receiver<bool>
     )->Result<crate::domain::ToolEffectOutcome,String>{
         execution::invoke(self,settings,store,id,call,cancel).await

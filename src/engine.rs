@@ -1,4 +1,4 @@
-use crate::{program_session,hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall, ToolEffectOutcome}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch};
+use crate::{program_session,hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall, ToolEffectOutcome}, provider::{ModelClient, Reply}, ports::RunStorePort, tools, policy, journal, tool_schema, tool_batch};
 use serde_json::{json, Value};
 use std::{collections::{HashMap,HashSet}, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
@@ -16,7 +16,7 @@ mod local_task_catalog;
 const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. Choose the simplest sufficient tool path: read_program is optional for parallel inspection; run_program is optional for dependent native steps without intermediate model turns. The latter must be the only call in its turn, and never bypasses shell approval. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests and examine actual receipts before reporting completion. Finish only when the request is materially done, explaining remaining limitations.";
 pub struct Engine {
     pub settings: Settings,
-    pub store: Arc<Store>,
+    pub store: Arc<RunStorePort>,
     /// All GUI, memory, account, room and model-catalog services live outside
     /// the Run kernel. The Deref compatibility surface does not own a runner.
     product: crate::product::ProductHost,
@@ -36,21 +36,11 @@ impl std::ops::Deref for Engine {
     fn deref(&self)->&Self::Target{&self.product}
 }
 impl Engine {
-    pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>) -> Result<Arc<Self>, String> {
-        let mcp=Arc::new(if settings.addons_enabled{
-            crate::mcp::Mcp::from_env()?
-        }else{
-            crate::mcp::Mcp::new(Vec::new())?
-        });
-        Self::new_with_mcp(settings,store,groups,mcp)
-    }
-    /// Explicit MCP dependency injection keeps server integration tests
-    /// isolated and enables alternate transports without replacing the engine.
-    pub fn new_with_mcp(settings:Settings,store:Arc<Store>,
-        groups:Arc<crate::group::Groups>,
-        mcp:Arc<crate::mcp::Mcp>)->Result<Arc<Self>,String>{
+    /// Compose a pure Run executor from an injected storage port and product
+    /// adapter. No filesystem, JSON database, migration or DB open occurs here.
+    pub(crate) fn from_ports(settings:Settings,store:Arc<crate::ports::RunStorePort>,
+        product:crate::product::ProductHost)->Result<Arc<Self>,String>{
         let model=ModelClient::new(&settings)?;
-        let product=crate::product::ProductHost::open(&settings,groups,mcp)?;
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
         let engine=Arc::new(Self { settings, store, product, hooks,
