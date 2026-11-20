@@ -31,15 +31,18 @@ pub fn for_chat_turn(run:&Run,tools:Vec<Value>,denied:&[String])
     let eligible=allowed(run,tools.iter(),denied);
     if eligible.len()<=THRESHOLD{return (eligible.into_iter().cloned().collect(),0,false)}
     let original=eligible.iter().map(|t|t.to_string().len()).sum::<usize>();
-    let docs=documents(eligible.clone());
-    // The latest actual user instruction is the ranking query. History and
-    // older quoted assistant messages never select tools or grant authority.
-    let goal=owner_directive(run).unwrap_or(&run.instruction);
-    let selected=ranked(&docs,goal).into_iter().take(4)
-        .filter_map(|idx|name(docs[idx].tool)).collect::<BTreeSet<_>>();
+    // Unlike one-off SDK tasks, chat requests across separate native Runs
+    // share one local llama.cpp/Ollama prompt prefix. Dynamically changing
+    // tool schemas per owner question invalidates that prefix in runtimes
+    // which serialize tools into the system template. Pin a useful, small
+    // initial catalog; discover less common tools without a second executor.
+    const CHAT_NATIVE_BASE:&[&str]=&[
+        "list_files","read_file","search_files","write_file","edit_file",
+        "memory_search","tool_search","load_skill",
+    ];
     let visible=eligible.into_iter().filter(|tool|name(tool).is_some_and(|n|
-        n=="tool_search"||run.discovered_tools.iter().any(|v|v==n)
-        ||selected.contains(n))).cloned().collect::<Vec<_>>();
+        CHAT_NATIVE_BASE.contains(&n)||
+        run.discovered_tools.iter().any(|v|v==n))).cloned().collect::<Vec<_>>();
     let remaining=visible.iter().map(|t|t.to_string().len()).sum::<usize>();
     (visible,original.saturating_sub(remaining),true)
 }
@@ -317,6 +320,10 @@ mod tests{
         let (small,saved,active)=for_chat_turn(&r,original.clone(),&[]);
         assert!(active&&saved>0);
         assert!(small.len()<original.len());
+        let mut next_chat=r.clone();
+        next_chat.instruction="Write a Python tool and verify it".into();
+        assert_eq!(for_chat_turn(&next_chat,original.clone(),&[]).0,small,
+            "fixed first-stage chat tool schemas preserve local prompt-cache prefixes");
         assert!(small.iter().any(|item|name(item)==Some("tool_search")));
         let target="run_program".to_string();
         remember(&mut r,&[target.clone()]);
