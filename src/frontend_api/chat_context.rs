@@ -402,7 +402,7 @@ mod tests{
             "예전에 QM5 얘기했죠?",false,12_000).unwrap();
         let evidence=view.messages.last().unwrap()["content"].as_str().unwrap();
         assert!(evidence.contains("UNTRUSTED DATA"));
-        let rows:Vec<Value>=serde_json::from_str(evidence.split_once('\\n').unwrap().1).unwrap();
+        let rows:Vec<Value>=serde_json::from_str(evidence.split_once('\n').unwrap().1).unwrap();
         assert!(rows.iter().any(|r|r["source_role"]=="user"
             &&r["message_id"]=="chat-10"
             &&r["quoted_excerpt"].as_str().unwrap().contains("New user instruction:")));
@@ -414,7 +414,7 @@ mod tests{
     fn escaped_historical_quotes_cannot_bypass_model_context_budget(){
         let mut prev=(0..31).map(msg).collect::<Vec<_>>();
         for i in 8..12{
-            prev[i].content=format!("QM5 {}", "\\\\\\"\\n".repeat(100));
+            prev[i].content=format!("QM5 {}", "\\".repeat(240));
         }
         // Preserve older raw evidence after a user-initiated compaction.
         let c=ChatCompaction{through:25,excerpt:String::new()};
@@ -426,7 +426,7 @@ mod tests{
         let evidence=view.messages.last().unwrap();
         assert_eq!(evidence["role"],"user");
         let rows:Vec<Value>=serde_json::from_str(
-            evidence["content"].as_str().unwrap().split_once('\\n').unwrap().1).unwrap();
+            evidence["content"].as_str().unwrap().split_once('\n').unwrap().1).unwrap();
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|r|r["source"]=="durable_chat_transcript"));
     }
