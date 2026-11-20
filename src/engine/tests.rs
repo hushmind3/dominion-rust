@@ -649,8 +649,8 @@ async fn workflow_loop_identity_is_pinned_before_queued_work_resumes(){
 
 /// An embedding host can substitute model/memory/tool capabilities without
 /// touching the native Run state machine or production ProductHost.
-struct DenyOnlyServices{
-    tool_calling:crate::runtime_services::CapabilitySupport,
+pub(super) struct DenyOnlyServices{
+    pub(super) tool_calling:crate::runtime_services::CapabilitySupport,
 }
 impl crate::runtime_services::RuntimeServices for DenyOnlyServices{
     fn model_capabilities(&self,_run:&Run)->crate::runtime_services::ModelCapabilities{

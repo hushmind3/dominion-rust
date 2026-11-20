@@ -5,6 +5,9 @@ use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
 use uuid::Uuid;
 
 mod delegation;
+mod task_team;
+#[cfg(test)]
+mod task_team_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -146,6 +149,9 @@ impl Engine {
         }
         let started = self.store.mutate(id, |run| {
             if run.terminal() { return Err("cannot restart finished execution".into()); }
+            if run.team.is_some(){
+                return Err("team coordinator is not an agent; use the Task Team scheduler".into());
+            }
             // Archived reservations no longer have a live owning adapter.
             // An old approval receipt cannot authorize new external effects.
             if run.events.iter().any(|event|event.kind=="reserved_unlaunched"){
@@ -438,6 +444,9 @@ impl Engine {
         self.active.lock().await.contains(&id)
     }
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
+        if self.store.get(id).await.is_some_and(|r|r.team.is_some()){
+            return self.cancel_task_team(id).await;
+        }
         // Serialize with child creation. If a comparison is cancelled during
         // the first candidate's startup, the next candidate cannot start and
         // no just-created worker escapes the cancellation scan.

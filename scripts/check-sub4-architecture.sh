@@ -200,4 +200,12 @@ for obsolete in \
     exit 1
   fi
 done
+
+# Owner-authored Task Teams reuse the ONLY native Run executor.
+required_count src/domain/team.rs 'pub struct TeamGraph' 1
+required_count src/engine/task_team.rs 'pub async fn advance_task_team' 1
+required_count src/engine/task_team.rs 'self[.]launch[(]task[.]run_id' 1
+required_count src/engine/task_team.rs 'impl Engine' 1
+required_count src/engine/task_team.rs 'async fn drive[(]|fn perform_tool[(]' 0
+required_count src/engine.rs 'run[.]team[.]is_some[(]' 1
 echo "PASS: one native Run/tool executor, one durable journal, one strict context projection"

@@ -1,5 +1,5 @@
 //! Primary native Rust SDK. HTTP/TypeScript/Studio are optional adapters.
-use crate::{hooks::ToolHook,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,tools};
+use crate::{domain::team::{TaskSpec,TeamView},hooks::ToolHook,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,tools};
 use serde_json::{json,Value};
 use std::{sync::Arc,time::{Duration,Instant}};
 use uuid::Uuid;
@@ -91,6 +91,23 @@ impl Dominion {
         let mut out=Vec::with_capacity(inputs.len());
         for input in inputs{out.push(self.submit(input).await?);}
         Ok(out)
+    }
+    /// Create a durable owner-controlled task DAG without launching a model.
+    /// Each Task has a stable native Run ID and a reserved local budget.
+    pub async fn create_task_team(&self,instruction:String,tasks:Vec<TaskSpec>,
+        budget_krw:f64,options:RunOptions)->Result<Run,String>{
+        self.engine.create_task_team(instruction,tasks,budget_krw,options).await
+    }
+    /// Advance only dependency-ready tasks through the existing native Harness.
+    /// Never retries uncertain or approval-paused worker effects implicitly.
+    pub async fn advance_task_team(&self,root:Uuid)->Result<TeamView,String>{
+        self.engine.advance_task_team(root).await
+    }
+    pub async fn task_team(&self,root:Uuid)->Result<TeamView,String>{
+        self.engine.task_team(root).await
+    }
+    pub async fn cancel_task_team(&self,root:Uuid)->Result<Run,String>{
+        self.engine.cancel_task_team(root).await
     }
     /// Reuse the engine's budget- and lineage-enforced delegated execution.
     pub async fn delegate(&self,parent:Uuid,input:CreateRun)->Result<Run,String>{

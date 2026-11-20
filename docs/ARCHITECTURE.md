@@ -483,3 +483,29 @@ An explicit `false` rejects tool-capable agent requests before charging
 a model call and persists a `model_capability_denied` Run event.
 Tool-free chat continues to work. A changed endpoint, protocol or model
 does not inherit an old tool capability declaration.
+
+## 2026-11-20 — Durable Task Team on one native Harness
+
+The team coordinator is a non-executable native Run with a versioned
+\`team: Option<TeamGraph>\` containing at most 16 owner-authorized tasks.
+Each task is assigned its own stable Run UUID, dependency list, role,
+logical workspace lease, model-step ceiling and reserved KRW budget
+before any model request. Team creation rejects dependency cycles,
+unknown/duplicate task IDs, invalid scopes, and over-budget plans.
+
+\`Engine::advance_task_team\` and native SDK counterparts schedule
+dependency-ready workers through the **existing** Engine::launch and
+journal. There is no second agent loop. Investigators and reviewers
+are read-only, and only one Writer in a given logical workspace
+is admitted at once. Normal Run approval, runtime tool admission,
+cost receipts, cancellation and recovery are unchanged. A crashed
+coordinator reuses persisted task Run IDs; only safely queued
+workers are auto-launched, not paused/uncertain/approval-held work.
+
+A Task Team root is never runnable as a model agent. The root only
+reaches completed when all workers completed and delegated budget
+settlements are durable. Failed prerequisites block dependants.
+Owner cancellation is propagated to live workers with in-flight
+reconciliation preserved. This native API intentionally adds no
+menu or HTTP route. An event driver must call advance_task_team
+after worker completion; this is not yet a permanently scheduled DAG.

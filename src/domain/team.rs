@@ -1,0 +1,209 @@
+//! Versioned, owner-authored team DAG persisted inside a native Run.
+//! Pure graph operations do not spawn agents, execute tools or grant access.
+use serde::{Deserialize,Serialize};
+use std::collections::{HashMap,HashSet};
+use uuid::Uuid;
+use super::RunStatus;
+
+#[derive(Clone,Copy,Debug,Serialize,Deserialize,PartialEq,Eq)]
+#[serde(rename_all="snake_case")]
+pub enum TeamRole{Investigator,Writer,Reviewer}
+impl TeamRole{
+    pub fn read_only(self)->bool{!matches!(self,Self::Writer)}
+    pub fn profile(self)->&'static str{match self{
+        Self::Investigator=>"inspection",Self::Writer=>"implementation",
+        Self::Reviewer=>"verification"
+    }}
+}
+#[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct TaskSpec{
+    pub id:String,
+    pub instruction:String,
+    #[serde(default)]pub depends_on:Vec<String>,
+    pub workspace:String,
+    pub role:TeamRole,
+    pub budget_krw:f64,
+    pub max_steps:usize,
+}
+#[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct TeamTask{
+    #[serde(flatten)]pub spec:TaskSpec,
+    /// Deterministic per-team work assignment, allocated BEFORE any model
+    /// invocation, survives failed launches and process restarts.
+    pub run_id:Uuid,
+}
+#[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct TeamGraph{
+    pub schema_version:u32,
+    pub tasks:Vec<TeamTask>,
+}
+#[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
+#[serde(rename_all="snake_case")]
+pub enum TeamTaskState{Pending,Ready,Active,ApprovalRequired,Blocked,Completed,Failed,Cancelled}
+#[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct TeamTaskView{
+    pub id:String,
+    pub run_id:Uuid,
+    pub role:TeamRole,
+    pub depends_on:Vec<String>,
+    pub workspace:String,
+    pub status:TeamTaskState,
+}
+#[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct TeamView{
+    pub root_run_id:Uuid,
+    pub tasks:Vec<TeamTaskView>,
+    pub completed:usize,
+    pub all_complete:bool,
+    pub failed:bool,
+}
+
+impl TeamGraph{
+    pub fn new(specs:Vec<TaskSpec>,budget_krw:f64)->Result<Self,String>{
+        if specs.is_empty()||specs.len()>16{return Err("team needs 1..16 tasks".into());}
+        if !budget_krw.is_finite()||!(0.0..=1_000_000.0).contains(&budget_krw){
+            return Err("invalid team total budget".into());
+        }
+        let mut names=HashSet::new();
+        let mut allocated=0.0;
+        for task in &specs{
+            let ident=|s:&str|!s.is_empty()&&s.len()<=64
+                &&s.bytes().all(|x|x.is_ascii_alphanumeric()||x==b'_'||x==b'-');
+            if !ident(&task.id)||!names.insert(task.id.clone()){
+                return Err("team task IDs must be unique ASCII identifiers".into());
+            }
+            if task.instruction.trim().is_empty()||task.instruction.len()>20_000
+                ||task.workspace.trim().is_empty()||task.workspace.len()>160
+                ||task.workspace.contains('\0') || task.workspace.contains(".."){
+                return Err("invalid task instruction or workspace scope".into());
+            }
+            if !(1..=100).contains(&task.max_steps)
+                ||!task.budget_krw.is_finite()||task.budget_krw<0.0{
+                return Err("invalid team task step or budget cap".into());
+            }
+            allocated+=task.budget_krw;
+            if !allocated.is_finite(){return Err("invalid team budget sum".into());}
+        }
+        if allocated>budget_krw+0.000001{
+            return Err("team task reservations exceed owner budget".into());
+        }
+        let by_id=specs.iter().enumerate()
+            .map(|(i,t)|(t.id.as_str(),i)).collect::<HashMap<_,_>>();
+        for task in &specs{
+            let mut deps=HashSet::new();
+            for dep in &task.depends_on{
+                if dep==&task.id||!by_id.contains_key(dep.as_str())||!deps.insert(dep){
+                    return Err("invalid, duplicate or self task dependency".into());
+                }
+            }
+        }
+        fn visit(i:usize,specs:&[TaskSpec],by_id:&HashMap<&str,usize>,
+            marks:&mut [u8])->Result<(),String>{
+            if marks[i]==1{return Err("team task dependencies form a cycle".into());}
+            if marks[i]==2{return Ok(());}
+            marks[i]=1;
+            for dep in &specs[i].depends_on{
+                visit(by_id[dep.as_str()],specs,by_id,marks)?;
+            }
+            marks[i]=2;Ok(())
+        }
+        let mut marks=vec![0;specs.len()];
+        for i in 0..specs.len(){visit(i,&specs,&by_id,&mut marks)?;}
+        Ok(Self{schema_version:1,tasks:specs.into_iter().map(|spec|
+            TeamTask{spec,run_id:Uuid::new_v4()}).collect()})
+    }
+    /// A read-only worker may run in parallel. A writer holds a named
+    /// workspace lease until terminal; no parallel writer can claim it.
+    /// Dependencies must be completed, never merely queued or paused.
+    pub fn view(&self,root:Uuid,states:&HashMap<Uuid,RunStatus>)->TeamView{
+        let by_id=self.tasks.iter().map(|t|(t.spec.id.as_str(),t.run_id))
+            .collect::<HashMap<_,_>>();
+        let mut active_writers=HashSet::new();
+        for task in &self.tasks{
+            if task.spec.role==TeamRole::Writer &&
+                states.get(&task.run_id).is_some_and(|s|!matches!(s,
+                    RunStatus::Completed|RunStatus::Failed|RunStatus::Cancelled)){
+                active_writers.insert(task.spec.workspace.as_str());
+            }
+        }
+        let mut claimed=active_writers;
+        let mut tasks=Vec::with_capacity(self.tasks.len());
+        for task in &self.tasks{
+            let done=task.spec.depends_on.iter().all(|dep|
+                states.get(&by_id[dep.as_str()])==Some(&RunStatus::Completed));
+            let failed_dependency=task.spec.depends_on.iter().any(|dep|
+                states.get(&by_id[dep.as_str()]).is_some_and(|status|matches!(status,
+                    RunStatus::Failed|RunStatus::Cancelled)));
+            let status=match states.get(&task.run_id){
+                Some(RunStatus::Completed)=>TeamTaskState::Completed,
+                Some(RunStatus::Failed)=>TeamTaskState::Failed,
+                Some(RunStatus::Cancelled)=>TeamTaskState::Cancelled,
+                Some(RunStatus::AwaitingApproval)=>TeamTaskState::ApprovalRequired,
+                Some(RunStatus::Paused)=>TeamTaskState::Blocked,
+                Some(_)=>TeamTaskState::Active,
+                None if failed_dependency=>TeamTaskState::Blocked,
+                None if !done=>TeamTaskState::Pending,
+                None if task.spec.role==TeamRole::Writer &&
+                    !claimed.insert(task.spec.workspace.as_str())=>TeamTaskState::Pending,
+                None=>TeamTaskState::Ready,
+            };
+            tasks.push(TeamTaskView{
+                id:task.spec.id.clone(),run_id:task.run_id,role:task.spec.role,
+                depends_on:task.spec.depends_on.clone(),
+                workspace:task.spec.workspace.clone(),status,
+            });
+        }
+        let completed=tasks.iter().filter(|t|t.status==TeamTaskState::Completed).count();
+        let failed=tasks.iter().any(|t|matches!(t.status,
+            TeamTaskState::Failed|TeamTaskState::Cancelled));
+        TeamView{root_run_id:root,all_complete:completed==tasks.len(),
+            failed,completed,tasks}
+    }
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn item(id:&str,depends_on:&[&str],role:TeamRole)->TaskSpec{
+        TaskSpec{id:id.into(),instruction:format!("Do {id}"),
+            depends_on:depends_on.iter().map(|s|s.to_string()).collect(),
+            workspace:"repo-a".into(),role,budget_krw:100.0,max_steps:5}
+    }
+    #[test]fn rejects_cycles_bad_references_and_unfunded_graphs(){
+        assert!(TeamGraph::new(vec![
+            item("a",&["b"],TeamRole::Writer),
+            item("b",&["a"],TeamRole::Reviewer)],500.0).is_err());
+        assert!(TeamGraph::new(vec![item("a",&["missing"],TeamRole::Writer)],500.0).is_err());
+        assert!(TeamGraph::new(vec![
+            item("a",&[],TeamRole::Writer),item("b",&[],TeamRole::Writer)],199.0).is_err());
+    }
+    #[test]fn dependencies_and_writer_leases_are_independent(){
+        let graph=TeamGraph::new(vec![
+            item("research",&[],TeamRole::Investigator),
+            item("writer1",&["research"],TeamRole::Writer),
+            item("writer2",&["research"],TeamRole::Writer),
+            item("verify",&["writer1","writer2"],TeamRole::Reviewer)],500.0).unwrap();
+        let root=Uuid::new_v4();let mut states=HashMap::new();
+        let a=graph.view(root,&states);
+        assert_eq!(a.tasks.iter().filter(|t|t.status==TeamTaskState::Ready).count(),1);
+        states.insert(graph.tasks[0].run_id,RunStatus::Completed);
+        let a=graph.view(root,&states);
+        assert_eq!(a.tasks[1].status,TeamTaskState::Ready);
+        assert_eq!(a.tasks[2].status,TeamTaskState::Pending);
+        states.insert(graph.tasks[1].run_id,RunStatus::AwaitingApproval);
+        let b=graph.view(root,&states);
+        assert_eq!(b.tasks[1].status,TeamTaskState::ApprovalRequired);
+        assert_eq!(b.tasks[2].status,TeamTaskState::Pending);
+        states.insert(graph.tasks[1].run_id,RunStatus::Completed);
+        let b=graph.view(root,&states);
+        assert_eq!(b.tasks[2].status,TeamTaskState::Ready);
+        states.insert(graph.tasks[2].run_id,RunStatus::Failed);
+        assert_eq!(graph.view(root,&states).tasks[3].status,TeamTaskState::Blocked);
+    }
+    #[test]fn graph_serialization_keeps_stable_run_assignment(){
+        let g=TeamGraph::new(vec![item("a",&[],TeamRole::Investigator)],100.0).unwrap();
+        let rest:TeamGraph=serde_json::from_slice(&serde_json::to_vec(&g).unwrap()).unwrap();
+        assert_eq!(g.tasks[0].run_id,rest.tasks[0].run_id);
+        assert_eq!(rest.schema_version,1);
+    }
+}
