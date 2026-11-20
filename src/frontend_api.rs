@@ -22,6 +22,7 @@ mod system;
 mod agents;
 mod sessions;
 mod chat;
+mod chat_context;
 mod operations;
 mod memory;
 mod sdk_endpoints;
