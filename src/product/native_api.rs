@@ -72,8 +72,13 @@ fn frontend_dist(home:&std::path::Path, built:&std::path::Path, explicit:Option<
 }
 
 pub fn router(engine: Arc<Engine>) -> Router {
+    let launch_nonce=std::env::var("DOMINION_LAUNCH_NONCE").unwrap_or_default();
     let api = Router::new()
-        .route("/health",get(|| async { Json(json!({"ok":true,"name":"dominion","api":"v1"})) }))
+        .route("/health",get(move ||{
+            let launch_nonce=launch_nonce.clone();
+            async move{Json(json!({"ok":true,"name":"dominion","api":"v1",
+                "launchNonce":launch_nonce}))}
+        }))
         .route("/config",get(config))
         .route("/profile",get(get_owner_profile).post(save_owner_profile))
         .route("/memory",get(list_memory).post(save_memory))

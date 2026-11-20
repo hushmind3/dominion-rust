@@ -12,7 +12,10 @@ export const koreanReasoningKey='dominion.chat.reasoningKo'
 export function koreanReasoningEnabled(){
  try{return localStorage.getItem(koreanReasoningKey)!=='0'}catch{return true}
 }
-let authToken = ''
+// Tauri 2 injects a per-launch native API token before React loads.
+let authToken=typeof window!=='undefined'&&window.location.origin==='http://127.0.0.1:4317'
+  ?((window as Window & {__DOMINION_BOOTSTRAP_TOKEN__?:string}).__DOMINION_BOOTSTRAP_TOKEN__??'')
+  :''
 export function setAuthToken(value: string) { authToken = value.trim() }
 
 function apiFetch(url: string, init: RequestInit = {}) {

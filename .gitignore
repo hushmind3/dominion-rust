@@ -13,3 +13,6 @@
 /web/playwright-report/
 /benchmarks/results/
 /web/.browser-runtime/
+
+/src-tauri/target/
+/src-tauri/binaries/dominion-*

@@ -1,0 +1,13 @@
+[package]
+name = "dominion-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+[workspace]
+[build-dependencies]
+tauri-build = "2"
+[dependencies]
+tauri = "2"
+tauri-plugin-shell = "2"
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"

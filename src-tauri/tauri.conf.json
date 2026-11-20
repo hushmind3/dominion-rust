@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DOMINION",
+  "version": "0.1.0",
+  "identifier": "kr.dominionai.desktop",
+  "build": {
+    "frontendDist": "../web/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "externalBin": [
+      "binaries/dominion"
+    ],
+    "resources": {
+      "../web/dist": "web/dist"
+    }
+  }
+}
