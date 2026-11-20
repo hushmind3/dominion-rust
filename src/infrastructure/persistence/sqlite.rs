@@ -131,8 +131,10 @@ pub async fn upsert(path:PathBuf,run:Run)->Result<(),String>{
 pub fn checkpoint(path:&Path)->Result<(),String>{
     if !path.is_file(){return Ok(());}
     let db=open(path)?;
-    db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .map_err(|e|e.to_string())
+    let busy:i64=db.query_row("PRAGMA wal_checkpoint(TRUNCATE)",
+        [],|row|row.get(0)).map_err(|e|e.to_string())?;
+    if busy!=0{return Err("SQLite WAL checkpoint busy: backup deferred".into());}
+    Ok(())
 }
 #[cfg(test)]
 mod tests{

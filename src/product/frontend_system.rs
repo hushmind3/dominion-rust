@@ -103,6 +103,11 @@ fn collect(base:&Path,dir:&Path,prefix:&str,files:&mut Vec<Entry>,size:&mut usiz
   let relative=path.strip_prefix(base).map_err(|e|e.to_string())?;
   if prefix=="data"&&relative.components().next()
    .is_some_and(|c|c.as_os_str()=="system-backups"){continue;}
+  if prefix=="data"&&relative.components().count()==1
+    &&relative.file_name().is_some_and(|name|
+        name=="dominion.sqlite3-wal"||name=="dominion.sqlite3-shm"){
+    continue; // WAL was checkpointed; transient journals are never restored.
+  }
   let kind=item.file_type().map_err(|e|e.to_string())?;
   if kind.is_symlink(){return Err(format!("backup cannot follow symlink: {}",path.display()));}
   if kind.is_dir(){collect(base,&path,prefix,files,size)?;continue;}
@@ -252,9 +257,13 @@ async fn backups(State(engine):State<Arc<Engine>>)->Json<Value>{
 }
 async fn create_backup(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  require_maintenance(&engine)?;
+ if engine.store.stats().await.active>0{
+   return Err(bad("backup requires all active or queued native Runs to settle"));
+ }
  let settings=engine.settings.clone();
  let result=tokio::task::spawn_blocking(move||{
   let _held=guard();
+  crate::store::Store::checkpoint_sqlite(&settings.data_dir)?;
   let ring=load_keys(&settings,true)?;
   let bytes=serde_json::to_vec(&snapshot(&settings)?).map_err(|e|e.to_string())?;
   let encrypted=encrypt(&ring,&bytes)?;

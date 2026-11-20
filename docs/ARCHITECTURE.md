@@ -738,3 +738,12 @@ existing persistent adapters; a complete cross-product SQLite cutover
 requires separate migration and storage interoperability validation.
 
 No build, CI or migration execution has been performed at operator request.
+
+### Encrypted backup and SQLite durability
+
+Before creating an encrypted maintenance-mode backup, DOMINION now refuses
+non-settled native Runs and fully checkpoints SQLite's WAL. The encrypted
+archive contains the authoritative `dominion.sqlite3`, Room, Knowledge
+and other preserved product data, excluding volatile `-wal` and `-shm`
+files. The existing staged restoration runs before the database opens.
+This is intentionally not a live hot-backup API.

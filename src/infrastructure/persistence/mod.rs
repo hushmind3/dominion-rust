@@ -97,6 +97,9 @@ impl Store {
         Self::from_snapshots(root,None,rows).await
     }
     /// Production bootstrap: migrate old JSON once, then use SQLite only.
+    pub fn checkpoint_sqlite(data_dir:&Path)->Result<(),String>{
+        sqlite::checkpoint(&data_dir.join("dominion.sqlite3"))
+    }
     pub async fn open_sqlite(root:PathBuf)->Result<Self,String>{
         let parent=root.parent().ok_or("Run directory has no parent")?;
         let database=parent.join("dominion.sqlite3");
