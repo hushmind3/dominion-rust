@@ -104,18 +104,14 @@ async fn state(settings:&Settings)->Result<(PathBuf,Shared),String>{
     Ok((root,shared))
 }
 fn valid_repo(repo:&str)->bool{
-    let mut split=repo.split('/');
-    match (split.next(),split.next(),split.next()){
-        (Some(a),Some(b),None)=>[a,b].into_iter().all(|name|!name.is_empty()&&name.len()<100
-            &&name!="."&&name!=".."&&name.bytes().all(|ch|
-                ch.is_ascii_alphanumeric()||matches!(ch,b'-'|b'_'|b'.'))),
-        _=>false
-    }
+    // Match Hub search validity, retaining the importer's stricter
+    // per-component bound for local filesystem metadata.
+    crate::frontend_huggingface::valid_repo(repo)
+        &&repo.split('/').all(|part|part.len()<100)
 }
 fn valid_file(path:&str)->bool{
-    !path.is_empty()&&path.len()<512&&!path.contains('\\')
-        &&!path.chars().any(char::is_control)&&!path.starts_with('/')
-        &&path.split('/').all(|v|!v.is_empty()&&v!="."&&v!="..")
+    path.len()<512&&!path.chars().any(char::is_control)
+        &&crate::frontend_huggingface::safe_relative(path)
 }
 fn valid_revision(revision:&str)->bool{
     revision.len()==40&&revision.bytes().all(|c|c.is_ascii_hexdigit())
@@ -592,6 +588,11 @@ mod tests{
         assert!(valid_repo("Qwen/Qwen3-GGUF"));
         assert!(!valid_repo("Qwen/../secret"));
         assert!(!valid_repo("Qwen/a/b"));
+        let oversized_segment=format!("Qwen/{}", "x".repeat(100));
+        assert!(crate::frontend_huggingface::valid_repo(&oversized_segment));
+        assert!(!valid_repo(&oversized_segment),
+            "local storage keeps its prior per-component bound");
+        assert!(!valid_file("models/control\n.gguf"));
         assert!(!valid_file("../../secret.gguf"));
         assert!(!valid_file("file\\evil.gguf"));
         assert!(valid_file("sub/model.Q4_K_M.gguf"));

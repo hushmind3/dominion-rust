@@ -35,6 +35,7 @@ pub mod provider_registry;
 pub mod frontend_providers;
 pub mod frontend_codex_login;
 pub mod frontend_provider_public;
+pub(crate) mod frontend_public_http;
 pub mod frontend_extensions;
 pub mod frontend_growth;
 pub mod frontend_personas;

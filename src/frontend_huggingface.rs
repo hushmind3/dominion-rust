@@ -51,7 +51,7 @@ fn query_url(q:&CatalogQuery,format:&str)->Result<reqwest::Url,String>{
     }
     Ok(url)
 }
-fn valid_repo(repo:&str)->bool{
+pub(crate) fn valid_repo(repo:&str)->bool{
     if repo.len()>200{return false;}
     let mut parts=repo.split('/');
     let (Some(user),Some(name),None)=(parts.next(),parts.next(),parts.next())
@@ -60,24 +60,13 @@ fn valid_repo(repo:&str)->bool{
         &&part.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'-'|b'_'|b'.')))
 }
 async fn public_json(url:reqwest::Url,max_bytes:usize)->Result<Value,String>{
-    let client=reqwest::Client::builder().timeout(Duration::from_secs(24))
-        .redirect(reqwest::redirect::Policy::none()).build()
-        .map_err(|e|e.to_string())?;
-    let mut response=client.get(url).send().await.map_err(|e|e.to_string())?;
-    if !response.status().is_success(){
-        return Err(format!("Hugging Face HTTP {}",response.status()));
-    }
-    if response.content_length().is_some_and(|n|n>max_bytes as u64){
-        return Err("Hub metadata response is too large".into());
-    }
-    let mut bytes=Vec::new();
-    while let Some(chunk)=response.chunk().await.map_err(|e|e.to_string())?{
-        if bytes.len().saturating_add(chunk.len())>max_bytes{
-            return Err("Hub metadata response is too large".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    serde_json::from_slice(&bytes).map_err(|e|format!("invalid Hub metadata: {e}"))
+    crate::frontend_public_http::read_json(url,
+        crate::frontend_public_http::ReadOptions{
+            timeout:Duration::from_secs(24),max_bytes,
+            status_label:"Hugging Face HTTP",
+            too_large:"Hub metadata response is too large",
+            invalid_json:"invalid Hub metadata"
+        }).await
 }
 fn list_row(item:&Value)->Option<Value>{
     let id=item["id"].as_str()?;
@@ -127,7 +116,7 @@ async fn catalog(Query(q):Query<CatalogQuery>)->Result<Json<Value>,Fault>{
     };
     Ok(Json(json!(rows)))
 }
-fn safe_relative(file:&str)->bool{
+pub(crate) fn safe_relative(file:&str)->bool{
     !file.is_empty()&&!file.starts_with('/')&&!file.contains('\\')
         &&file.split('/').all(|part|!part.is_empty()&&part!="."&&part!="..")
 }

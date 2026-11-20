@@ -28,24 +28,14 @@ fn publish(slot:&'static OnceLock<Mutex<Option<(Instant,Arc<Value>)>>>,value:Arc
     *current.lock().unwrap_or_else(|e|e.into_inner())=Some((Instant::now(),value));
 }
 async fn bounded_public_json(url:&str)->Result<Value,String>{
-    let client=reqwest::Client::builder().timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none())
-        .build().map_err(|e|e.to_string())?;
-    let mut response=client.get(url).send().await.map_err(|e|e.to_string())?;
-    if !response.status().is_success(){
-        return Err(format!("public metadata endpoint returned HTTP {}",response.status()));
-    }
-    if response.content_length().is_some_and(|bytes|bytes>MAX_PUBLIC_DOCUMENT as u64){
-        return Err("public metadata exceeds 24 MiB limit".into());
-    }
-    let mut bytes=Vec::new();
-    while let Some(chunk)=response.chunk().await.map_err(|e|e.to_string())?{
-        if bytes.len().saturating_add(chunk.len())>MAX_PUBLIC_DOCUMENT{
-            return Err("public metadata exceeds 24 MiB limit".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    serde_json::from_slice(&bytes).map_err(|e|format!("invalid public model metadata: {e}"))
+    let url=reqwest::Url::parse(url).map_err(|error|error.to_string())?;
+    crate::frontend_public_http::read_json(url,
+        crate::frontend_public_http::ReadOptions{
+            timeout:Duration::from_secs(20),max_bytes:MAX_PUBLIC_DOCUMENT,
+            status_label:"public metadata endpoint returned HTTP",
+            too_large:"public metadata exceeds 24 MiB limit",
+            invalid_json:"invalid public model metadata"
+        }).await
 }
 fn cached_models_dev_document()->Option<Arc<Value>>{
     snapshot(&MODELS_DEV_DOCUMENT,Some(MODELS_DEV_TTL))
