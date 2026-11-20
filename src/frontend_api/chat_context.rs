@@ -265,6 +265,42 @@ mod tests{
         assert!(view.recalled_messages>0);
     }
     #[test]
+    fn hundred_turn_replay_uses_fewer_actual_prompt_characters_without_extra_model_calls(){
+        let prev=(0..200).map(|i|{
+            let mut item=msg(i);
+            item.content=format!("turn {i} durable dialogue {}", "document evidence ".repeat(34));
+            item
+        }).collect::<Vec<_>>();
+        let mut baseline=0usize;
+        let mut projected=0usize;
+        for count in 40..=200{
+            let raw=prev[..count].iter().rev().take(12).rev()
+                .map(|m|format!("{}: {}",m.role,m.content))
+                .collect::<Vec<_>>().join("\n");
+            baseline+=raw.chars().count().min(6500);
+            let current=compile("consistent profile",None,&prev[..count],
+                "current user request",false,14_000).unwrap();
+            projected+=current.messages.iter().skip(1)
+                .filter_map(|v|v["content"].as_str())
+                .map(str::chars).map(Iterator::count).sum::<usize>();
+            assert_eq!(current.messages.iter().filter(|v|
+                v["dominion_cache_anchor"]==true).count(),2);
+        }
+        assert!(projected<baseline,
+            "actual replay characters across 161 identical owner workloads must shrink");
+        // This is *not* a measured vendor token or KRW reduction; cache hit
+        // and price require real upstream usage receipts.
+    }
+    #[test]
+    fn korean_inflection_retrieval_is_case_and_suffix_tolerant(){
+        let mut history=(0..25).map(msg).collect::<Vec<_>>();
+        history[11].content="광화문에 갔던 날 건축 기록을 정리했습니다".into();
+        let view=compile("profile",None,&history,
+            "그때 광화문을 방문한 건축 기록을 기억해?",false,12_000).unwrap();
+        assert!(view.messages.last().unwrap()["content"].as_str().unwrap()
+            .contains("광화문에 갔던 날"));
+    }
+    #[test]
     fn direct_answer_gate_never_disables_actual_tools(){
         for q in ["hi","안녕하세요!!","thanks","고마워~",
             "번역해 'good day'","translate this: Bonjour"]{
