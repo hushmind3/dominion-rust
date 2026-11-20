@@ -408,6 +408,7 @@ mod tests{
   assert_eq!(public(&read(&file).unwrap().channels[&row.id])["delivery"]["sending"],0);
   std::fs::remove_dir_all(&base).expect("clean isolated fixture");
  }
+ #[test]
  fn projected_delivery_status_never_misreports_disabled_sync_as_ready(){
   let mut row=Channel{id:"c".into(),name:"Channel".into(),kind:"discord".into(),
    room_id:"room".into(),enabled:true,chat_id:String::new(),channel_id:"123".into(),
@@ -421,6 +422,7 @@ mod tests{
   assert_eq!(public(&row)["delivery"]["pendingIndex"],5);
   assert!(!public(&row).to_string().contains("secret"));
  }
+ #[test]
  fn channel_public_projection_never_contains_bot_secret(){
   let row=Channel{id:"id".into(),name:"Bot".into(),kind:"telegram".into(),
    room_id:"room".into(),enabled:true,chat_id:"123".into(),channel_id:String::new(),

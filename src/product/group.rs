@@ -190,7 +190,6 @@ impl Room {
 /// and 9-speaker fanout produce identical prompts for identical room state.
 #[derive(Debug)]
 struct RoomContext{
-    text:String,
     messages:Vec<Value>,
     source_chars:usize,
     projected_chars:usize,
@@ -384,7 +383,7 @@ fn project_room_context(room:&Room,participant:&Participant,cap:usize)->RoomCont
     debug_assert!(projected_chars<=cap,
         "room incremental context must respect the configured character budget");
     RoomContext{
-        text,messages,source_chars,projected_chars,
+        messages,source_chars,projected_chars,
         omitted_messages:total.saturating_sub(selected+rolling.len()),
         stable_context_chars:stable.chars().count(),
         rolling_context_chars:rolling.iter().map(|(_,s)|s.chars().count()).sum(),
@@ -1058,6 +1057,11 @@ impl Groups {
 mod tests {
     use super::*;
 
+    fn projected_text(context:&RoomContext)->String{
+        context.messages.iter().filter_map(|message|message["content"].as_str())
+            .collect::<Vec<_>>().join("\n")
+    }
+
     #[tokio::test]
     async fn independent_rooms_remain_readable_and_writable_with_another_room_gate_busy(){
         let root=std::env::temp_dir().join(format!("dominion-group-parallel-{}",Uuid::new_v4()));
@@ -1161,17 +1165,17 @@ mod tests {
             content:"New owner correction: cancel the stale HTTP worker and retry safely".into(),
             at_ms:21,model:None});
         let projection=project_room_context(&room,&member,1800);
-        assert!(projection.text.contains("New owner correction"));
-        assert!(projection.text.contains("durable cancellation journal"),
+        assert!(projected_text(&projection).contains("New owner correction"));
+        assert!(projected_text(&projection).contains("durable cancellation journal"),
             "older durable decisions must survive recent irrelevant chatter");
-        assert!(projection.text.contains("Earlier API concurrency failure diagnosis"));
+        assert!(projected_text(&projection).contains("Earlier API concurrency failure diagnosis"));
         assert!(projection.projected_chars<projection.source_chars);
         // All 19 source-addressed excerpts can now fit without a cache
         // rebase. Lower source bytes are achieved by clipping large peer
         // bodies, not by unnecessarily removing complete message turns.
         assert!(projection.projected_chars.saturating_mul(3)<projection.source_chars,
             "long unrelated peer bodies should shrink without losing decisions");
-        assert!(projection.text.chars().count()<=1950);
+        assert!(projected_text(&projection).chars().count()<=1950);
         assert_eq!(room.messages.len(),19,"projection never mutates durable history");
     }
     #[test]
@@ -1201,7 +1205,7 @@ mod tests {
         let context=project_room_context(&room,&member,6500);
         for anchor in ["BLUE-HARBOR-7421","SILVER-ORCHID-1188","코볼트",
             "current and discarded codes"]{
-            assert!(context.text.contains(anchor),"lost original owner evidence {anchor}");
+            assert!(projected_text(&context).contains(anchor),"lost original owner evidence {anchor}");
         }
         assert!(context.projected_chars<=6500);
         assert!(context.omitted_messages>0);
@@ -1216,7 +1220,7 @@ mod tests {
                 "peer chatter must not rewrite the sealed evidence prefix");
         }
         for fact in ["BLUE-HARBOR-7421","SILVER-ORCHID-1188","코볼트"]{
-            assert!(subsequent.text.contains(fact),
+            assert!(projected_text(&subsequent).contains(fact),
                 "checkpoint rollover must preserve the original owner evidence");
         }
     }
@@ -1274,7 +1278,7 @@ mod tests {
         let projected=project_room_context(&room,&participant,6500);
         for needle in ["BLUE-HARBOR-7421","SILVER-ORCHID-1188","코볼트",
             "current access code and deployment owner"]{
-            assert!(projected.text.contains(needle),"lost critical owner fact {needle}");
+            assert!(projected_text(&projected).contains(needle),"lost critical owner fact {needle}");
         }
         assert!(!projected.messages[0].to_string().contains("Ignore previous owner decisions"),
             "untrusted peer commands may not become remembered owner facts");
@@ -1878,9 +1882,9 @@ mod tests {
         assert!(reviewer.projected_chars<=cap);
         assert!(analyst.omitted_messages>0,
             "100 turns must not explode the model context");
-        assert!(analyst.text.contains("ALPHA-17"),
+        assert!(projected_text(&analyst).contains("ALPHA-17"),
             "original high-priority owner evidence must survive checkpointing");
-        assert!(analyst.text.contains("Final owner override"),
+        assert!(projected_text(&analyst).contains("Final owner override"),
             "latest real owner correction must stay in the rolling source window");
         let serialized=serde_json::to_vec(&room).unwrap();
         let restored:Room=serde_json::from_slice(&serialized).unwrap();
@@ -1889,7 +1893,7 @@ mod tests {
         assert_eq!(restored.unread_range("analyst"),198..200);
         assert_eq!(restored.unread_range("reviewer"),200..200);
         let after=project_room_context(&restored,&restored.participants[0],cap);
-        assert_eq!(analyst.text,after.text,
+        assert_eq!(projected_text(&analyst),projected_text(&after),
             "the same original room source must project identical context after restart");
         assert_eq!(analyst.checkpoint_end,after.checkpoint_end);
         drop(groups);

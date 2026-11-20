@@ -3,7 +3,7 @@
 //! message; completed replies are referenced by their original message index.
 //! Rebuilding after restart yields the same schedule, without copying other
 //! agents' full transcripts or treating their text as commands.
-use crate::group::{Groups,Room,RoomStatus};
+use crate::group::{Groups,Room};
 use serde::Serialize;
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -29,7 +29,6 @@ pub struct WorkTicket {
 
 #[derive(Clone,Debug)]
 pub struct RoomWorkBoard {
-    pub owner_message_index:Option<usize>,
     pub tickets:Vec<WorkTicket>,
 }
 impl RoomWorkBoard {
@@ -77,18 +76,11 @@ impl RoomWorkBoard {
                 unread_start_index:unread.start,unread_end_index:unread.end,
             }
         }).collect();
-        Self{owner_message_index:owner,tickets}
+        Self{tickets}
     }
     pub fn pending_agents(&self)->Vec<String>{
         self.tickets.iter().filter(|ticket|ticket.status==WorkStatus::Pending)
             .map(|ticket|ticket.agent_id.clone()).collect()
-    }
-    pub fn completed(&self)->usize{
-        self.tickets.iter().filter(|t|t.status==WorkStatus::Completed).count()
-    }
-    pub fn total(&self)->usize{self.tickets.len()}
-    pub fn can_schedule(&self,room:&Room)->bool{
-        room.status==RoomStatus::Open && !self.pending_agents().is_empty()
     }
 }
 #[cfg(test)]
@@ -123,9 +115,9 @@ mod tests{
         room.messages.push(message("user","Implement a patch and review it"));
         room.messages.push(message("coder","Patch complete"));
         let projected=RoomWorkBoard::project(&room);
-        assert_eq!(projected.owner_message_index,Some(0));
-        assert_eq!(projected.total(),2);
-        assert_eq!(projected.completed(),1);
+        assert_eq!(projected.tickets[0].owner_message_index,Some(0));
+        assert_eq!(projected.tickets.len(),2);
+        assert_eq!(projected.tickets.iter().filter(|t|t.status==WorkStatus::Completed).count(),1);
         assert_eq!(projected.pending_agents(),vec!["reviewer"]);
         assert_eq!(projected.tickets[0].result_message_index,Some(1));
         assert_eq!(projected.tickets[0].unread_start_index,2);
@@ -133,7 +125,7 @@ mod tests{
         assert_eq!(projected.tickets[1].unread_start_index,0);
         room.messages.push(message("user","Start a fresh review"));
         let next=RoomWorkBoard::project(&room);
-        assert_eq!(next.owner_message_index,Some(2));
+        assert_eq!(next.tickets[0].owner_message_index,Some(2));
         assert_eq!(next.pending_agents(),vec!["coder","reviewer"]);
         assert_ne!(projected.tickets[0].id,next.tickets[0].id);
     }
@@ -144,9 +136,6 @@ mod tests{
         let board=RoomWorkBoard::project(&room);
         assert_eq!(board.pending_agents(),vec!["reviewer"]);
         assert_eq!(board.tickets.len(),1);
-        assert!(board.can_schedule(&room));
-        room.status=RoomStatus::Finished;
-        assert!(!board.can_schedule(&room));
     }
     #[tokio::test]
     async fn pinned_round_robin_does_not_generate_second_speaker_on_retry(){
@@ -156,8 +145,8 @@ mod tests{
         room.messages.push(message("coder","done"));
         room.rounds+=1;
         let board=RoomWorkBoard::project(&room);
-        assert_eq!(board.total(),1);
-        assert_eq!(board.completed(),1);
+        assert_eq!(board.tickets.len(),1);
+        assert_eq!(board.tickets.iter().filter(|t|t.status==WorkStatus::Completed).count(),1);
         assert!(board.pending_agents().is_empty());
     }
 }

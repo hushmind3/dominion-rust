@@ -32,3 +32,7 @@ This is a tracked-source audit; it does **not** delete external caches, old Git 
 ## Verification
 
 The development CI checks Rust targets/unit regressions, TypeScript, SDK contracts, UI tests, Cloud Worker tests and architecture guards. Production builds/Chromium are separately dispatched release checks. The specific CI run associated with the cleanup must be inspected before marking the result successful; this document is source provenance, not a substitute for a green run.
+
+## 2026-11-21 — Follow-up dead-source removal (Sub4)
+
+The latest all-target CI warning log identified unused runtime functions, unmounted JSON stubs and redundant internal projections. Deleted the dead HTTP `model_runtime`, `model_installed`, `channels` stubs, unused Engine `from_ports` wrapper (typed service/loop injection remains), unused App Server `consult` wrapper, unused cache-marker shim and dead RoomWorkBoard helper methods and top-level field. Projection and cache tests now inspect actual request/message representations rather than dead compatibility wrappers. Registered two channel permission/projection regression functions that were not being executed. Historic archived-experiment guards remain necessary to prevent replays. No active API endpoint, model provider, UI menu, user data or native Run implementation was removed.

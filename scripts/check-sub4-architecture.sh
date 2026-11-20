@@ -215,4 +215,10 @@ required_count src/engine/task_team.rs 'self[.]launch[(]task[.]run_id' 2
 required_count src/engine/task_team.rs 'impl Engine' 1
 required_count src/engine/task_team.rs 'async fn drive[(]|fn perform_tool[(]' 0
 required_count src/engine.rs 'run[.]team[.]is_some[(]' 3
+# Prevent dead pre-migration facades and mock-only handlers returning as live API.
+required_count src/product/frontend_api/agents.rs 'async fn (model_runtime|model_installed|channels)\(' 0
+required_count src/engine.rs '^[[:space:]]*pub[(]crate[)] fn from_ports\(' 0
+required_count src/addons/agent_bridge/app_server.rs '^[[:space:]]*pub[(]super[)] async fn consult<' 0
+required_count src/infrastructure/model_transport.rs 'strip_internal_cache_markers' 0
+required_count src/product/coordination.rs 'pub fn (completed|total|can_schedule)\(' 0
 echo "PASS: one native Run/tool executor, one durable journal, one strict context projection"
