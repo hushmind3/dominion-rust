@@ -18,14 +18,9 @@ pub fn request_identity(run:Uuid,call:&ToolCall)->String{
 const BODY_MAX: usize = 262_144;
 const MAX_CACHE_MS: u64 = 300_000;
 
-/// HTTP transport stream cancellation never proves that the remote system
-/// rolled back its work. The owner must reconcile a potentially committed
-/// remote side effect before permitting another mutation.
-#[derive(Debug)]
-pub enum McpCallOutcome {
-    Settled(Result<String,String>),
-    Uncertain(String),
-}
+// Stable alias: existing MCP consumers share the kernel's generic
+// observed/uncertain external-effect contract.
+pub use crate::domain::ToolEffectOutcome as McpCallOutcome;
 /// Validated progress for the exact active MCP request; advisory information.
 #[derive(Clone,Debug)]
 pub struct McpProgress{

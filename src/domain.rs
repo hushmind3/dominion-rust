@@ -15,6 +15,13 @@ pub struct TimelineEvent {
     pub at_ms: u64,
 }
 
+/// Generic observed / uncertain outcome of a side-effecting tool adapter.
+/// This is a native Run invariant, independent of MCP, HTTP and OAuth.
+#[derive(Debug)]
+pub enum ToolEffectOutcome {
+    Settled(Result<String,String>),
+    Uncertain(String),
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,

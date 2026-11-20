@@ -61,6 +61,10 @@ for candidate in src/*.rs; do
  *) echo "ERROR: unexpected root module $candidate (classify core vs product/addons)" >&2; exit 1 ;;
  esac
 done
+# The Run kernel must not know a remote transport or duplicate progress loop.
+required_count src/engine.rs 'McpProgress|McpCallOutcome|call_with_progress|starts_with\("mcp__"\)' 0
+required_count src/addons/execution.rs '^pub async fn invoke\(' 1
+required_count src/addons/execution.rs 'journal::begin|journal::finish|pub async fn drive' 0
 # The execution Engine must own native Run state, not application products.
 required_count src/engine.rs 'product: crate::product::ProductHost' 1
 required_count src/engine.rs 'pub groups:|pub addons:|pub knowledge:|pub frontend:|pub providers:|pub owner_profile:' 0

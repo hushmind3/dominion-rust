@@ -228,3 +228,18 @@ Root-module allowlisting in `scripts/check-sub4-architecture.sh`
 prevents new product or integration source files from silently appearing
 beside the native execution modules. A genuinely new core primitive requires
 an explicit architecture-guard change and code review.
+
+## 2026-11-20 — External tool dispatch port (Sub4)
+
+The Run kernel no longer branches separately over MCP transport and connected
+account implementations. It recognizes an authorized external tool and
+submits exactly one request to `addons::Host::invoke_external`, retaining
+the existing native write-ahead tool intent, approvals, cancellation,
+uncertain-outcome reconciliation and single durable Run journal.
+
+`src/addons/execution.rs` now owns MCP progress streaming, transport
+cancellation, connected-tool invocation and live progress projection.
+The generic settled-versus-uncertain effect contract lives in
+`src/domain.rs`, not the MCP protocol module, while the old
+`mcp::McpCallOutcome` Rust symbol remains a compatibility alias.
+No second agent loop, new effect authorization path or menu was added.

@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub mod channels;
+pub mod execution;
 pub mod connected_tools;
 pub mod extensions;
 pub mod github_cli_login;
@@ -50,19 +51,23 @@ impl Host {
         result.extend(connected_tools::definitions(settings));
         result
     }
-    pub fn supports_connected(&self,name:&str)->bool{
-        self.enabled && connected_tools::supports(name)
+    /// The Run kernel sees one external-tool port, not MCP/connected-tool
+    /// transports. A disabled or revoked remote endpoint never falls back
+    /// to an unapproved native tool call.
+    pub fn handles_tool(&self,name:&str)->bool{
+        name.starts_with("mcp__") || connected_tools::supports(name)
+    }
+    pub fn needs_external_approval(&self,name:&str)->bool{
+        name.starts_with("mcp__") || (self.enabled && connected_tools::mutates(name))
     }
     pub fn needs_connected_approval(&self,name:&str)->bool{
         self.enabled && connected_tools::mutates(name)
     }
-    pub async fn invoke_connected(&self,settings:&Settings,call:&ToolCall)
-        ->mcp::McpCallOutcome{
-        if !self.enabled{
-            return mcp::McpCallOutcome::Settled(
-                Err("external add-ons are disabled by the operator".into()));
-        }
-        connected_tools::execute(settings,call).await
+    pub async fn invoke_external(
+        &self,settings:&Settings,store:&Arc<crate::store::Store>,
+        id:uuid::Uuid,call:&ToolCall,cancel:tokio::sync::watch::Receiver<bool>
+    )->Result<crate::domain::ToolEffectOutcome,String>{
+        execution::invoke(self,settings,store,id,call,cancel).await
     }
 }
 /// Old /api URLs remain identical. The top-level API depends on this single

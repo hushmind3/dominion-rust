@@ -1,4 +1,4 @@
-use crate::{program_session,mcp::{McpCallOutcome,McpProgress},hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch};
+use crate::{program_session,hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall, ToolEffectOutcome}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch};
 use serde_json::{json, Value};
 use std::{collections::{HashMap,HashSet}, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
@@ -366,7 +366,7 @@ impl Engine {
                     continue;
                 }
                 if matches!(call.name.as_str(),"shell"|"merge_subagent") ||
-                   self.addons.needs_connected_approval(&call.name) || call.name.starts_with("mcp__") {
+                   self.addons.needs_external_approval(&call.name) {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
                         run.pending_approval = Some(call.clone());
@@ -766,54 +766,6 @@ impl Engine {
     /// Consume remote progress without detaching the HTTP call. Progress is
     /// advisory; failure to persist a progress event never drops an executing
     /// remote mutation and thereby creates an unobserved side effect.
-    async fn record_mcp_progress(&self,id:Uuid,call:&ToolCall,event:&McpProgress){
-        let result=self.store.mutate(id,|run|{
-            if run.in_flight.as_ref().is_some_and(|pending|pending.id==call.id){
-                run.event("mcp_progress",
-                    format!("{}: {}",call.name,event.message.as_deref().unwrap_or("In progress")),
-                    Some(json!({
-                        "call_id":call.id,"request_id":event.request_id,
-                        "progress":event.progress,"total":event.total,
-                        "message":event.message
-                    })));
-            }
-            Ok(())
-        }).await;
-        if let Err(error)=result {
-            tracing::warn!(%id,"MCP progress event could not be stored: {error}");
-        }
-    }
-    async fn invoke_mcp_with_progress(&self,id:Uuid,call:&ToolCall,
-        cancellation:watch::Receiver<bool>)->Result<McpCallOutcome,String>{
-        let (tx,mut rx)=mpsc::channel::<McpProgress>(16);
-        let remote=self.addons.mcp.call_with_progress(id,call,cancellation,tx);
-        tokio::pin!(remote);
-        let mut forwarded=0usize;
-        let mut last_progress=None::<f64>;
-        loop{
-            tokio::select!{
-                biased;
-                result=&mut remote=>{
-                    while let Ok(progress)=rx.try_recv(){
-                        if forwarded<32 && last_progress.is_none_or(|last|progress.progress>last){
-                            self.record_mcp_progress(id,call,&progress).await;
-                            forwarded+=1;
-                            last_progress=Some(progress.progress);
-                        }
-                    }
-                    return result;
-                }
-                Some(progress)=rx.recv()=>{
-                    if forwarded<32 && last_progress.is_none_or(|last|progress.progress>last){
-                        self.record_mcp_progress(id,call,&progress).await;
-                        forwarded+=1;
-                        last_progress=Some(progress.progress);
-                    }
-                }
-            }
-        }
-    }
-
     async fn perform_tool(self: &Arc<Self>, id: Uuid, call: ToolCall,mut cancellation:watch::Receiver<bool>) -> Result<(), String> {
         // Re-apply the current hook immediately before dispatch. This also
         // protects calls approved under an older policy snapshot.
@@ -865,26 +817,17 @@ impl Engine {
         // receiver borrowed by tokio::select! below.
         let remote_cancellation=cancellation.clone();
         let execute = async {
-            if call.name.starts_with("mcp__") {
-                if !self.addons.enabled{
-                    Err("external add-ons are disabled by the operator".into())
-                }else{
-                match self.invoke_mcp_with_progress(id,&call,remote_cancellation.clone()).await {
-                    Ok(McpCallOutcome::Settled(result))=>result,
-                    Ok(McpCallOutcome::Uncertain(reason))=>{
+            if self.addons.handles_tool(&call.name) {
+                // The kernel journals and authorizes all effects; the add-on
+                // adapter owns its own protocol, progress and remote IO.
+                match self.addons.invoke_external(
+                    &self.settings,&self.store,id,&call,remote_cancellation.clone()).await {
+                    Ok(ToolEffectOutcome::Settled(result))=>result,
+                    Ok(ToolEffectOutcome::Uncertain(reason))=>{
                         remote_uncertain=Some(reason.clone());
                         Err(reason)
                     }
                     Err(error)=>Err(error),
-                }
-                }
-            } else if self.addons.supports_connected(&call.name) {
-                match self.addons.invoke_connected(&self.settings,&call).await {
-                    McpCallOutcome::Settled(result)=>result,
-                    McpCallOutcome::Uncertain(reason)=>{
-                        remote_uncertain=Some(reason.clone());
-                        Err(reason)
-                    }
                 }
             } else if call.name == "run_program" {
                 let mut installed=String::new();
