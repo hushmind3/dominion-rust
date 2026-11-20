@@ -203,3 +203,12 @@ are re-exports from that package; existing API routes and React UI remain
 unchanged. No detached renderer or second native executor exists.
 The platform remains one binary by default; this is a **source ownership
 boundary, not a separately distributed runtime or lower binary size claim**.
+
+## Remaining optional services moved out of root (2026-11-20)
+
+GitHub collaborative operations and skill browsing now belong to
+`src/addons/`. Reusable strategy evidence/transfer belongs to
+`src/product/strategy/`. The execution journal, direct user instructions,
+verification of real tool effects and actual Rust model calls remain in
+the native kernel. No strategy evaluator or second executor was introduced.
+Public Rust aliases retain existing source/API compatibility.

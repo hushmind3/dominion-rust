@@ -46,6 +46,14 @@ required_count src/engine.rs 'frontend_local_models::|provider_registry::|fronte
 required_count src/product.rs 'pub struct ProductHost' 1
 required_count src/product.rs 'pub fn model_for_selection' 1
 required_count src/product.rs 'async fn focused_notes' 1
+# GitHub collaboration/skills/strategy evidence are optional adapters, not
+# additional Run schedulers or core-owned product features.
+for entry in src/github_collab.rs src/skills.rs src/strategy.rs src/strategy; do
+ if [[ -e "$entry" ]]; then
+  echo "ERROR: optional service leaked back into Run kernel root: $entry" >&2
+  exit 1
+ fi
+done
 # Product-specific web service adapters must not reappear under src/.
 for old in src/frontend_*.rs src/frontend_api src/frontend_rooms; do
  if [[ -e "$old" ]]; then

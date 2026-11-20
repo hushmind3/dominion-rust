@@ -3,6 +3,7 @@
 //! The Run scheduler remains native; the surrounding presentation, room,
 //! profile, catalog and stored-memory facilities are product services.
 pub mod group;
+pub mod strategy;
 pub mod knowledge;
 pub mod profile;
 pub mod provider_registry;

@@ -1,6 +1,8 @@
 //! Dominion native Rust SDK and owned execution runtime.
 pub mod addons;
+pub use addons::{github_collab,skills};
 pub mod product;
+pub use product::strategy;
 // Compatible public paths point into product/; the native Run kernel does not
 // own React API, room UI, provider pickers or platform configuration.
 pub use product::{frontend_api,frontend_codex_login,frontend_growth,frontend_huggingface,frontend_local_models,frontend_model_downloads,frontend_native_picker,frontend_personas,frontend_provider_public,frontend_providers,frontend_rooms,frontend_system};
@@ -17,7 +19,6 @@ pub mod config;
 pub mod context;
 pub mod domain;
 pub mod engine;
-pub mod github_collab;
 pub mod journal;
 pub mod loop_guard;
 pub mod hooks;
@@ -27,12 +28,10 @@ pub mod tool_batch;
 pub mod read_program;
 pub mod program_ir;
 pub mod program_session;
-pub mod strategy;
 pub mod policy;
 pub mod provider;
 pub mod sandbox;
 pub mod sdk;
-pub mod skills;
 pub mod store;
 pub mod tools;
 pub mod verification;

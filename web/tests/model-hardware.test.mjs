@@ -150,8 +150,8 @@ test('OpenRouter free model single registration reuses existing credentials with
 })
 
 test('a single credential-free models.dev snapshot serves provider and model browsing',()=>{
- const api=readFileSync(new URL('../../src/frontend_provider_public.rs',import.meta.url),'utf8')
- const routes=readFileSync(new URL('../../src/frontend_providers.rs',import.meta.url),'utf8')
+ const api=readFileSync(new URL('../../src/product/frontend_provider_public.rs',import.meta.url),'utf8')
+ const routes=readFileSync(new URL('../../src/product/frontend_providers.rs',import.meta.url),'utf8')
  assert.equal([...api.matchAll(/"https:\/\/models\.dev\/api\.json"/g)].length,1)
  assert.match(api,/static MODELS_DEV_DOCUMENT:OnceLock/)
  assert.match(api,/static MODELS_DEV_FETCH:tokio::sync::Mutex/)

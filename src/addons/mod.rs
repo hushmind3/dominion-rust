@@ -11,6 +11,8 @@ pub mod connected_tools;
 pub mod extensions;
 pub mod github_cli_login;
 pub mod github_work;
+pub mod github_collab;
+pub mod skills;
 pub mod google_workspace;
 pub mod mcp;
 pub mod oauth;
