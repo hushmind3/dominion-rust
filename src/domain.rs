@@ -31,6 +31,14 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
+/// Frozen source identity of a native, room-scoped speaker Run.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomRunBinding {
+    pub room_id:Uuid,
+    pub owner_message_index:usize,
+    pub owner_at_ms:u64,
+    pub participant:String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Run {
     pub id: Uuid,
@@ -39,6 +47,9 @@ pub struct Run {
     pub plan: Option<String>,
     pub answer: Option<String>,
     pub messages: Vec<Value>,
+    /// A Room is an orchestration owner, never a second privileged harness.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub room_binding: Option<RoomRunBinding>,
     /// Bounded, role-preserving prior chat transcript. Stored separately
     /// from Run execution receipts; never sent twice in one Run. Old
     /// journals deserialize with an empty context.
@@ -171,7 +182,7 @@ impl Run {
         let time = now_ms();
         let mut run = Self {
             id, instruction, status: RunStatus::Queued, plan: None, answer: None,
-            messages: Vec::new(), chat_context:Vec::new(), events: Vec::new(), queued_calls: Vec::new(), advertised_tools: Vec::new(), discovered_tools:Vec::new(), read_batch_in_flight:Vec::new(), program_session:None,
+            messages: Vec::new(), room_binding:None, chat_context:Vec::new(), events: Vec::new(), queued_calls: Vec::new(), advertised_tools: Vec::new(), discovered_tools:Vec::new(), read_batch_in_flight:Vec::new(), program_session:None,
             pending_approval: None, approval_decision: None, in_flight: None, cancel_after_tool: false, supersede_after_tool:false, parent_run_id: None, team:None, delegation_profile:String::new(), context_chars_avoided: 0, repository: None, base_commit: None, required_changed_paths:Vec::new(), steps: 0,
             input_tokens: 0, cached_input_tokens: 0, cache_write_tokens:0,
             cache_unreported_requests:0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,

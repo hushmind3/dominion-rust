@@ -504,3 +504,42 @@ async fn sync_and_background_share_message_validation_and_targeted_admission(){
     server.abort();drop(engine);
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+
+#[tokio::test]
+async fn tool_room_uses_one_native_harness_run_with_source_linked_receipt_and_idempotent_retry(){
+    let (engine,id,requests,server,root)=setup(2,"round_robin").await;
+    let mut room=engine.groups.get(id).await.unwrap();
+    let mut config=room.frontend.take().unwrap();
+    config.tools_enabled=true;
+    engine.groups.configure(id,config,room.participants.clone()).await.unwrap();
+    let send_message=||SayInput{
+        input:"Inspect code without changing files".into(),
+        agent_ids:vec!["agent-0".into()],client_message_id:"native-owner-1".into(),
+        reasoning_language:None
+    };
+    let first=send(State(engine.clone()),Path(id),Json(send_message())).await.unwrap().0;
+    assert_eq!(first["job"]["status"],"completed");
+    assert_eq!(requests.load(Ordering::SeqCst),1);
+    let persisted=engine.groups.get(id).await.unwrap();
+    assert_eq!(persisted.messages.len(),2);
+    let receipt=&persisted.usage_receipts[0];
+    assert!(receipt.accepted);
+    let id_of_run=receipt.origin_run_id.expect("native Room response must have a Run");
+    let native=engine.store.get(id_of_run).await.unwrap();
+    assert_eq!(native.status,crate::domain::RunStatus::Completed);
+    assert_eq!(native.room_binding.as_ref().unwrap().room_id,id);
+    assert!(native.read_only);
+    assert!(native.events.iter().any(|e|e.kind=="room_context_attached"));
+    assert_eq!(native.answer.as_deref(),Some(persisted.messages[1].content.as_str()));
+    assert_eq!(persisted.used_tokens,native.input_tokens+native.output_tokens);
+    assert_eq!(first["job"]["result"]["actualResponses"],1);
+    // The very same owner key must never launch another paid native Run.
+    let repeated=send(State(engine.clone()),Path(id),Json(send_message())).await.unwrap().0;
+    assert_eq!(repeated["job"]["result"]["actualResponses"],1);
+    assert_eq!(requests.load(Ordering::SeqCst),1);
+    let settled=engine.groups.settle_native_run(&native).await.unwrap();
+    assert_eq!(settled.messages.len(),2);
+    assert_eq!(settled.usage_receipts.len(),1);
+    server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
+}

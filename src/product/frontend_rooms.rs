@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::{json,Value};
 use std::{collections::HashSet,sync::Arc};
 use uuid::Uuid;
+mod room_native;
 
 pub(crate) type Fault=(StatusCode,Json<Value>);
 fn bad(message:impl Into<String>)->Fault{
@@ -251,9 +252,8 @@ async fn checked(engine:&Engine,input:&RoomDraft)->Result<(FrontendRoom,Vec<Part
   if !matches!(input.routing_mode.as_str(),"discussion"|"round_robin"|"mentioned"){
     return Err(bad("unknown room routing mode"));
   }
-  if input.tools_enabled{
-    return Err(unsupported("Room-scoped tool execution is not supported by this native group runtime; no tools will execute without an explicit real implementation."));
-  }
+  // A tool-enabled Room routes speakers through native, read-only
+  // Engine Runs with the same journal, approval and cancellation controls.
   if !input.reasoning_effort.is_empty(){
     return Err(unsupported("Per-room reasoning effort requires native provider controls."));
   }
@@ -294,7 +294,7 @@ async fn checked(engine:&Engine,input:&RoomDraft)->Result<(FrontendRoom,Vec<Part
     lifetime_max_responses:input.lifetime_max_responses,
     token_budget:input.token_budget,
     context_budget_tokens:input.context_budget_tokens.clamp(200,8_000),
-    tools_enabled:false,auto_learning:input.auto_learning,
+    tools_enabled:input.tools_enabled,auto_learning:input.auto_learning,
     auto_models:input.auto_models,models:input.models.clone(),
     reasoning_effort:String::new(),learned_context:String::new()
   };
@@ -370,6 +370,7 @@ async fn remove(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
 }
 async fn messages(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Vec<UiMessage>>,Fault>{
+  room_native::reconcile_ready(&engine,id).await.map_err(bad)?;
   engine.groups.get(id).await.map(|room|Json(message_rows(&room)))
     .ok_or_else(missing)
 }
@@ -387,8 +388,11 @@ fn completed_job(room:&Room,turns:usize,expected:usize,receipt:&str)->Value{
 }
 async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Value>,Fault>{
+  room_native::reconcile_ready(&engine,id).await.map_err(bad)?;
   let room=engine.groups.get(id).await.ok_or_else(missing)?;
-  let running=engine.groups.frontend_turn_active(id);
+  let active=room_native::running(&engine,&room).await;
+  let approval=room_native::approvals(&engine,&room).await;
+  let running=engine.groups.frontend_turn_active(id)||active;
   let pending=if running{speakers_for_owner_turn(&room)}else{Vec::new()};
   let owner=room.messages.iter().rposition(|m|m.speaker=="user");
   let (wanted,actual)=owner.map_or((0,0),|index|
@@ -403,7 +407,7 @@ async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   })]}else{vec![]};
   Ok(Json(json!({
     "room":room_view(&room),"sessionId":room_session(id),
-    "jobs":jobs,"executions":[],"learningJobs":[],"operations":[],"approvals":[],
+    "jobs":jobs,"executions":[],"learningJobs":[],"operations":[],"approvals":approval,
     "status":if running{"running"}else{room_status(&room)},
     "activeAgentId":pending.first(),"queueDepth":pending.len(),
     "lastProviderFailure":room.last_provider_failure,
@@ -486,10 +490,14 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
             .ok_or_else(||bad("selected room agent was deleted"))?;
         (agent.provider_id.clone(),agent.model.clone())
     };
-    let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?
-        .with_session_affinity(&format!("dominion-room-{id}"));
-    engine.providers.throttle(&provider).await;
-    room=match engine.groups.next_for(&selected_model,id,Some(&agent_id)).await{
+    room=match if config.tools_enabled{
+        room_native::execute(engine,id,&agent_id,&provider,&model).await
+    }else{
+        let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?
+            .with_session_affinity(&format!("dominion-room-{id}"));
+        engine.providers.throttle(&provider).await;
+        engine.groups.next_for(&selected_model,id,Some(&agent_id)).await
+    }{
       Ok(next)=>next,
       Err(error)=>{
         let snapshot=engine.groups.get(id).await.ok_or_else(missing)?;
@@ -523,6 +531,11 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
         return Err(bad(error));
       }
     };
+    // Native Run may pause for approval, or a provider call may still be
+    // executing. Neither is an accepted speaker reply yet.
+    if config.tools_enabled && room.messages.last().is_none_or(|m|m.speaker!=agent_id){
+        break;
+    }
     turns+=1;
     if config.auto_learning{
       if let Some(last)=room.messages.last().filter(|m|m.speaker!="user"){
