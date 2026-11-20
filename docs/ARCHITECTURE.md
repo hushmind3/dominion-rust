@@ -578,3 +578,11 @@ isolation. A trusted external binary still has the current OS user's
 permissions; use an actual separate sandbox/user before granting it
 sensitive filesystem or account access. No unreviewed code-writing
 agent mode is exposed. The UI and existing HTTP paths are unchanged.
+
+## 2026 Codex App Server bridge (Sub4)
+
+- Optional `DOMINION_AGENT_BRIDGE_CODEX_APP=/absolute/path/to/codex` exposes `codex_app` through the existing approval-gated `external_agent_consult` tool only when `DOMINION_AGENT_BRIDGE_ALLOW_UNMETERED=true`.
+- Uses one stdio JSON-RPC `initialize` / `initialized` / ephemeral `thread/start` / `turn/start` / `item/completed` / `turn/completed` exchange. The requested sandbox is `readOnly` and approval policy is `never`; any interactive server request fails closed.
+- A bounded stdout frame reader enforces a cumulative output ceiling; cancellation, timeout and ambiguous protocol failures become `Uncertain` native tool outcomes, never automatic replay. External billing remains unmetered in the native KRW Run budget.
+- This is isolated **advisory evidence**, not full Codex App Server session resume, production OS process sandboxing, verified patch adoption or ACP compatibility. Real installed Codex and user credentials are still needed for live-provider testing.
+- Contract regressions use a fake bidirectional stdio transport and do not require real Codex billing.

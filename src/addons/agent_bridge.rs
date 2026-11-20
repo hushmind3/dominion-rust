@@ -9,6 +9,7 @@ use std::{collections::HashMap,path::{Path,PathBuf},sync::Arc,time::Duration};
 use tokio::{io::{AsyncRead,AsyncReadExt,AsyncWriteExt},
     process::Command,sync::watch};
 use uuid::Uuid;
+mod app_server;
 
 pub const TOOL:&str="external_agent_consult";
 const MAX_PROMPT:usize=12_000;
@@ -17,16 +18,17 @@ const MAX_ANSWER:usize=12_000;
 const MAX_SECONDS:u64=120;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Hash)]
-pub enum Provider{Codex,Claude}
+pub enum Provider{Codex,Claude,CodexApp}
 impl Provider{
-    fn name(self)->&'static str{match self{Self::Codex=>"codex",Self::Claude=>"claude"}}
+    fn name(self)->&'static str{match self{Self::Codex=>"codex",Self::Claude=>"claude",Self::CodexApp=>"codex_app"}}
     fn from_str(value:&str)->Result<Self,String>{
-        match value{"codex"=>Ok(Self::Codex),"claude"=>Ok(Self::Claude),
-            _=>Err("unsupported external agent; allowed: codex, claude".into())}
+        match value{"codex"=>Ok(Self::Codex),"claude"=>Ok(Self::Claude),"codex_app"=>Ok(Self::CodexApp),
+            _=>Err("unsupported external agent; allowed: codex, claude, codex_app".into())}
     }
     fn config_name(self)->&'static str{match self{
         Self::Codex=>"DOMINION_AGENT_BRIDGE_CODEX",
-        Self::Claude=>"DOMINION_AGENT_BRIDGE_CLAUDE"
+        Self::Claude=>"DOMINION_AGENT_BRIDGE_CLAUDE",
+        Self::CodexApp=>"DOMINION_AGENT_BRIDGE_CODEX_APP"
     }}
 }
 /// Operator-selected, absolute executable paths, never model-selected.
@@ -41,7 +43,7 @@ impl BridgeRegistry{
             return Ok(Self::disabled());
         }
         let mut executables=HashMap::new();
-        for provider in [Provider::Codex,Provider::Claude]{
+        for provider in [Provider::Codex,Provider::Claude,Provider::CodexApp]{
             if let Ok(raw)=std::env::var(provider.config_name()){
                 if raw.trim().is_empty(){continue;}
                 let canonical=Self::checked_executable(Path::new(raw.trim()))?;
@@ -124,6 +126,7 @@ impl BridgeRegistry{
                 cmd.args(["-p","--output-format","json","--tools","",
                     "--permission-mode","dontAsk"]);
             }
+            Provider::CodexApp=>{cmd.args(["app-server","--stdio"]);}
         }
         cmd.current_dir(&scratch)
             .env_clear()
@@ -143,6 +146,44 @@ impl BridgeRegistry{
             Err(_)=>return Ok(ToolEffectOutcome::Settled(
                 Err("external agent executable failed to start".into())))
         };
+        // The 2026 Codex App Server is a streaming JSON-RPC transport, not
+        // a one-shot Codex exec JSONL process. Keep the native Run journal,
+        // human approval and unmetered receipt as the only authorities.
+        if request.0==Provider::CodexApp {
+            let stdin=child.stdin.take().ok_or("bridge stdin unavailable")?;
+            let stdout=child.stdout.take().ok_or("bridge stdout unavailable")?;
+            let stderr=child.stderr.take().ok_or("bridge stderr unavailable")?;
+            let err_task=tokio::spawn(read_capped(stderr,16*1024));
+            let exchange=app_server::consult(stdout,stdin,&scratch,&request.1);
+            let outcome=tokio::select!{
+                biased;
+                changed=cancel.changed()=>{
+                    let message=if changed.is_ok()&&*cancel.borrow(){
+                        "Codex App Server cancelled after launch; remote billing is uncertain"
+                    }else{
+                        "Codex App Server cancellation channel closed; remote billing is uncertain"
+                    };
+                    ToolEffectOutcome::Uncertain(message.into())
+                }
+                result=tokio::time::timeout(Duration::from_secs(MAX_SECONDS),exchange)=>{
+                    match result{
+                        Ok(Ok(answer))=>ToolEffectOutcome::Settled(Ok(json!({
+                            "provider":"codex_app","answer":answer,
+                            "billing":"unmetered_external",
+                            "source":"external_agent_advisory",
+                            "protocol":"codex_app_server"
+                        }).to_string())),
+                        Ok(Err(error))=>ToolEffectOutcome::Uncertain(format!(
+                            "Codex App Server protocol failed after launch: {error}; remote billing is uncertain")),
+                        Err(_)=>ToolEffectOutcome::Uncertain(
+                            "Codex App Server timed out; remote billing is uncertain".into()),
+                    }
+                }
+            };
+            let _=child.kill().await;
+            err_task.abort();
+            return Ok(outcome);
+        }
         let mut input=child.stdin.take().ok_or("bridge stdin unavailable")?;
         // Bound payload size before spawning. Avoid exposing the main Run
         // journal or other agents' transcripts to an external process.
@@ -188,7 +229,8 @@ impl BridgeRegistry{
         }
         let answer=match request.0{
             Provider::Codex=>parse_codex_jsonl(&output),
-            Provider::Claude=>parse_claude_json(&output)
+            Provider::Claude=>parse_claude_json(&output),
+            Provider::CodexApp=>unreachable!("App Server handled before exec output")
         };
         match answer{
             Ok(text)=>Ok(ToolEffectOutcome::Settled(Ok(json!({
@@ -274,6 +316,8 @@ mod tests{
         assert!(parse_claude_json(br#"{"type":"result","is_error":true,"result":"fail"}"#).is_err());
         assert!(parse_request(&json!({"provider":"claude","prompt":"x","command":"rm"})).is_err());
         assert!(parse_request(&json!({"provider":"arbitrary","prompt":"x"})).is_err());
+        assert_eq!(parse_request(&json!({"provider":"codex_app","prompt":"audit"})).unwrap().0,
+            Provider::CodexApp);
     }
     #[test]fn no_operator_opt_in_means_no_bridge_tools(){
         assert!(BridgeRegistry::disabled().definitions().is_empty());
