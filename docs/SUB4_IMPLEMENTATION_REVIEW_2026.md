@@ -28,7 +28,7 @@
 
 - An in-flight mutating/MCP operation with uncertain outcome cannot be replayed automatically.
 - User approval, cancellation, paused recovery, and child budget settlement still use the same durable `Run` state.
-- No second scheduler, auto-editing RSI, or embedded video execution subsystem is introduced.
+- No second execution scheduler is introduced.
 - Existing JSON store formats and `/api/v1` / TypeScript SDK contracts are unchanged.
 
 ## Validation and next gap

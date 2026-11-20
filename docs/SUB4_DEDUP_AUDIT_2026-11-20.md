@@ -62,13 +62,13 @@ live-model token benchmarks were not run for this refactor.
   `services/dominion-cloud/gateway-contract.ts` defines a contract, not a
   second active inference Worker. Deployment is separate from source CI.
 - Legacy archive/import adapters preserve existing user records; they do not
-  reactivate the old standalone Money implementation.
+  reactivate retired standalone modules.
 
 ## Regression and follow-up boundaries
 
 - `scripts/check-sub4-architecture.sh` now enforces exactly one owner-message
   admission, one `say_once` call site, one bounded public JSON reader,
-  and absence of a resurrected Money/old engine module.
+  and absence of a resurrected retired executor.
 - Development CI runs Rust compile/unit coverage, browser-source contracts,
   SDK checks and Worker tests on changes. Explicitly dispatched release
   workflows own production bundling and real Chromium E2E; this pass does not

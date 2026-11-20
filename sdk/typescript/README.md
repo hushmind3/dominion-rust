@@ -1,6 +1,6 @@
 # Dominion TypeScript SDK
 
-A typed HTTP/SSE client for Dominion's single **native Rust agent harness**. The client does not run a second agent, ship a video renderer or include an independent RSI self-modification system.
+A typed HTTP/SSE client for Dominion's single **native Rust agent harness**. The client does not run a second agent or own an independent execution scheduler.
 
 ## Native work execution
 
@@ -18,7 +18,7 @@ console.log((await sdk.runs.get(run.id)).status);
 - `runs.files`, `runs.file`, `runs.skills`, `runs.skill`: inspect artifacts and load project instructions.
 - `groups`: explicit agent collaboration.
 - `memory.store/search/list/revise/forget`: durable, user-managed, non-weight notes.
-- `strategies.search`: retrieve project-scoped verified evidence from earlier **explicitly opted-in** completed runs. No trial generations or source auto-adoption.
+- `strategies.search`: retrieve project-scoped verified evidence from earlier **explicitly opted-in** completed runs. No source auto-adoption.
 - `frontend`: typed compatibility transport for the existing Chat, Profiles, Providers and Run views.
 
 ```ts
@@ -75,7 +75,7 @@ await sdk.runs.resume(run.id);
 
 ## Scope
 
-The Rust harness owns planning, bounded context projection, permissions, MCP tool calls, parallel read-only inspections, delegation, limits, pause/resume, tool receipts and independent verification. Built-in audio/video generation and standalone RSI campaign endpoints have been retired; attach external creative applications through **MCP** as needed. Historical local data and stored artifacts are not deleted during this migration.
+The Rust harness owns planning, bounded context projection, permissions, MCP tool calls, parallel read-only inspections, delegation, limits, pause/resume, tool receipts and independent verification. Use connected tools and **MCP** for external capabilities. Historical local data and stored artifacts are not automatically deleted.
 
 Automatic strategy learning is disabled by default. A user may explicitly save a note or opt into evidence recording, and the existing Run journal remains authoritative. SDK and frontend code do not perform hidden self-modification.
 

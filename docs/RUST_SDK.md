@@ -1,6 +1,6 @@
 # Dominion Rust SDK — Agent Harness
 
-The Rust library is the primary runtime interface, and HTTP, TypeScript and React are thin adapters. `Dominion::open` starts storage recovery and the user-defined automation scheduler; it does **not** initialize a video production service, RSI campaign queue or source auto-adoption engine.
+The Rust library is the primary runtime interface, and HTTP, TypeScript and React are thin adapters. `Dominion::open` starts storage recovery and restores only permitted native Run work; archived experiment records cannot authorize a new execution.
 
 ## Submit and verify real work
 
@@ -51,7 +51,7 @@ The SDK's wait contract and browser chat transports share the Store's post-fsync
 - `delegate`, `delegate_read_only`, `read_subagent_file`: worker hierarchy, reserved budget, reviewable artifacts and read-only investigator mode.
 - `register_tool_hook`: operator-defined pre-dispatch and post-receipt policy.
 - `remember`, `search_memory`, `revise_memory`, `forget_memory`: user-owned, durable non-weight notes.
-- `search_strategies`: explicitly opted-in, independently verified Run evidence only; no recursive trial generations.
+- `search_strategies`: explicitly opted-in, independently verified Run recovery evidence only.
 - `list_skills`, `load_skill`: project SKILL.md procedures on demand.
 - `create_group`, `say_group`, `group_turn`: explicit collaboration.
 
@@ -63,7 +63,7 @@ The native model-facing tool catalog uses `tool_search({"query":"create github i
 
 ## No mandatory background learning
 
-`DOMINION_STRATEGY_LEARNING=false` is the default. The ordinary Chat interface sends `autoLearning:false`. Storing a note is explicit, and historical Run receipts remain available. There is no SDK method for creating a recursive RSI campaign, self-evaluating candidate generations, promoting source revisions, built-in video generation or uploading finished video.
+`DOMINION_STRATEGY_LEARNING=false` is the default. The ordinary Chat interface sends `autoLearning:false`. Storing a note is explicit, and historical Run receipts remain available. No background optimizer or automatic source adoption runs in the SDK.
 
 ## Budgets and telemetry
 
@@ -95,7 +95,7 @@ println!("{} chats, {} disabled providers copied",copied.imported_sessions,copie
 
 Supported: active private chats, agents and compatible provider configurations. Imported provider records are disabled and carry no secret. Existing IDs remain untouched, including on retries; source SQLite stays read-only. Old rooms, archived chats, memories, encrypted tokens, job history and other legacy record kinds remain solely in the original SQLite database. The native frontend snapshot has an 8 MiB atomic size limit. See `src/legacy_import.rs` tests for source preservation and duplicate import handling.
 
-The pre-refactor video/RSI archives are not executed. Historical code remains in Git history, not in live runtime endpoints.
+Archived records remain inert and are never replayed as native executable permissions.
 
 See [Architecture](ARCHITECTURE.md), [project README](../README.md) and [TypeScript SDK](../sdk/typescript/README.md).
 

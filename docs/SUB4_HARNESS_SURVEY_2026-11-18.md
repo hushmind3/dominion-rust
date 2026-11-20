@@ -35,7 +35,7 @@ Research calibration:
 - Queries perform bounded local ranking over the live eligible catalog; other eligible tools are discoverable on demand. Small catalogs remain eager.
 - Successful search receipts update a **bounded 16-name, durable, backward-compatible per-Run discovery view**; a future model turn receives each originally registered tool schema.
 - Actual tool calls still enter the original Run: schema admission → operator policy + hooks → approval if required → intent fsync → execution → durable receipt / unknown-effect reconciliation.
-- No external-agent runner, direct bypass dispatcher, separate session/approval state machine, model-name-only capability guess, background RSI, or forced planner was added.
+- No external-agent runner, direct bypass dispatcher, separate session/approval state machine, model-name-only capability guess, unrequested background experimentation, or forced planner was added.
 - Simplified the engine's model instruction so `read_program` and `run_program` are **optional** native execution accelerators, not mandatory workflow routing.
 
 ## Controlled comparison gate before further tuning

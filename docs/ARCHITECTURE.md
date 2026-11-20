@@ -2,7 +2,7 @@
 
 ## Scope
 
-Dominion's active execution loop is native Rust. Neither the web UI nor TypeScript SDK owns a second decision engine. No separate generation-based recursive self-improvement process is started during boot, chat, or ordinary coding runs. Video/audio generation and publishing are external tool responsibilities via MCP, not built-in worker subsystems.
+Dominion's active execution loop is native Rust. Neither the web UI nor TypeScript SDK owns a second decision engine. External services are available through explicit MCP/connected-tool adapters without embedded media producers or experiment schedulers.
 
 ```
 User / Chat / TypeScript SDK / HTTP
@@ -40,11 +40,9 @@ User / Chat / TypeScript SDK / HTTP
 - `src/knowledge.rs`: user-managed notes, corrections and reusable procedures.
 - `src/frontend_state.rs`: chat sessions, agents and user-visible messages.
 - `src/group.rs`: group requests.
-- `src/automations.rs`: **user-created** recurring work only.
-- `src/workflow.rs`: explicit workflow jobs.
 - `src/frontend_system.rs`: encrypted backup/restore and maintenance.
 
-The removed video/RSI execution modules are no longer compiled or initialized. Existing files in `DOMINION_DATA_DIR` are **not** deleted or rewritten as a side effect of module removal. A separate, reviewed migration would be required to export historical retired-format records for new UI viewing. Native chat, Run and memory stores retain their ordinary on-disk formats.
+Old-format records are not automatically replayed or deleted. Native chat, Run and memory stores retain their ordinary on-disk formats. Historical experiment receipts are quarantined from startup recovery and explicit resume.
 
 ## Main SQLite read-only compatibility boundary
 
@@ -86,7 +84,6 @@ Configured KRW per-million-token prices are used for provider-reported usage; un
 - `sdk/typescript/src/index.ts`: typed, thin transport client.
 - `web/src/App.tsx`: active Chat, Models, Agents, Groups, Connections, Memory, Operations and Developer navigation.
 - `src/mcp.rs`: extensibility for external creative, search, code, data and other tools, with explicit consent and durable receipts.
-- Video / RSI route families: retired and not advertised. Unknown native API calls return JSON errors.
 
 ## Validation and limits
 

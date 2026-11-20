@@ -84,16 +84,20 @@ test('main Chat learning and context compaction use the same native durable sess
  assert.match(state,/pub compacted:HashMap<String,ChatCompaction>/)
  assert.match(chat,/frontend\.compacted\(&record\.id\)/)
 })
-test('legacy learning panels only show real native trace evidence, never auto-adopt',()=>{
+test('native learning panels read verified receipts without retired experiment endpoints',()=>{
  const ui=source('../src/pages/memory/Growth.tsx')
+ const records=source('../src/pages/memory/LearningRecords.tsx')
  const adapter=source('../../src/frontend_growth.rs')
- for(const route of ['/transfer','/improvements','/algorithms',
-  '/experiment-requests','/policy-searches','/algorithms/evaluations']){
-  assert.ok(adapter.includes(route),'no read-only native bridge for '+route)
+ for(const route of ['/transfer','/experience','/model-usage','/synergy']){
+  assert.ok(adapter.includes('"'+route+'"'),'missing genuine native evidence route '+route)
+ }
+ for(const retired of ['/improvements','/optimizers','/experiment-requests','/policy-searches','/algorithms']){
+  assert.ok(!adapter.includes('"'+retired+'"'),'retired experiment route present: '+retired)
  }
  assert.match(adapter,/strategy::from_run/)
- assert.match(adapter,/"automaticAdoption":false/)
  assert.match(ui,/\/api\/transfer/)
+ assert.match(records,/\/api\/experience/)
+ assert.doesNotMatch(ui,/\/api\/experiment-requests|\/api\/optimizers/)
 })
 test('Codex CLI login is official-device-only and separate from model-provider credentials',()=>{
  const ui=source('../src/pages/Models.tsx')
