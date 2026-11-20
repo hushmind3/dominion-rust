@@ -216,8 +216,12 @@ impl Engine {
                         run.event("approval_required",
                             if call.name == "shell" { format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")) }
                             else if call.name == "merge_subagent" {format!("Integrating a child Git patch needs approval: {}",call.arguments.get("id").and_then(Value::as_str).unwrap_or("?"))}
+                             else if call.name=="external_agent_consult" {
+                                format!("External coding agent consultation needs approval; CLI model charges are unmetered by Dominion: {} args={}",
+                                    call.name,call.arguments.to_string().chars().take(1200).collect::<String>())
+                             }
                              else if self.services.connected_approval(&call.name) {
-                                format!("Connected account action needs approval: {} args={}",
+                                format!("Connected account action needs approval: {} args={}
                                     call.name,call.arguments.to_string().chars().take(1200).collect::<String>())
                             }
                             else { format!("External MCP tool needs approval: {}",call.name) },

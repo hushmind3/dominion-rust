@@ -205,6 +205,12 @@ done
 required_count src/domain/events.rs 'pub struct UnifiedEvent' 1
 required_count src/domain/team.rs 'pub struct TeamGraph' 1
 required_count src/engine/task_team.rs 'pub async fn advance_task_team' 1
+required_count src/addons/agent_bridge.rs 'pub const TOOL:&str="external_agent_consult"' 1
+required_count src/addons/mod.rs 'name==agent_bridge::TOOL' 3
+required_count src/addons/execution.rs 'host[.]bridge[.]execute' 1
+required_count src/addons/agent_bridge.rs 'external_agent_unmetered' 2
+required_count src/addons/agent_bridge.rs 'kill_on_drop[(]true[)]' 1
+required_count src/addons/agent_bridge.rs 'shell|workspace-write|dangerously-skip-permissions' 0
 required_count src/engine/task_team.rs 'self[.]launch[(]task[.]run_id' 2
 required_count src/engine/task_team.rs 'impl Engine' 1
 required_count src/engine/task_team.rs 'async fn drive[(]|fn perform_tool[(]' 0

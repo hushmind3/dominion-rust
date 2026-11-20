@@ -10,6 +10,7 @@ pub mod read_program;
 pub mod program_ir;
 pub mod program_session;
 pub mod channels;
+pub mod agent_bridge;
 pub mod execution;
 pub mod connected_tools;
 pub mod extensions;
@@ -28,6 +29,7 @@ pub struct Host {
     pub enabled:bool,
     pub mcp:Arc<mcp::Mcp>,
     pub extensions:Arc<extensions::Extensions>,
+    pub bridge:agent_bridge::BridgeRegistry,
 }
 impl Host {
     pub fn open(settings:&Settings,mcp:Arc<mcp::Mcp>)->Result<Arc<Self>,String>{
@@ -44,7 +46,10 @@ impl Host {
             // connectivity is disabled. Existing durable files are untouched.
             Arc::new(extensions::Extensions::inactive(settings.data_dir.clone()))
         };
-        Ok(Arc::new(Self{enabled:settings.addons_enabled,mcp,extensions}))
+        let bridge=if settings.addons_enabled{
+            agent_bridge::BridgeRegistry::from_env()?
+        }else{agent_bridge::BridgeRegistry::disabled()};
+        Ok(Arc::new(Self{enabled:settings.addons_enabled,mcp,extensions,bridge}))
     }
     /// Hide every external schema from the model when optional connectivity is
     /// turned off. Policy and approval remain owned by the native journal.
@@ -52,19 +57,20 @@ impl Host {
         if !self.enabled{return Vec::new()}
         let mut result=self.mcp.definitions().await;
         result.extend(connected_tools::definitions(settings));
+        result.extend(self.bridge.definitions());
         result
     }
     /// The Run kernel sees one external-tool port, not MCP/connected-tool
     /// transports. A disabled or revoked remote endpoint never falls back
     /// to an unapproved native tool call.
     pub fn handles_tool(&self,name:&str)->bool{
-        name.starts_with("mcp__") || connected_tools::supports(name)
+        name==agent_bridge::TOOL || name.starts_with("mcp__") || connected_tools::supports(name)
     }
     pub fn needs_external_approval(&self,name:&str)->bool{
-        name.starts_with("mcp__") || (self.enabled && connected_tools::mutates(name))
+        name==agent_bridge::TOOL || name.starts_with("mcp__") || (self.enabled && connected_tools::mutates(name))
     }
     pub fn needs_connected_approval(&self,name:&str)->bool{
-        self.enabled && connected_tools::mutates(name)
+        name==agent_bridge::TOOL || (self.enabled && connected_tools::mutates(name))
     }
     pub async fn invoke_external(
         &self,settings:&Settings,store:&Arc<crate::ports::RunStorePort>,

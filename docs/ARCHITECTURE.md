@@ -545,3 +545,36 @@ This is a synthetic 100-turn CONTEXT/RECOVERY regression, not a claim that
 The native regression also starts a three-stage Team DAG with exactly one
 owner tick and checks that child settlement schedules all remaining tasks,
 preserves dependency completion order and closes the parent only once.
+
+## External coding-agent advisory bridge — 2026-11-20
+
+\`src/addons/agent_bridge.rs\` provides an optional, operator-authorized,
+approval-gated CLI integration. It is **not** the privileged native Harness,
+ACP host, or a Codex App Server replacement. The only model-visible tool,
+\`external_agent_consult\`, is advertised when optional add-ons are enabled,
+the operator sets \`DOMINION_AGENT_BRIDGE_ALLOW_UNMETERED=true\`, and one
+or both absolute executable paths \`DOMINION_AGENT_BRIDGE_CODEX\` and
+\`DOMINION_AGENT_BRIDGE_CLAUDE\` are configured. No binary is downloaded.
+The model may choose only the enabled provider and a bounded prompt,
+not a command, executable, flags, environment or working directory.
+
+Every call passes the existing Engine approval, policy, hook and
+fsync-backed tool-intent journal. The bridge rechecks the matching
+\`Run.in_flight\` before launching. It then invokes Codex CLI with
+read-only sandbox/JSONL mode, or Claude CLI in print JSON mode with
+tools disabled and unapproved tool requests refused. The process has
+a dedicated app-owned scratch cwd, bounded prompt, timeout, output
+and restricted inherited environment. External output is normalized
+into a *text-only, untrusted* result; it never executes privileged
+instructions through a bridge callback. Cancellation or timeout
+is an uncertain external model receipt, not a free/replayable call.
+
+**Costs:** this opt-in bridge cannot know external CLI subscription
+or API metering and records \`external_agent_unmetered\`. The Run's
+native KRW budget does NOT bound external CLI expenditure; manual
+approval is mandatory on each invocation. No zero-cost assumption.
+**Security:** CLI flags and a scratch cwd do not create OS-level
+isolation. A trusted external binary still has the current OS user's
+permissions; use an actual separate sandbox/user before granting it
+sensitive filesystem or account access. No unreviewed code-writing
+agent mode is exposed. The UI and existing HTTP paths are unchanged.
