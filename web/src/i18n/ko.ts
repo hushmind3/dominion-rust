@@ -196,6 +196,7 @@ const ko = {
   'conn.channels.filter': "플랫폼 종류",
   'conn.channels.noBinding': "설정한 연결이 없습니다. 아래에서 연결을 추가하세요.",
   'conn.status.not_verified': "인증 확인 필요",
+  'conn.status.sending': "전송 중",
   'conn.status.needs_review': "전송 결과 확인 필요",
   'conn.form.nameRequired': "연결 이름은 1~120자로 입력하세요.",
   'conn.form.roomRequired': "존재하는 회의실을 선택하세요.",
