@@ -1,4 +1,4 @@
-//! Explicit OS sandbox for arbitrary approved shell and RSI score/test steps.
+//! Explicit OS sandbox for approved shell commands and verified tasks.
 //! Required by default. No unsupported-platform or missing-backend fallback.
 use std::{env,path::Path};
 use tokio::process::Command;

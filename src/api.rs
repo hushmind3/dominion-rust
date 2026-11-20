@@ -55,7 +55,6 @@ mod oauth_callback_auth_tests {
         use axum::http::Method;
         assert!(is_oauth_callback(&Method::GET,"/api/oauth/github/callback"));
         assert!(is_oauth_callback(&Method::GET,"/api/oauth/google/callback"));
-        assert!(!is_oauth_callback(&Method::GET,"/oauth/youtube/callback"));
         assert!(!is_oauth_callback(&Method::POST,"/api/oauth/github/callback"));
         assert!(!is_oauth_callback(&Method::GET,"/api/oauth/connections"));
         assert!(!is_oauth_callback(&Method::GET,"/api/oauth/github/start"));

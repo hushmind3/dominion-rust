@@ -24,7 +24,6 @@ impl Dominion {
         tokio::fs::create_dir_all(&settings.workspace_dir).await.map_err(|e|e.to_string())?;
         let store=Arc::new(Store::open(settings.data_dir.join("runs")).await?);
         let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
-        // Legacy media/RSI archive files are left untouched on disk.
         let engine=Engine::new(settings,store,groups)?;
         // Reconcile durable parent/child settlement after a previous process
         // died between a child completion and the parent wake notification.
@@ -33,7 +32,22 @@ impl Dominion {
         // Restart only work for which recovery proved there was no unfinished
         // mutating side effect. A previously approved call that never reached
         // the execution-intent checkpoint is also safe to start.
-        for id in safe_to_resume {engine.launch(id).await?;}
+        for id in safe_to_resume {
+            let archived=engine.store.get(id).await.is_some_and(|run|
+                run.events.iter().any(|event|matches!(event.kind.as_str(),
+                    "reserved_unlaunched"|"strategy_candidate"
+                    |"strategy_trials_launched"|"strategy_trials_partial")));
+            if archived {
+                engine.store.mutate(id,|run|{
+                    run.status=RunStatus::Paused;
+                    run.event("archived_run_quarantined",
+                        "Retired execution cannot be replayed after restart",None);
+                    Ok(())
+                }).await?;
+                continue;
+            }
+            engine.launch(id).await?;
+        }
         Ok(Self{engine})
     }
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}
@@ -336,6 +350,36 @@ mod tests {
 
 
 
+
+    #[tokio::test]
+    async fn historical_experiment_receipts_never_restart_or_resume(){
+        let root=std::env::temp_dir().join(format!("dominion-old-experiment-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");settings.workspace_dir=root.join("workspace");
+        let sdk=Dominion::open(settings.clone()).await.unwrap();
+        let mut ids=Vec::new();
+        for kind in ["strategy_candidate","strategy_trials_launched","strategy_trials_partial"]{
+            let mut run=Run::new(CreateRun{instruction:"Archived experiment".into(),
+                budget_krw:Some(30.0),max_steps:Some(4)},4).unwrap();
+            run.status=RunStatus::Paused;
+            run.event(kind,"Archived run marker",None);
+            // Simulate a previous process recovering an apparently safe turn.
+            run.event("recovered_ready","Recovered state",None);
+            ids.push(run.id);
+            sdk.engine.store.put(run).await.unwrap();
+        }
+        drop(sdk);
+        let reopened=Dominion::open(settings).await.unwrap();
+        for id in ids{
+            let run=reopened.get(id).await.unwrap();
+            assert_eq!(run.status,RunStatus::Paused);
+            assert!(run.events.iter().any(|event|event.kind=="archived_run_quarantined"));
+            let error=reopened.resume(id).await.unwrap_err();
+            assert!(error.contains("retired experiment run cannot be resumed"));
+            assert_eq!(reopened.get(id).await.unwrap().status,RunStatus::Paused);
+        }
+        drop(reopened);cleanup_test_dir(root).await;
+    }
     #[tokio::test]
     async fn retired_reserved_runs_cannot_be_reactivated_after_restart(){
         let root=std::env::temp_dir().join(format!("dominion-retired-reservation-{}",Uuid::new_v4()));

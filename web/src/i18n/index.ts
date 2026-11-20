@@ -40,7 +40,7 @@ export function t(key: LocaleKey, vars?: Record<string, string | number>): strin
 }
 export type {LocaleKey}
 
-const jobKinds = new Set(['learn','room','goal','workflow','reflect','resume','video','build','setup','test','commit','package','connect','upload'])
+const jobKinds = new Set(['learn','room','goal','workflow','reflect','resume','build','setup','test','commit','package','connect','upload'])
 export function jobKindLabel(kind?: string): string {
   if (!kind) return ''
   return jobKinds.has(kind) ? t(('jobk.' + kind) as LocaleKey) : kind

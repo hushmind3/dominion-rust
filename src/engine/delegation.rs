@@ -70,7 +70,7 @@ impl Engine {
         self.spawn_subagent_with_policy(parent,input,false).await
     }
     pub async fn spawn_subagent_with_policy(self:&Arc<Self>,parent:Uuid,input:CreateRun,read_only:bool)->Result<Run,String>{
-        self.spawn_subagent_with_capability(parent,input,read_only,false,"general").await
+        self.spawn_subagent_with_capability(parent,input,read_only,"general").await
     }
     /// Task-specific child profiles share the same Run journal and native
     /// model executor. This is a tool capability filter, not a second harness.
@@ -78,10 +78,10 @@ impl Engine {
         if !matches!(profile,"general"|"inspection"|"implementation"|"verification"){
             return Err("unknown delegation profile".into());
         }
-        self.spawn_subagent_with_capability(parent,input,profile=="inspection",false,profile).await
+        self.spawn_subagent_with_capability(parent,input,profile=="inspection",profile).await
     }
     async fn spawn_subagent_with_capability(self:&Arc<Self>,parent:Uuid,input:CreateRun,
-        read_only:bool,strategy_candidate:bool,profile:&str)->Result<Run,String>{
+        read_only:bool,profile:&str)->Result<Run,String>{
         let _guard=self.delegate_lock.lock().await;
         let root=self.store.get(parent).await.ok_or("parent execution not found")?;
         if root.terminal() || root.status!=RunStatus::Running || root.cancel_after_tool {
@@ -103,33 +103,21 @@ impl Engine {
             max_steps:input.max_steps
         },self.settings.max_steps)?;
         child.parent_run_id=Some(parent);
-        // Candidate comparisons must not accidentally use the global default
-        // when the parent explicitly selected another paid/local provider.
+        // Delegated children inherit the parent's explicit model identity.
         child.provider_id=root.provider_id.clone();
         child.model_name=root.model_name.clone();
         child.read_only=read_only||root.read_only;
-        child.strategy_candidate=strategy_candidate;
         child.delegation_profile=if profile=="general"{String::new()}else{profile.to_owned()};
         if !child.delegation_profile.is_empty(){
             child.event("delegation_profile",
                 format!("Task-scoped tool admission profile: {profile}"),
                 Some(json!({"profile":profile,"read_only":child.read_only})));
         }
-        if strategy_candidate {
-            if root.parent_run_id.is_some() || root.strategy_candidate {
-                return Err("nested strategy workers are not permitted".into());
-            }
-            child.event("strategy_candidate",
-                "Confined to isolated workspace and normal approval-backed shell only",None);
-        }
         if let Some(repository)=root.repository.as_deref(){
             let commit=crate::workspace::attach_at(
                 &self.settings,child.id,repository,root.base_commit.as_deref()
             ).await?;
             child.repository=Some(repository.to_string());
-            if strategy_candidate && Some(commit.as_str())!=root.base_commit.as_deref(){
-                return Err("trial candidate did not attach the parent's exact base commit".into());
-            }
             child.base_commit=Some(commit);
         }
         // Reserve first under the delegation lock. The parent model loop checks
@@ -214,94 +202,4 @@ impl Engine {
             arguments:json!({"path":path})
         }).await
     }
-    /// Run two independently executed approaches using the SAME model identity,
-    /// base Git commit and explicit per-candidate budget. No alternate engine.
-    /// Launch receipts remain in the existing parent/child Store; a crash after
-    /// partial dispatch is uncertain and cannot launch duplicates automatically.
-    pub(super) async fn start_strategy_trials(
-        self:&Arc<Self>,parent:Uuid,request:&Value
-    )->Result<String,String>{
-        let root=self.store.get(parent).await.ok_or("parent execution not found")?;
-        if root.terminal()||root.status!=RunStatus::Running||root.read_only {
-            return Err("strategy comparison requires an active writable parent".into());
-        }
-        if root.repository.is_none()||root.base_commit.is_none(){
-            return Err("strategy comparison requires a Git repository and recorded base commit".into());
-        }
-        if root.events.iter().any(|e|e.kind=="strategy_trials_launched"
-            ||e.kind=="strategy_trials_partial"){
-            return Err("only one strategy comparison is permitted per parent Run".into());
-        }
-        if !self.store.children_of(parent).await.is_empty(){
-            return Err("strategy comparison requires no existing delegated children".into());
-        }
-        let options=request.get("approaches").and_then(Value::as_array)
-            .ok_or("two strategy approaches are required")?;
-        if options.len()!=2 {return Err("strategy comparison requires exactly two alternatives".into());}
-        let amount=request["budget_krw_per_candidate"].as_f64()
-            .filter(|n|n.is_finite()&&*n>0.0)
-            .ok_or("per-candidate KRW budget must be positive and finite")?;
-        let steps=request["max_steps_per_candidate"].as_u64()
-            .filter(|n|*n>=2&&*n<=12)
-            .ok_or("per-candidate model steps must be 2..12")? as usize;
-        let remaining=policy::effective_budget_krw(&root)-root.cost_krw;
-        if amount*2.0>=remaining{
-            return Err("candidate budgets must leave room for the parent's final decision".into());
-        }
-        let mut approaches=Vec::new();
-        for option in options{
-            let label=option["label"].as_str().unwrap_or("").trim();
-            let approach=option["instruction"].as_str().unwrap_or("").trim();
-            if label.is_empty()||label.chars().count()>80
-                ||approach.is_empty()||approach.chars().count()>1200{
-                return Err("each candidate needs a short label and bounded concrete approach".into());
-            }
-            approaches.push((label.to_owned(),approach.to_owned()));
-        }
-        if approaches[0].0==approaches[1].0
-            ||approaches[0].1==approaches[1].1{
-            return Err("strategy candidates must have distinct names and approaches".into());
-        }
-        let mut launched=Vec::<Value>::new();
-        for (label,approach) in approaches {
-            let instruction=format!(
-                "Original task:\n{}\n\nCandidate approach: {}\n{}\n\n\
-                 Execute ONLY this candidate's approach in this isolated workspace. \
-                 Inspect real tool results and verify the requested artifacts. \
-                 Do not claim other candidates' outcomes and do not merge to the parent.",
-                root.instruction,label,approach);
-            let attempt=self.spawn_subagent_with_capability(parent,CreateRun{
-                instruction,budget_krw:Some(amount),max_steps:Some(steps),
-            },false,true,"general").await;
-            match attempt {
-                Ok(child)=>launched.push(json!({"run_id":child.id,"label":label,
-                    "budget_krw":amount,"max_steps":steps,
-                    "provider_id":child.provider_id,"model":child.model_name,
-                    "base_commit":child.base_commit})),
-                Err(error)=>{
-                    let observed=launched.clone();
-                    self.store.mutate(parent,|run|{
-                        run.event("strategy_trials_partial",
-                            "At least one candidate may have started; reconcile children before any retry",
-                            Some(json!({"candidates":observed,
-                                "error":error,"manual_reconciliation":true})));
-                        Ok(())
-                    }).await?;
-                    return Err(format!("strategy trial partially started; inspect child Runs: {error}"));
-                }
-            }
-        }
-        self.store.mutate(parent,|run|{
-            run.event("strategy_trials_launched",
-                "Two independent strategy candidates launched from the same base commit",
-                Some(json!({"candidates":launched,
-                    "comparison":"verified outcomes, KRW cost and model steps",
-                    "automatic_patch_adoption":false})));
-            Ok(())
-        }).await?;
-        Ok(json!({"candidates":launched,"comparison":"running",
-            "note":"Wait for independent durable verification. No winning patch is automatically adopted."}).to_string())
-    }
-
-
 }

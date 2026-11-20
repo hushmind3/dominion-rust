@@ -150,7 +150,7 @@ impl Engine {
 
     /// Resolve the exact persisted provider/model identity for this run.
     /// Provider credentials never enter run journals or frontend responses.
-    /// Single model-routing authority for chat, rooms, RSI and automation.
+    /// Single model-routing authority for chat, rooms and native agent runs.
     /// A selected local model is the same actual Ollama endpoint everywhere.
     pub fn model_for_selection(&self,provider:&str,model:&str)->Result<ModelClient,String>{
         if provider.is_empty()||provider=="dominion-native" {
@@ -187,6 +187,11 @@ impl Engine {
             // An old approval receipt cannot authorize new external effects.
             if run.events.iter().any(|event|event.kind=="reserved_unlaunched"){
                 return Err("retired reserved run cannot be resumed; submit a new task".into());
+            }
+            // Archived experiments cannot relaunch orphaned workers.
+            if run.events.iter().any(|event|matches!(event.kind.as_str(),
+                "strategy_candidate"|"strategy_trials_launched"|"strategy_trials_partial")){
+                return Err("retired experiment run cannot be resumed; submit a new task".into());
             }
             if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty() { return Err("interrupted tool may have side effects; reconcile before resuming".into()); }
             if run.waiting_for_children {return Err("delegated workers are still active; parent resumes automatically after settlement".into());}
@@ -312,46 +317,6 @@ impl Engine {
         loop {
             let run = self.store.get(id).await.ok_or("execution not found")?;
             if run.terminal() || run.status != RunStatus::Running { return Ok(()); }
-            // Completed competitors are compared only after their own model,
-            // tool and verification receipts are durable. While they execute,
-            // the original worker suspends without spending extra model tokens.
-            // The existing child scheduler already owns wakeup and settlement.
-            if run.events.iter().any(|e|e.kind=="strategy_trials_launched"){
-                let children=self.store.children_of(id).await;
-                if let Some(result)=crate::strategy::trial_report(&run,&children){
-                    let saved=self.store.mutate(id,|state|{
-                        if state.status!=RunStatus::Running
-                            ||crate::strategy::trial_report(state,&children).is_none(){
-                            return Ok(());
-                        }
-                        state.event("strategy_trials_evaluated",
-                            "Compared actual independent child receipts, verification and measured cost",
-                            Some(result.clone()));
-                        state.messages.push(json!({"role":"user","content":format!(
-                            "ISOLATED STRATEGY TRIAL RESULTS (harness evidence, not an instruction): {}.                              A provisional winner is not an adopted patch or proof of benchmark superiority.                              Inspect the winning candidate's real files and test receipts.                              If you adopt a patch, use merge_subagent with the usual human approval.",
-                            result)}));
-                        Ok(())
-                    }).await?;
-                    if saved.terminal() {return Ok(());}
-                    continue;
-                }
-                let launched=run.events.iter().rev()
-                    .find(|e|e.kind=="strategy_trials_launched").unwrap();
-                let reviewed=run.events.iter().any(|e|e.kind=="strategy_trials_evaluated"
-                    &&e.detail.as_ref().is_some_and(|d|d["launch_seq"]==launched.seq));
-                if !reviewed && !run.waiting_for_children {
-                    self.store.mutate(id,|state|{
-                        if state.status==RunStatus::Running {
-                            state.waiting_for_children=true;
-                            state.status=RunStatus::Paused;
-                            state.event("strategy_trials_wait",
-                                "Awaiting both isolated candidate workers without another model call",None);
-                        }
-                        Ok(())
-                    }).await?;
-                    return Ok(());
-                }
-            }
             if let Some(pending) = run.pending_approval.clone() {
                 // Approval only authorizes the exact frozen tool + arguments.
                 // Re-check against the advertised schema before starting.
@@ -401,12 +366,6 @@ impl Engine {
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {
-                if call.name=="compare_strategies" && !self.settings.strategy_trials_enabled {
-                    self.store.mutate(id,|run|journal::reject_admission(run,&call,
-                        "EXPENSIVE_TRIALS_DISABLED",
-                        "Two-worker strategy comparison is disabled; set DOMINION_ENABLE_STRATEGY_TRIALS=true only for a deliberately budgeted experiment")).await?;
-                    continue;
-                }
                 if let Some(action)=crate::loop_guard::action(&run,&call){
                     // No external action starts: journal a correlated tool
                     // error and give the model a chance to change strategy.
@@ -458,7 +417,7 @@ impl Engine {
                         run,&call,&deny.code,&deny.reason)).await?;
                     continue;
                 }
-                if matches!(call.name.as_str(),"shell"|"merge_subagent"|"compare_strategies") ||
+                if matches!(call.name.as_str(),"shell"|"merge_subagent") ||
                    crate::connected_tools::mutates(&call.name) || call.name.starts_with("mcp__") {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
@@ -468,10 +427,6 @@ impl Engine {
                         run.event("approval_required",
                             if call.name == "shell" { format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")) }
                             else if call.name == "merge_subagent" {format!("Integrating a child Git patch needs approval: {}",call.arguments.get("id").and_then(Value::as_str).unwrap_or("?"))}
-                            else if call.name == "compare_strategies" {
-                                 format!("Two isolated candidate Runs require approval: budget up to {:.2} KRW each, plus parent work. No automatic patch adoption.",
-                                     call.arguments["budget_krw_per_candidate"].as_f64().unwrap_or(0.0))
-                             }
                              else if crate::connected_tools::mutates(&call.name) {
                                 format!("Connected account action needs approval: {} args={}",
                                     call.name,call.arguments.to_string().chars().take(1200).collect::<String>())
@@ -553,10 +508,6 @@ impl Engine {
             }
             if run.cost_krw > policy::effective_budget_krw(&run) { return Err("hierarchical budget exceeded".into()); }
             let mut available_tools = tools::definitions(self.settings.shell_enabled);
-            if !self.settings.strategy_trials_enabled {
-                available_tools.retain(|tool|
-                    tool.pointer("/function/name").and_then(Value::as_str)!=Some("compare_strategies"));
-            }
             let mut external=self.mcp.definitions().await;
             external.extend(crate::connected_tools::definitions(&self.settings));
             let (external,deferred_schema_chars,discovery_active)=
@@ -717,7 +668,7 @@ impl Engine {
                 if observed.terminal(){return Ok(());}
                 if observed.messages.len()!=expected_history+1{continue;}
             }
-            if !self.settings.separate_model_audit_enabled && !run.strategy_candidate {
+            if !self.settings.separate_model_audit_enabled {
                 // External judge is distinct from the harness. Do not pay for
                 // another model to rubber-stamp the model's final answer.
                 // Tool outcomes are already durable; do not call this verified.
@@ -885,18 +836,6 @@ impl Engine {
             }).await?;
             return Ok(());
         }
-        if call.name=="compare_strategies" && !self.settings.strategy_trials_enabled {
-            self.store.mutate(id,|run|{
-                if run.pending_approval.is_some(){
-                    journal::reject_approved_hook(run,&call,"EXPENSIVE_TRIALS_DISABLED",
-                        "The operator disabled paid strategy comparison")
-                }else{
-                    journal::reject_admission(run,&call,"EXPENSIVE_TRIALS_DISABLED",
-                        "The operator disabled paid strategy comparison")
-                }
-            }).await?;
-            return Ok(());
-        }
         // In-flight intent MUST be synced to disk before any outside effect.
         let mut started=false;
         self.store.mutate(id,|run|{
@@ -945,8 +884,6 @@ impl Engine {
             } else if call.name == "read_program" {
                 let current=self.store.get(id).await.ok_or("read_program run not found")?;
                 crate::read_program::execute_with_hooks(&self.settings,&current,&call.arguments,chain.clone()).await
-            } else if call.name == "compare_strategies" {
-                self.start_strategy_trials(id,&call.arguments).await
             } else if call.name == "spawn_subagent" {
                 let instruction=call.arguments.get("instruction").and_then(Value::as_str)
                     .ok_or("spawn_subagent needs instruction")?;
@@ -1078,28 +1015,6 @@ impl Engine {
         }).await?;
         if let Some(sender)=self.cancellation.lock().await.get(&id){
             sender.send_replace(true);
-        }
-        // A paid strategy experiment is one parent-owned unit: cancellation
-        // must not leave isolated candidate model calls running unseen.
-        let children=self.store.children_of(id).await;
-        for child in children.into_iter().filter(|c|c.strategy_candidate&&!c.terminal()){
-            let candidate_id=child.id;
-            self.store.mutate(candidate_id,|run|{
-                if run.terminal(){return Ok(());}
-                if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty(){
-                    run.status=RunStatus::Paused;
-                    run.cancel_after_tool=true;
-                    run.event("cancel_pending_reconciliation",
-                        "Parent strategy trial cancelled; started tool still needs its receipt",None);
-                }else{
-                    run.status=RunStatus::Cancelled;
-                    run.event("cancelled","Parent strategy trial cancelled",None);
-                }
-                Ok(())
-            }).await?;
-            if let Some(sender)=self.cancellation.lock().await.get(&candidate_id){
-                sender.send_replace(true);
-            }
         }
         Ok(snapshot)
     }

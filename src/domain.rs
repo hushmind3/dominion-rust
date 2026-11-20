@@ -99,7 +99,6 @@ pub struct Run {
     /// Isolated strategy trial: permits workspace-local reads and edits only.
     /// Existing journal snapshots remain compatible via serde(default).
     #[serde(default)]
-    pub strategy_candidate: bool,
     #[serde(default)]
     pub tool_schema_chars_avoided: u64,
     pub max_steps: usize,
@@ -158,7 +157,7 @@ impl Run {
             messages: Vec::new(), events: Vec::new(), queued_calls: Vec::new(), advertised_tools: Vec::new(), discovered_tools:Vec::new(), read_batch_in_flight:Vec::new(), program_session:None,
             pending_approval: None, approval_decision: None, in_flight: None, cancel_after_tool: false, supersede_after_tool:false, parent_run_id: None, delegation_profile:String::new(), context_chars_avoided: 0, repository: None, base_commit: None, required_changed_paths:Vec::new(), steps: 0,
             input_tokens: 0, cached_input_tokens: 0, cache_write_tokens:0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
-            reserved_budget_krw:0.0, delegated_spent_krw:0.0, settled_child_ids:Vec::new(), waiting_for_children:false, read_only:false, strategy_candidate:false, tool_schema_chars_avoided:0,
+            reserved_budget_krw:0.0, delegated_spent_krw:0.0, settled_child_ids:Vec::new(), waiting_for_children:false, read_only:false, tool_schema_chars_avoided:0,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             strategy_learning:false,model_only:false,
             provider_id:String::new(),model_name:String::new(),
