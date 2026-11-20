@@ -387,10 +387,6 @@ pub async fn dispatch_room(engine:&Arc<Engine>,room:&Room){
 mod tests{
  use super::*;
  #[test]
-
- #[test]
-
- #[test]
  fn concurrent_outbound_claims_never_dispatch_the_same_message_twice(){
   let base=std::env::temp_dir().join(format!("dominion-channel-{}",Uuid::new_v4()));
   let file=base.join("channels.json");

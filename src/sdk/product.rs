@@ -65,6 +65,28 @@ impl Dominion {
     pub async fn chat_session(&self,id:&str)->Option<crate::frontend_state::UiSession>{
         self.engine.frontend.session(id).await
     }
+    /// Projection only: editable UI messages keep their persisted IDs.
+    /// They do not gain synthetic Run journal authority or a fake event_seq.
+    pub async fn unified_chat_events(&self,id:&str)
+        ->Result<Vec<crate::domain::events::UnifiedEvent>,String>{
+        let session=self.engine.frontend.session(id).await
+            .ok_or("chat session not found")?;
+        Ok(session.messages.iter().map(|m|
+            crate::domain::events::UnifiedEvent::chat(&session.id,&m.id,
+                &m.role,&m.content,&m.created_at,m.agent_id.as_deref())
+        ).collect())
+    }
+    /// Room messages are append-only. Their 1-based event sequence is the
+    /// same original source index already used by participant read cursors.
+    pub async fn unified_room_events(&self,id:Uuid,since:u64)
+        ->Result<Vec<crate::domain::events::UnifiedEvent>,String>{
+        let room=self.engine.groups.get(id).await.ok_or("room not found")?;
+        let start=since.min(room.messages.len() as u64) as usize;
+        Ok(room.messages.iter().enumerate().skip(start).map(|(i,m)|
+            crate::domain::events::UnifiedEvent::room(room.id,i,
+                &m.speaker,&m.content,m.at_ms,m.model.as_deref())
+        ).collect())
+    }
     pub async fn agent_profiles(&self)->Vec<crate::frontend_state::UiAgent>{
         self.engine.frontend.agents().await
     }

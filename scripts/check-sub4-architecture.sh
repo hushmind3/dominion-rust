@@ -202,6 +202,7 @@ for obsolete in \
 done
 
 # Owner-authored Task Teams reuse the ONLY native Run executor.
+required_count src/domain/events.rs 'pub struct UnifiedEvent' 1
 required_count src/domain/team.rs 'pub struct TeamGraph' 1
 required_count src/engine/task_team.rs 'pub async fn advance_task_team' 1
 required_count src/engine/task_team.rs 'self[.]launch[(]task[.]run_id' 2

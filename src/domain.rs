@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 pub mod team;
+pub mod events;
 use serde_json::Value;
 use uuid::Uuid;
 

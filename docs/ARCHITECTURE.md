@@ -519,3 +519,16 @@ layer. No nested model execution or second worker loop exists. On restart,
 \`Dominion::open\` rechecks started Team roots and resumes only the safe
 ready/queued work. Draft teams without a start marker are never launched
 by simply opening the application.
+
+### Source-typed common event projection (Room / Run / Team / Chat)
+
+\`domain::events::UnifiedEvent\` provides a versioned, typed envelope with
+origin, source ID, stable event ID, actor, kind and original source payload.
+Run/Task Team and append-only Room events expose source-local \`seq\`.
+Editable presentation Chat messages retain their persisted message IDs and
+a separate timestamp, never an invented monotonic sequence. The native SDK
+offers \`unified_run_events\`, \`unified_room_events\` and
+\`unified_chat_events\` for one consistent observer schema. These are
+READ-ONLY projections: Run journals and original Room transcripts remain
+the authoritative effect/receipt sources; a Chat message is NOT a tool
+execution receipt and no UI/HTTP contract is changed.

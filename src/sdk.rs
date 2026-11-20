@@ -1,5 +1,5 @@
 //! Primary native Rust SDK. HTTP/TypeScript/Studio are optional adapters.
-use crate::{domain::team::{TaskSpec,TeamView},hooks::ToolHook,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,tools};
+use crate::{domain::{events::UnifiedEvent,team::{TaskSpec,TeamView}},hooks::ToolHook,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,tools};
 use serde_json::{json,Value};
 use std::{sync::Arc,time::{Duration,Instant}};
 use uuid::Uuid;
@@ -131,6 +131,13 @@ impl Dominion {
     }
     pub async fn events(&self,id:Uuid,since:u64)->Result<Vec<TimelineEvent>,String>{
         Ok(self.get(id).await?.events.into_iter().filter(|e|e.seq>since).collect())
+    }
+    /// Source-local monotonic sequence for Run and Task Team receipts.
+    pub async fn unified_run_events(&self,id:Uuid,since:u64)
+        ->Result<Vec<UnifiedEvent>,String>{
+        let run=self.get(id).await?;
+        Ok(run.events.iter().filter(|e|e.seq>since)
+            .map(|e|UnifiedEvent::run(&run,e)).collect())
     }
     pub async fn approve(&self,id:Uuid,allow:bool)->Result<(),String>{self.engine.approve(id,allow).await}
     pub async fn resume(&self,id:Uuid)->Result<(),String>{
