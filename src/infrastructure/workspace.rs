@@ -1,6 +1,8 @@
 //! Isolated repository workspaces: original Git checkout remains untouched.
 //! The native SDK can run coding agents on existing multi-file repositories.
 use crate::config::Settings;
+use serde::{Deserialize,Serialize};
+use sha2::{Digest,Sha256};
 use std::path::{Component,Path};
 use tokio::{fs,io::AsyncWriteExt,process::Command,time::{timeout,Duration}};
 use std::process::Stdio;
@@ -103,6 +105,125 @@ pub async fn merge_child(settings:&Settings,parent:Uuid,child:Uuid,expected_sha:
     let summary=git(&["status","--short"],&source).await?;
     Ok(format!("Child {child} changes integrated into parent {parent} isolated worktree.\n{summary}"))
 }
+
+/// An exact, bounded review of a completed Team worker's Git delta.
+/// The caller owns authorization. This preview does not write the parent.
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct TeamPatchPreview{
+    pub source_run_id:Uuid,
+    pub sha256:String,
+    pub changed_paths:Vec<String>,
+    pub patch_bytes:usize,
+    pub diff:String,
+    pub can_apply:bool,
+    pub conflict:Option<String>,
+}
+async fn verified_team_worktrees(settings:&Settings,parent:Uuid,child:Uuid,
+    parent_base:&str,child_base:&str)->Result<(std::path::PathBuf,std::path::PathBuf),String>{
+    let root=settings.workspace_dir.canonicalize().map_err(|e|e.to_string())?;
+    let parent_dir=root.join(parent.to_string()).canonicalize().map_err(|e|e.to_string())?;
+    let child_dir=root.join(child.to_string()).canonicalize().map_err(|e|e.to_string())?;
+    if parent==child || !parent_dir.starts_with(&root)||!child_dir.starts_with(&root)||
+        !parent_dir.is_dir()||!child_dir.is_dir(){
+        return Err("invalid isolated Team worktree lineage".into());
+    }
+    for (dir,revision) in [(&parent_dir,parent_base),(&child_dir,child_base)]{
+        if revision.len()!=40||!revision.bytes().all(|b|b.is_ascii_hexdigit()){
+            return Err("invalid Team worktree revision".into());
+        }
+        if git(&["rev-parse","HEAD"],dir).await?!=revision{
+            return Err("Team worktree revision changed since the owner-scoped snapshot".into());
+        }
+    }
+    Ok((parent_dir,child_dir))
+}
+async fn changes_with_intent(dir:&Path)->Result<(String,Vec<String>),String>{
+    // Intent-to-add exposes untracked files in the patch without creating a
+    // commit or staging their content. The source checkout is never used.
+    git(&["add","-N","--","."],dir).await?;
+    let patch=git_patch(dir,&["diff","--binary","--no-ext-diff","HEAD","--"]).await?;
+    let names=timeout(Duration::from_secs(30),Command::new("git")
+        .args(["diff","--name-only","-z","HEAD","--"])
+        .current_dir(dir).kill_on_drop(true).output()).await
+        .map_err(|_|"Team changed path enumeration timed out".to_string())?
+        .map_err(|e|e.to_string())?;
+    if !names.status.success(){return Err("cannot enumerate Team changed paths".into());}
+    let mut paths=Vec::new();
+    for raw in names.stdout.split(|b|*b==0).filter(|p|!p.is_empty()){
+        let path=String::from_utf8(raw.to_vec())
+            .map_err(|_|"non-UTF8 changed path in Team patch".to_string())?;
+        if path.len()>512||path.contains('\\')||path==".git"||path.starts_with(".git/")||
+            !Path::new(&path).components().all(|c|matches!(c,Component::Normal(_))){
+            return Err("invalid or unsafe changed path in Team patch".into());
+        }
+        paths.push(path);
+        if paths.len()>200{return Err("Team patch exceeds 200 changed files".into());}
+    }
+    if patch.lines().any(|line|line.trim().ends_with("mode 120000")||
+        line.trim().ends_with("mode 160000")){
+        return Err("symlink and submodule changes require separate review".into());
+    }
+    Ok((patch,paths))
+}
+/// Seed a fresh child worktree with the team's already-approved changes,
+/// then freeze that snapshot in the CHILD'S DETACHED HEAD. Later child edits
+/// are diffed against this seed, not replayed as stale changes from the
+/// original source commit. No source branch or checkout is committed to.
+pub async fn seed_team_worker(settings:&Settings,parent:Uuid,child:Uuid,
+    original_sha:&str)->Result<String,String>{
+    let (parent_dir,child_dir)=verified_team_worktrees(settings,parent,child,
+        original_sha,original_sha).await?;
+    let (patch,_)=changes_with_intent(&parent_dir).await?;
+    if patch.trim().is_empty(){return Ok(original_sha.to_string());}
+    apply_patch_checked(&child_dir,&patch,true).await?;
+    apply_patch_checked(&child_dir,&patch,false).await?;
+    git(&["add","-A","--","."],&child_dir).await?;
+    // The new commit exists only on the detached child worktree. No hooks,
+    // signing or model-authored commit message is run.
+    git(&["-c","core.hooksPath=/dev/null",
+        "-c","commit.gpgsign=false",
+        "-c","user.name=Dominion Team",
+        "-c","user.email=team@dominion.invalid",
+        "commit","--no-verify","-qm","Team approved workspace snapshot"],&child_dir).await?;
+    let seeded=git(&["rev-parse","HEAD"],&child_dir).await?;
+    if seeded==original_sha{return Err("Team snapshot was not committed".into());}
+    Ok(seeded)
+}
+/// Read-only conflict detection, stable patch digest and exact diff.
+pub async fn preview_team_patch(settings:&Settings,parent:Uuid,child:Uuid,
+    parent_base:&str,child_base:&str)->Result<TeamPatchPreview,String>{
+    let (target,source)=verified_team_worktrees(settings,parent,child,
+        parent_base,child_base).await?;
+    let (diff,changed_paths)=changes_with_intent(&source).await?;
+    if diff.trim().is_empty(){return Err("completed Writer produced no new source patch".into());}
+    let digest=format!("{:x}",Sha256::digest(diff.as_bytes()));
+    let conflict=apply_patch_checked(&target,&diff,true).await.err();
+    Ok(TeamPatchPreview{
+        source_run_id:child,sha256:digest,changed_paths,patch_bytes:diff.len(),
+        diff,can_apply:conflict.is_none(),conflict,
+    })
+}
+/// Only the owner-authorized, journaled Engine approval path may call this.
+/// Fail closed on changed snapshots or patch bytes, and never edit the
+/// original user checkout. At-most-once dispatch is ensured by the caller's
+/// persisted, non-replayable intent.
+pub async fn merge_team_patch_verified(settings:&Settings,parent:Uuid,child:Uuid,
+    parent_base:&str,child_base:&str,approved_sha256:&str)->Result<String,String>{
+    let preview=preview_team_patch(settings,parent,child,parent_base,child_base).await?;
+    if preview.sha256!=approved_sha256{
+        return Err("Team patch changed after owner preview; new approval required".into());
+    }
+    if let Some(conflict)=preview.conflict{
+        return Err(format!("Team patch cannot be safely integrated: {conflict}"));
+    }
+    let target=settings.workspace_dir.join(parent.to_string());
+    apply_patch_checked(&target,&preview.diff,true).await?;
+    apply_patch_checked(&target,&preview.diff,false).await?;
+    Ok(format!("Approved Team patch {} from worker {} integrated into isolated coordinator {} ({} files)",
+        approved_sha256,child,parent,preview.changed_paths.len()))
+}
+
 async fn git_patch(dir:&Path,args:&[&str])->Result<String,String>{
     let result=timeout(Duration::from_secs(30),Command::new("git")
         .args(args).current_dir(dir).kill_on_drop(true).output())
@@ -193,6 +314,65 @@ mod tests{
         fs::remove_dir_all(root).await.unwrap();
     }
 
+
+    #[tokio::test]
+    async fn reviewed_team_patch_uses_exact_digest_and_seed_without_touching_source(){
+        let root=std::env::temp_dir().join(format!("dominion-team-patch-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.workspace_dir=root.clone();
+        let source=root.join("projects").join("demo");
+        fs::create_dir_all(&source).await.unwrap();
+        git(&["init","-q"],&source).await.unwrap();
+        fs::write(source.join("app.txt"),"base\n").await.unwrap();
+        git(&["add","app.txt"],&source).await.unwrap();
+        git(&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid",
+            "commit","-qm","seed"],&source).await.unwrap();
+        let parent=Uuid::new_v4();
+        let first=Uuid::new_v4();
+        let first_sha=attach(&settings,parent,"projects/demo").await.unwrap();
+        attach_at(&settings,first,"projects/demo",Some(&first_sha)).await.unwrap();
+        fs::write(root.join(first.to_string()).join("app.txt"),"first\n").await.unwrap();
+        let preview=preview_team_patch(&settings,parent,first,&first_sha,&first_sha).await.unwrap();
+        assert!(preview.can_apply);
+        assert_eq!(preview.changed_paths,vec!["app.txt"]);
+        assert!(merge_team_patch_verified(&settings,parent,first,&first_sha,&first_sha,
+            "wrong").await.is_err());
+        assert_eq!(fs::read_to_string(root.join(parent.to_string()).join("app.txt"))
+            .await.unwrap(),"base\n");
+        merge_team_patch_verified(&settings,parent,first,&first_sha,&first_sha,
+            &preview.sha256).await.unwrap();
+        assert_eq!(fs::read_to_string(root.join(parent.to_string()).join("app.txt"))
+            .await.unwrap(),"first\n");
+        assert_eq!(fs::read_to_string(source.join("app.txt")).await.unwrap(),"base\n");
+
+        // The second child sees the accepted first patch, yet only its NEW
+        // delta is proposed on review; the first edit is never double-applied.
+        let second=Uuid::new_v4();
+        attach_at(&settings,second,"projects/demo",Some(&first_sha)).await.unwrap();
+        let seeded=seed_team_worker(&settings,parent,second,&first_sha).await.unwrap();
+        assert_ne!(seeded,first_sha);
+        assert_eq!(fs::read_to_string(root.join(second.to_string()).join("app.txt"))
+            .await.unwrap(),"first\n");
+        fs::write(root.join(second.to_string()).join("more.txt"),"second\n").await.unwrap();
+        let v2=preview_team_patch(&settings,parent,second,&first_sha,&seeded).await.unwrap();
+        assert_eq!(v2.changed_paths,vec!["more.txt"]);
+        merge_team_patch_verified(&settings,parent,second,&first_sha,&seeded,
+            &v2.sha256).await.unwrap();
+        assert_eq!(fs::read_to_string(root.join(parent.to_string()).join("more.txt"))
+            .await.unwrap(),"second\n");
+
+        // A stale, independently edited worktree cannot clobber an accepted file.
+        let stale=Uuid::new_v4();
+        attach_at(&settings,stale,"projects/demo",Some(&first_sha)).await.unwrap();
+        fs::write(root.join(stale.to_string()).join("app.txt"),"conflict\n").await.unwrap();
+        assert!(!preview_team_patch(&settings,parent,stale,&first_sha,&first_sha)
+            .await.unwrap().can_apply);
+        for id in [parent,first,second,stale] {
+            git(&["worktree","remove","--force",
+                &root.join(id.to_string()).to_string_lossy()],&source).await.unwrap();
+        }
+        fs::remove_dir_all(root).await.unwrap();
+    }
     #[tokio::test]
     async fn isolated_checkout_does_not_mutate_parent(){
         let root=std::env::temp_dir().join(format!("dominion-worktree-{}",Uuid::new_v4()));
