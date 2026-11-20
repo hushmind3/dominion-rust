@@ -65,6 +65,17 @@ impl Engine{
         if root.status!=RunStatus::Paused{
             return Err("team coordinator must remain paused until its tasks settle".into());
         }
+        // A committed start marker differentiates an owner-created draft from
+        // an already-accepted long-running team after process restart.
+        if !root.events.iter().any(|event|event.kind=="team_started"){
+            self.store.mutate(id,|run|{
+                if run.status!=RunStatus::Paused{
+                    return Err("team stopped before its first schedule".into());
+                }
+                run.event("team_started","Owner started durable Task Team execution",None);
+                Ok(())
+            }).await?;
+        }
         let mut existing=HashMap::new();
         for task in &graph.tasks{
             if let Some(child)=self.store.get(task.run_id).await{

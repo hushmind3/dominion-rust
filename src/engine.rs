@@ -84,6 +84,18 @@ impl Engine {
                         tokio::pin!(notified);
                         notified.as_mut().enable();
                         let Some(run)=engine.store.get(id).await else {return};
+                        // A completed team worker signals the existing wake
+                        // channel. The coordinator may schedule its next DAG
+                        // layer but never enters the model harness itself.
+                        if run.team.is_some(){
+                            if run.status==RunStatus::Paused && run.events.iter()
+                                .any(|e|e.kind=="team_started"){
+                                if let Err(error)=engine.advance_task_team(id).await{
+                                    tracing::warn!(%id,%error,"team DAG wake failed");
+                                }
+                            }
+                            return;
+                        }
                         let ready=(run.status==RunStatus::Queued
                                 && run.in_flight.is_none() && !run.waiting_for_children)
                             || (run.status==RunStatus::Paused && !run.waiting_for_children
@@ -232,6 +244,13 @@ impl Engine {
                 if let Some(parent)=child.parent_run_id {
                     if let Err(error)=engine.settle_and_wake_ancestors(parent).await{
                         tracing::warn!(%id,"child settlement needs retry: {error}");
+                    }else if engine.store.get(parent).await.is_some_and(|run|
+                        run.team.is_some() && run.status==RunStatus::Paused){
+                        // Do not recursively await a new launch inside the
+                        // just-finished worker future. Reuse the one scheduler.
+                        if let Err(error)=engine.wake_tx.send(parent){
+                            tracing::warn!(%parent,%error,"team wake channel unavailable");
+                        }
                     }
                 }
             }

@@ -509,3 +509,13 @@ Owner cancellation is propagated to live workers with in-flight
 reconciliation preserved. This native API intentionally adds no
 menu or HTTP route. An event driver must call advance_task_team
 after worker completion; this is not yet a permanently scheduled DAG.
+
+### Automatic durable Task Team wakeups
+
+Once an owner calls \`advance_task_team\` for the first time, \`team_started\`
+is durably recorded. Child settlement posts the coordinator Run ID to the
+existing Engine wake channel; the same scheduler then plans the next DAG
+layer. No nested model execution or second worker loop exists. On restart,
+\`Dominion::open\` rechecks started Team roots and resumes only the safe
+ready/queued work. Draft teams without a start marker are never launched
+by simply opening the application.

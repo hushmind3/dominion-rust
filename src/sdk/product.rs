@@ -40,6 +40,16 @@ impl Dominion {
             }
             engine.launch(id).await?;
         }
+        // Resume teams that the owner previously started. Pure unstarted
+        // drafts stay dormant. DAG admission itself never repeats in-flight
+        // effects or bypasses an approval-held child.
+        for root in engine.store.list().await.into_iter().filter(|run|
+            run.team.is_some() && run.status==RunStatus::Paused
+            &&run.events.iter().any(|event|event.kind=="team_started")){
+            if let Err(error)=engine.advance_task_team(root.id).await{
+                tracing::warn!(team=%root.id,%error,"team resumption needs owner inspection");
+            }
+        }
         Ok(Self{engine})
     }
 
