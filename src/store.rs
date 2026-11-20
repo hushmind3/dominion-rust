@@ -60,6 +60,7 @@ pub struct RunHeader {
     pub input_tokens:u64,
     pub cached_input_tokens:u64,
     pub cache_write_tokens:u64,
+    pub cache_unreported_requests:usize,
     pub output_tokens:u64,
     pub model_requests:usize,
     pub unmetered_model_requests:usize,
@@ -82,6 +83,7 @@ impl RunHeader {
             input_tokens:run.input_tokens,
             cached_input_tokens:run.cached_input_tokens,
             cache_write_tokens:run.cache_write_tokens,
+            cache_unreported_requests:run.cache_unreported_requests,
             output_tokens:run.output_tokens,
             model_requests:run.events.iter().filter(|event|event.kind=="model").count(),
             unmetered_model_requests:run.events.iter()

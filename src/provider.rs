@@ -35,6 +35,8 @@ pub struct Reply {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub cache_write_tokens: u64,
+    /// True only if the provider supplied cache-read telemetry, not inferred.
+    pub cache_usage_reported: bool,
     /// Actual provider reported both counters; missing is not free usage.
     pub usage_reported: bool,
     pub output_tokens: u64,
@@ -238,14 +240,14 @@ impl ModelClient {
                 if content.trim().is_empty(){None}else{Some(content)}
             }).ok_or("Responses provider returned no assistant output text")?;
         let (input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,
-             usage_reported)=openai_compatible_usage(&raw);
+             usage_reported,cache_usage_reported)=openai_compatible_usage(&raw);
         let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,
             cache_write_tokens,output_tokens);
         Ok(StatefulReply{
             reply:Reply{
                 message:json!({"role":"assistant","content":text}),
                 text,calls:vec![],input_tokens,cached_input_tokens,
-                cache_write_tokens,usage_reported,output_tokens,cost_krw,
+                cache_write_tokens,cache_usage_reported,usage_reported,output_tokens,cost_krw,
                 model:settings.name.clone()
             },
             response_id:Some(response_id),
@@ -350,10 +352,10 @@ impl ModelClient {
         message.as_object_mut().unwrap().retain(|key, _| ["role", "content", "tool_calls"].contains(&key.as_str()));
         // Accept both Chat Completions and Responses-style gateway usage keys.
         let (input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,
-             usage_reported)=openai_compatible_usage(&raw);
+             usage_reported,cache_usage_reported)=openai_compatible_usage(&raw);
         let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens);
         Ok(Reply { message, text, calls, input_tokens, cached_input_tokens,
-            cache_write_tokens,usage_reported,output_tokens,cost_krw,
+            cache_write_tokens,cache_usage_reported,usage_reported,output_tokens,cost_krw,
             model: settings.name.clone() })
     }
 
@@ -426,6 +428,7 @@ impl ModelClient {
         Ok(Reply{
             message,text,calls,input_tokens,cached_input_tokens,cache_write_tokens:0,
             output_tokens,usage_reported:true,
+            cache_usage_reported:raw.get("prompt_eval_cached_count").and_then(Value::as_u64).is_some(),
             cost_krw:estimate_cost(settings,input_tokens,cached_input_tokens,0,output_tokens),
             model:raw.get("model").and_then(Value::as_str)
                 .unwrap_or(&settings.name).to_owned()
@@ -535,7 +538,10 @@ impl ModelClient {
         Ok(Reply{
             message,text:joined,calls,input_tokens:input_total,
             cached_input_tokens,cache_write_tokens,output_tokens,
-            usage_reported:true,cost_krw,model:raw.get("model").and_then(Value::as_str)
+            usage_reported:true,
+            cache_usage_reported:usage.get("cache_read_input_tokens").and_then(Value::as_u64).is_some()
+                &&usage.get("cache_creation_input_tokens").and_then(Value::as_u64).is_some(),
+            cost_krw,model:raw.get("model").and_then(Value::as_str)
                 .unwrap_or(&settings.name).to_owned()
         })
     }
@@ -614,7 +620,7 @@ fn definitely_missing_previous_response(status:u16,body:&[u8])->bool{
             msg.contains("expired")||msg.contains("invalid"))
 }
 /// Normalize provider-reported token counts without estimating absent usage.
-fn openai_compatible_usage(raw:&Value)->(u64,u64,u64,u64,bool){
+fn openai_compatible_usage(raw:&Value)->(u64,u64,u64,u64,bool,bool){
     let input=raw.pointer("/usage/prompt_tokens").and_then(Value::as_u64)
         .or_else(||raw.pointer("/usage/input_tokens").and_then(Value::as_u64));
     let output=raw.pointer("/usage/completion_tokens").and_then(Value::as_u64)
@@ -622,16 +628,17 @@ fn openai_compatible_usage(raw:&Value)->(u64,u64,u64,u64,bool){
     let reported=input.is_some() && output.is_some();
     let input=input.unwrap_or(0);
     let output=output.unwrap_or(0);
-    let cached=raw.pointer("/usage/prompt_tokens_details/cached_tokens")
+    let raw_cache=raw.pointer("/usage/prompt_tokens_details/cached_tokens")
         .or_else(||raw.pointer("/usage/input_tokens_details/cached_tokens"))
         .or_else(||raw.pointer("/usage/cache_read_input_tokens"))
-        .and_then(Value::as_u64).unwrap_or(0).min(input);
+        .and_then(Value::as_u64);
+    let cached=raw_cache.unwrap_or(0).min(input);
     let written=raw.pointer("/usage/prompt_tokens_details/cache_write_tokens")
         .or_else(||raw.pointer("/usage/input_tokens_details/cache_write_tokens"))
         .or_else(||raw.pointer("/usage/cache_creation_input_tokens"))
         .and_then(Value::as_u64).unwrap_or(0)
         .min(input.saturating_sub(cached));
-    (input,output,cached,written,reported)
+    (input,output,cached,written,reported,raw_cache.is_some())
 }
 /// Explicit breakpoints are a GPT-5.6+ 2026 provider contract, not a
 /// generic OpenAI-compatible option. Never attach an unsupported request
@@ -973,13 +980,13 @@ mod tests {
     fn actual_gateway_token_usage_is_accounted_and_missing_usage_is_labelled(){
         let chat=json!({"usage":{"prompt_tokens":270,"completion_tokens":35,
             "prompt_tokens_details":{"cached_tokens":150}}});
-        assert_eq!(openai_compatible_usage(&chat),(270,35,150,0,true));
+        assert_eq!(openai_compatible_usage(&chat),(270,35,150,0,true,true));
         let responses=json!({"usage":{"input_tokens":480,"output_tokens":60,
             "input_tokens_details":{"cached_tokens":240,"cache_write_tokens":30}}});
-        assert_eq!(openai_compatible_usage(&responses),(480,60,240,30,true));
-        assert_eq!(openai_compatible_usage(&json!({"usage":{}})),(0,0,0,0,false));
+        assert_eq!(openai_compatible_usage(&responses),(480,60,240,30,true,true));
+        assert_eq!(openai_compatible_usage(&json!({"usage":{}})),(0,0,0,0,false,false));
         assert_eq!(openai_compatible_usage(&json!({"usage":{"input_tokens":67}})),
-            (67,0,0,0,false));
+            (67,0,0,0,false,false));
     }
     #[test]
     fn stale_responses_rebase_only_with_explicit_parameter_error(){

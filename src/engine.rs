@@ -307,12 +307,16 @@ impl Engine {
         run.input_tokens = run.input_tokens.saturating_add(reply.input_tokens);
         run.cached_input_tokens = run.cached_input_tokens.saturating_add(reply.cached_input_tokens);
         run.cache_write_tokens=run.cache_write_tokens.saturating_add(reply.cache_write_tokens);
+        if !reply.cache_usage_reported{
+            run.cache_unreported_requests=run.cache_unreported_requests.saturating_add(1);
+        }
         run.output_tokens = run.output_tokens.saturating_add(reply.output_tokens);
         run.cost_krw += reply.cost_krw;
         run.event("model", format!("{} · in {} / out {} tokens · {:.4} KRW", reply.model, reply.input_tokens, reply.output_tokens, reply.cost_krw), Some(json!({"input_tokens":reply.input_tokens,
             "uncached_input_tokens":reply.input_tokens.saturating_sub(reply.cached_input_tokens),
             "cached_input_tokens":reply.cached_input_tokens,
             "cache_write_tokens":reply.cache_write_tokens,
+            "cache_usage_reported":reply.cache_usage_reported,
             "output_tokens":reply.output_tokens,
             "cost_krw":reply.cost_krw,"model":reply.model,
             "usage_reported":reply.usage_reported})));
