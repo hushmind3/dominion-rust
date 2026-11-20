@@ -102,3 +102,38 @@ async fn cancellation_of_team_root_prevents_later_work_and_keeps_original_task_i
     drop(sdk);drop(engine);drop(store);
     tokio::fs::remove_dir_all(path).await.unwrap();
 }
+
+#[tokio::test]
+async fn one_owner_tick_auto_completes_all_dag_layers_via_existing_wake_queue(){
+    let (engine,store,path)=mock_engine().await;
+    let sdk=Dominion::from_engine(Arc::clone(&engine));
+    let root=sdk.create_task_team("Automatic DAG lifecycle".into(),vec![
+        spec("research",&[],TeamRole::Investigator),
+        spec("write",&["research"],TeamRole::Writer),
+        spec("audit",&["write"],TeamRole::Reviewer),
+    ],90.0,RunOptions::default()).await.unwrap();
+    sdk.advance_task_team(root.id).await.unwrap(); // exactly ONE owner tick
+    let mut terminal=false;
+    for _ in 0..200 {
+        if sdk.get(root.id).await.unwrap().status==RunStatus::Completed {
+            terminal=true;break;
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    let observed=sdk.get(root.id).await.unwrap();
+    assert!(terminal,"settlement must signal next layer without manual SDK ticks");
+    let graph=observed.team.as_ref().unwrap();
+    let mut prior_end=0u64;
+    for task in &graph.tasks{
+        let child=store.get(task.run_id).await.expect("the DAG worker was never launched");
+        assert_eq!(child.status,RunStatus::Completed);
+        assert!(child.created_at_ms>=prior_end,
+            "a dependency must finish before its dependant is created");
+        prior_end=child.updated_at_ms;
+    }
+    assert_eq!(observed.events.iter().filter(|e|e.kind=="team_started").count(),1);
+    assert_eq!(observed.events.iter().filter(|e|e.kind=="team_completed").count(),1);
+    assert_eq!(observed.settled_child_ids.len(),3);
+    drop(sdk);drop(engine);drop(store);
+    tokio::fs::remove_dir_all(path).await.unwrap();
+}

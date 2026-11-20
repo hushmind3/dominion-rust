@@ -541,3 +541,7 @@ source-linked original owner evidence, latest authoritative owner correction,
 serializable cursor continuation and byte-identical projection after reload.
 This is a synthetic 100-turn CONTEXT/RECOVERY regression, not a claim that
 100 actual paid model answers passed a semantic recall benchmark.
+
+The native regression also starts a three-stage Team DAG with exactly one
+owner tick and checks that child settlement schedules all remaining tasks,
+preserves dependency completion order and closes the parent only once.
