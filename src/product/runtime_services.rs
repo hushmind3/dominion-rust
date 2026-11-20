@@ -18,6 +18,7 @@ impl RuntimeServices for ProductHost {
             parallel_tool_calls:CapabilitySupport::from(entry.as_ref()
                 .and_then(|p|p.parallel_tool_calls)),
             streaming:CapabilitySupport::from(entry.as_ref().and_then(|p|p.streaming)),
+            reasoning:CapabilitySupport::from(entry.as_ref().and_then(|p|p.reasoning)),
             prompt_cache:CapabilitySupport::from(entry.as_ref().and_then(|p|p.prompt_cache)),
             vision:CapabilitySupport::from(entry.as_ref().and_then(|p|p.vision)),
             context_window:entry.and_then(|p|p.context_window)

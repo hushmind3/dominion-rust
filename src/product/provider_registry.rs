@@ -30,6 +30,8 @@ pub struct Provider {
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub streaming:Option<bool>,
     #[serde(default,skip_serializing_if="Option::is_none")]
+    pub reasoning:Option<bool>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
     pub prompt_cache:Option<bool>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub vision:Option<bool>,
@@ -61,6 +63,7 @@ pub struct Draft{
     #[serde(default)]pub tool_calling:Option<bool>,
     #[serde(default)]pub parallel_tool_calls:Option<bool>,
     #[serde(default)]pub streaming:Option<bool>,
+    #[serde(default)]pub reasoning:Option<bool>,
     #[serde(default)]pub prompt_cache:Option<bool>,
     #[serde(default)]pub vision:Option<bool>,
     #[serde(default)]pub context_window:Option<u32>,
@@ -225,6 +228,8 @@ impl Registry{
             parallel_tool_calls:declared_parallel,
             streaming:draft.streaming.or_else(||
                 retained_capabilities.and_then(|entry|entry.streaming)),
+            reasoning:draft.reasoning.or_else(||
+                retained_capabilities.and_then(|entry|entry.reasoning)),
             prompt_cache:draft.prompt_cache.or_else(||
                 retained_capabilities.and_then(|entry|entry.prompt_cache)),
             vision:draft.vision.or_else(||
@@ -286,6 +291,7 @@ pub fn public(record:&Provider)->serde_json::Value{
         "toolCalling":record.tool_calling,
         "parallelToolCalls":record.parallel_tool_calls,
         "streaming":record.streaming,
+        "reasoning":record.reasoning,
         "promptCache":record.prompt_cache,
         "vision":record.vision,
         "contextWindow":record.context_window,
@@ -384,7 +390,7 @@ mod tests{
             credential_source_id:None,
             enabled:true,local:false,reflection:false,reflection_model:None,
             requests_per_minute:0,tool_calling:None,
-            parallel_tool_calls:None,streaming:None,
+            parallel_tool_calls:None,streaming:None,reasoning:None,
             prompt_cache:None,vision:None,context_window:None,
         }
     }
@@ -398,6 +404,7 @@ mod tests{
         first.tool_calling=Some(false);
         first.parallel_tool_calls=Some(false);
         first.streaming=Some(true);
+        first.reasoning=Some(false);
         first.prompt_cache=Some(false);
         first.context_window=Some(32768);
         let saved=registry.upsert(first).unwrap();
@@ -409,6 +416,7 @@ mod tests{
             "omitted capability must keep exact model/endpoint declaration");
         assert_eq!(same.parallel_tool_calls,Some(false));
         assert_eq!(same.streaming,Some(true));
+        assert_eq!(same.reasoning,Some(false));
         assert_eq!(same.context_window,Some(32768));
         assert_eq!(same.prompt_cache,Some(false));
         drop(registry);
@@ -420,6 +428,7 @@ mod tests{
             "a new endpoint must never inherit a tool compatibility claim");
         assert_eq!(moved.context_window,None);
         assert_eq!(moved.streaming,None);
+        assert_eq!(moved.reasoning,None);
         assert_eq!(moved.parallel_tool_calls,None);
         let mut explicit=draft(Some(saved.id.clone()),
             "https://other.example.test/v1","openai",None);

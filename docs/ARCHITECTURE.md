@@ -761,3 +761,12 @@ when a terminal `type=result,subtype=success` appears. It yields a
 Git diff digest requiring the independent Team merge approval.
 The ACP persistent-session bridge remains separate future work; CLI
 sandbox availability and subprocess interop are not yet validated.
+
+### Model capability contract pinned to each Run
+
+The operator/provider-registered capability set now includes explicit
+reasoning support alongside tool calling, parallel tools, streaming, cache,
+vision and context. Every native Run journals this exact typed endpoint
+capability contract before the first inference; a later provider rebind
+cannot silently upgrade/alter tool or thinking behavior on Run resume.
+Unspecified traits remain `unknown`, not auto-detected support.

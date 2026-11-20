@@ -3,6 +3,7 @@
 //! The application composes the concrete adapter in product/runtime_services.rs.
 use crate::{config::Settings,domain::{Run,ToolCall,ToolEffectOutcome},
     ports::RunStorePort,provider::{ModelClient,Reply}};
+use serde::{Serialize,Deserialize};
 use serde_json::Value;
 use std::{future::Future,pin::Pin,sync::Arc};
 use tokio::sync::watch;
@@ -11,7 +12,8 @@ use uuid::Uuid;
 pub type ServiceFuture<'a,T> = Pin<Box<dyn Future<Output=T>+Send+'a>>;
 
 /// Exact endpoint/model capability. Never inferred from a model's name.
-#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
 pub enum CapabilitySupport{#[default] Unknown,Supported,Unsupported}
 impl From<Option<bool>> for CapabilitySupport{
     fn from(value:Option<bool>)->Self{
@@ -19,11 +21,12 @@ impl From<Option<bool>> for CapabilitySupport{
                      Some(false)=>Self::Unsupported,None=>Self::Unknown}
     }
 }
-#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
 pub struct ModelCapabilities{
     pub tool_calling:CapabilitySupport,
     pub parallel_tool_calls:CapabilitySupport,
     pub streaming:CapabilitySupport,
+    pub reasoning:CapabilitySupport,
     pub prompt_cache:CapabilitySupport,
     pub vision:CapabilitySupport,
     pub context_window:Option<u32>,

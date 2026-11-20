@@ -175,6 +175,22 @@ impl Engine {
             if run.pending_approval.is_some() && run.approval_decision.is_none() {
                 return Err("approval required before resuming".into());
             }
+            // Pin the exact endpoint/model capability contract in the
+            // authoritative Run journal. A provider rebind between a pause
+            // and resume cannot silently expand tools or reasoning options.
+            let capabilities=self.services.model_capabilities(run);
+            let contract=serde_json::to_value(capabilities)
+                .map_err(|err|err.to_string())?;
+            if let Some(previous)=run.events.iter().find(|event|
+                event.kind=="model_capabilities_bound"){
+                if previous.detail.as_ref()!=Some(&contract){
+                    return Err("model endpoint capabilities changed; create a new Run".into());
+                }
+            }else{
+                run.event("model_capabilities_bound",
+                    "Endpoint-bound model contract captured before inference",
+                    Some(contract));
+            }
             // Bind each Run to the exact operator-selected algorithm. A
             // restart with a different strategy must not silently reinterpret
             // previously authorized queued work.
