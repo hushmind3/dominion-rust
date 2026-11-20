@@ -567,6 +567,14 @@ impl Groups {
             return Err("room message targets unregistered agents".into());
         }
         room.client_messages.insert(client_id.to_owned(),index);
+        // Pin round-robin routing on owner admission, not after a model reply
+        // increments room.rounds. A retry/restart must not dispatch an
+        // unintended second speaker under the same clientMessageId.
+        let recipients=if recipients.is_empty()
+            && room.frontend.as_ref().is_some_and(|v|v.routing_mode=="round_robin")
+            && !room.participants.is_empty(){
+            vec![room.participants[room.rounds%room.participants.len()].name.clone()]
+        }else{recipients};
         room.recipients=recipients;
         room.updated_at_ms=now_ms();
         self.save(room).await.map(|saved|(saved,true,index))
@@ -1595,4 +1603,47 @@ mod tests {
         assert_eq!(Groups::select(&room),1);
         fs::remove_dir_all(root).await.unwrap();
     }
+    #[tokio::test]
+    async fn round_robin_recipient_is_frozen_in_the_durable_owner_turn(){
+        let root=std::env::temp_dir().join(format!("dominion-room-rr-pin-{}",Uuid::new_v4()));
+        let groups=Groups::open(root.clone()).await.unwrap();
+        let participants=vec![
+            Participant{name:"coder".into(),role:"code".into(),economy:false},
+            Participant{name:"reviewer".into(),role:"verify".into(),economy:false},
+        ];
+        let mut room=groups.create(NewRoom{topic:"single owner turn".into(),
+            participants,max_rounds:Some(20),budget_krw:Some(0.0)}).await.unwrap();
+        room.frontend=Some(FrontendRoom{
+            name:"rr".into(),topic:"single owner turn".into(),owner_name:"user".into(),
+            agent_ids:vec!["coder".into(),"reviewer".into()],
+            routing_mode:"round_robin".into(),rounds:1,max_turns:1,
+            lifetime_max_responses:20,token_budget:0,context_budget_tokens:2000,
+            tools_enabled:false,auto_learning:false,auto_models:true,models:vec![],
+            reasoning_effort:String::new(),learned_context:String::new(),
+        });
+        groups.configure(room.id,room.frontend.clone().unwrap(),room.participants.clone())
+            .await.unwrap();
+        let (first,inserted,index)=groups.say_once(room.id,"fix it".into(),
+            "rr-idempotent-1",Vec::new()).await.unwrap();
+        assert!(inserted);
+        assert_eq!(index,0);
+        assert_eq!(first.recipients,vec!["coder"]);
+        let (retry,inserted_again,again)=groups.say_once(room.id,"fix it".into(),
+            "rr-idempotent-1",Vec::new()).await.unwrap();
+        assert!(!inserted_again);
+        assert_eq!(again,index);
+        assert_eq!(retry.recipients,first.recipients);
+        drop(groups);
+        let restored=Groups::open(root.clone()).await.unwrap().get(room.id).await.unwrap();
+        assert_eq!(restored.recipients,vec!["coder"],
+            "the owner-to-agent assignment must survive a process restart");
+        let mut after_reply=restored;
+        after_reply.rounds+=1;
+        after_reply.messages.push(Utterance{speaker:"coder".into(),
+            content:"result".into(),at_ms:now_ms(),model:None});
+        assert_eq!(Groups::select(&after_reply),0,
+            "reply accounting cannot silently redirect the same owner turn");
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
 }

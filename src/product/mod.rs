@@ -6,6 +6,7 @@ pub(crate) mod bootstrap;
 mod runtime_services;
 pub mod config;
 pub mod group;
+mod coordination;
 pub mod native_api;
 pub mod build_identity;
 pub mod strategy;

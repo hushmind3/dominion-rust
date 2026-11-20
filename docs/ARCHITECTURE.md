@@ -390,3 +390,21 @@ HTTP/SDK field-access compatibility. Its worker and algorithm depend on
 This is an incremental, real service-injection boundary: remove the
 compatibility Deref once callers are converted to explicit product access
 or an application facade, without changing HTTP contracts.
+
+### Durable group turn work-board projection
+
+`src/product/coordination.rs::RoomWorkBoard` now owns the scheduling
+projection used by the existing group frontend handler. It derives ordered
+task tickets, assigned speaker identities, completion status and
+source-indexed result receipts from the **existing durable Room transcript**.
+There is no duplicate persistence or chat-to-chat agent chatter. Replaying
+the same room after restart produces the same pending agent set; a new
+owner message creates a separate ticket generation.
+
+A round-robin frontend owner turn now freezes its selected speaker in
+`Room.recipients` **on initial `Groups::say_once` admission**, before
+any model billing or responses occur. A retry after partial completion
+cannot change speaker as `Room.rounds` increments. Existing routes,
+room UI, request/response contracts and sequential write serialization
+remain intact. This is a durable task board for room turns, not a generic
+parallel agent DAG executor or a new database.

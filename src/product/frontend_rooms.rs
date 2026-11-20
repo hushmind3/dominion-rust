@@ -64,33 +64,9 @@ fn room_status(room:&Room)->&'static str{
 /// A discussion response is a full set of distinct registered speakers,
 /// not one model step. Non-discussion routing retains its explicit target.
 fn speakers_for_owner_turn(room:&Room)->Vec<String>{
-    let config=config_of(room);
-    let candidates=match config.routing_mode.as_str(){
-        "discussion"=>{
-            if room.recipients.is_empty(){
-                room.participants.iter().map(|p|p.name.clone()).collect::<Vec<_>>()
-            }else{room.recipients.clone()}
-        },
-        "mentioned"=>{
-            if !room.recipients.is_empty(){room.recipients.clone()}
-            else{
-                let content=room.messages.iter().rev().find(|m|m.speaker=="user")
-                    .map_or("",|m|m.content.as_str()).to_lowercase();
-                room.participants.iter().filter(|p|
-                    content.contains(&format!("@{}",p.name.to_lowercase())))
-                    .map(|p|p.name.clone()).collect()
-            }
-        },
-        _=>vec![room.participants[crate::group::Groups::select(room)].name.clone()]
-    };
-    let last_user=room.messages.iter().rposition(|m|m.speaker=="user");
-    let spoken=last_user.map_or_else(HashSet::new,|index|
-        room.messages[index+1..].iter().filter(|m|m.speaker!="user")
-            .map(|m|m.speaker.clone()).collect::<HashSet<_>>());
-    let mut selected=HashSet::new();
-    candidates.into_iter()
-        .filter(|speaker|selected.insert(speaker.clone())&&!spoken.contains(speaker))
-        .collect()
+    // A durable, indexed work board—not the last model's free-form prose—
+    // decides which original speaker tickets still need a response.
+    super::coordination::RoomWorkBoard::project(room).pending_agents()
 }
 fn owner_turn_progress(room:&Room,index:usize,requested:&[String])->(usize,usize){
     let config=config_of(room);
