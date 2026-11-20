@@ -14,7 +14,7 @@ pub use addons::{channels as frontend_channels, connected_tools,
     extensions as frontend_extensions, github_cli_login, github_work,
     google_workspace, mcp, oauth as frontend_oauth,
     skill_import as frontend_skill_import};
-pub mod config;
+
 pub mod context;
 pub mod domain;
 pub mod engine;
@@ -24,22 +24,25 @@ pub mod hooks;
 pub mod tool_schema;
 pub mod tool_discovery;
 pub mod tool_batch;
-pub mod read_program;
-pub mod program_ir;
-pub mod program_session;
+
+
+
 pub mod policy;
-pub mod provider;
-pub mod sandbox;
+
+
 pub mod sdk;
 pub mod infrastructure;
+pub use infrastructure::{model_transport as provider, local_tools as tools, sandbox, workspace};
+pub use addons::{read_program,program_ir,program_session};
+pub use product::config;
 pub mod ports;
 // Public compatibility alias, actual DB implementation is outside the core.
 pub use infrastructure::persistence as store;
-pub mod tools;
+
 pub mod verification;
 pub mod acceptance;
 pub mod repair_guidance;
-pub mod workspace;
+
 pub use sdk::Dominion;
 pub use config::{ModelSettings,Settings};
 pub use domain::{CreateRun,Run,RunStatus,TimelineEvent,ToolCall,ReconcileTool,Approval};

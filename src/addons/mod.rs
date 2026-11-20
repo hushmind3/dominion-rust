@@ -6,6 +6,9 @@ use axum::Router;
 use serde_json::Value;
 use std::sync::Arc;
 
+pub mod read_program;
+pub mod program_ir;
+pub mod program_session;
 pub mod channels;
 pub mod execution;
 pub mod connected_tools;

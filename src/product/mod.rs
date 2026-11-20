@@ -3,6 +3,7 @@
 //! The Run scheduler remains native; the surrounding presentation, room,
 //! profile, catalog and stored-memory facilities are product services.
 pub(crate) mod bootstrap;
+pub mod config;
 pub mod group;
 pub mod native_api;
 pub mod build_identity;

@@ -275,3 +275,20 @@ storage backends without modifying the executor.
 This is an interface/ownership separation within the existing binary;
 it does **not** claim that the production storage is disabled, that files
 are no longer written, or that crashes can safely replay mutating effects.
+
+## 2026-11-20 — Model and OS adapters relocated
+
+Native **model HTTP transport**, filesystem/CLI tools, sandbox and workspace
+implementation now live under `src/infrastructure/` rather than at the core
+root. Optional native `read_program`/`run_program` execution implementations
+live under `src/addons/`, and process/env model configuration under
+`src/product/config.rs`. Their previous `crate::provider`,
+`crate::tools`, `crate::workspace`, `crate::sandbox`,
+`crate::read_program`, `crate::program_session`, `crate::program_ir`
+and `crate::config` paths remain reexports for external SDK compatibility.
+
+The kernel continues to own **instruction/run sequencing, policy,
+tool outcome journaling, context compaction and verification**. Moving source
+implementation does not by itself make tools independently uninstallable or
+create separate binaries. The optional `run_program` schema and existing
+approval semantics are unchanged.

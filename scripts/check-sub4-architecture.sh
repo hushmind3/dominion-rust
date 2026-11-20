@@ -40,8 +40,8 @@ required_count src/product/frontend_public_http.rs '^[[:space:]]*pub[(]crate[)] 
 required_count src/product/frontend_huggingface.rs 'reqwest::Client::builder' 0
 required_count src/product/frontend_provider_public.rs 'reqwest::Client::builder' 0
 # Retired experiment executors and UI routes must not return.
-required_count src/tools.rs 'compare_strategies' 0
-required_count src/config.rs 'strategy_trials_enabled' 0
+required_count src/infrastructure/local_tools.rs 'compare_strategies' 0
+required_count src/product/config.rs 'strategy_trials_enabled' 0
 required_count src/product/frontend_growth.rs '"/optimizers"' 0
 required_count src/product/frontend_growth.rs '"/experiment-requests"' 0
 required_count web/src/i18n/errors.ts '영상' 0
@@ -72,10 +72,20 @@ if [[ -e src/product.rs ]]; then
 fi
 for candidate in src/*.rs; do
  case "${candidate##*/}" in
- acceptance.rs|config.rs|context.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|loop_guard.rs|main.rs|policy.rs|program_ir.rs|program_session.rs|provider.rs|read_program.rs|repair_guidance.rs|sandbox.rs|sdk.rs|ports.rs|tool_batch.rs|tool_discovery.rs|tool_schema.rs|tools.rs|verification.rs|workspace.rs) ;;
+ acceptance.rs|context.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|loop_guard.rs|main.rs|policy.rs|repair_guidance.rs|sdk.rs|ports.rs|tool_batch.rs|tool_discovery.rs|tool_schema.rs|verification.rs) ;;
  *) echo "ERROR: unexpected root module $candidate (classify core vs product/addons)" >&2; exit 1 ;;
  esac
 done
+# Model transport, OS tools and opt-in program interpreter are adapters.
+for moved in src/provider.rs src/tools.rs src/workspace.rs src/sandbox.rs \
+ src/config.rs src/read_program.rs src/program_ir.rs src/program_session.rs; do
+ if [[ -e "$moved" ]]; then
+  echo "ERROR: adapter code leaked into native execution core: $moved" >&2
+  exit 1
+ fi
+done
+required_count src/infrastructure/local_tools.rs 'pub async fn execute' 1
+required_count src/addons/read_program.rs 'pub async fn execute_with_hooks' 1
 # The Run kernel must not know a remote transport or duplicate progress loop.
 required_count src/engine.rs 'McpProgress|McpCallOutcome|call_with_progress|starts_with\("mcp__"\)' 0
 required_count src/addons/execution.rs '^pub async fn invoke\(' 1
