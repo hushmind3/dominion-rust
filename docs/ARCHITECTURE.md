@@ -672,3 +672,24 @@ usage receipt was observed, the report does not claim `liveModelCalls=true`.
 Tool-enabled Room context presents read-only inspection as a native Harness
 capability while the legacy tool-free common prefix is unchanged for cache
 compatibility.
+
+## 2026-11-21 — Single native Harness for ALL Room speaker turns (Sub4)
+
+Both tool-free and tool-enabled frontend Room speakers now launch source-linked
+native Runs with deterministic participant+owner-turn identity. Tool-free
+speakers set `Run.model_only=true` (one native model call, zero tool schemas,
+no delegated workers); tool-enabled speakers use the same mandatory Rust
+Harness with read-only admission. Both share journaled status, cancellation,
+cost receipts, durable idempotency, restart inspection and per-speaker Room
+read cursor. The native SDK `group_turn` now uses that same Run adapter;
+`/api/v1/groups/{id}/next` is no longer a separate paid provider loop.
+
+The bounded context projection retains its cache-anchor annotations and a
+stable peer-neutral prefix; participant identity is appended last for
+model-only turns. Historical Room server-side Responses continuation records
+are kept for on-disk compatibility but are not silently resumed across the
+new native-Run boundary. The old Groups direct model method is only a
+compatibility implementation and should not be invoked by production routes.
+Existing tests for the historical provider continuation need adaptation to
+the source-linked Run semantics; actual cache-hit parity must be measured
+with provider receipts rather than assumed.

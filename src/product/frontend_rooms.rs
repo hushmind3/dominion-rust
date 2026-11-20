@@ -368,6 +368,13 @@ async fn update(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
 }
 async fn remove(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Value>,Fault>{
+  room_native::reconcile_ready(&engine,id).await.map_err(bad)?;
+  let snapshot=engine.groups.get(id).await.ok_or_else(missing)?;
+  if room_native::unsettled(&engine,&snapshot).await{
+    return Err((StatusCode::CONFLICT,Json(json!({
+      "error":"cannot delete Room while a source-linked Run is unsettled"
+    }))));
+  }
   engine.groups.remove(id).await.map_err(bad)?;
   let session_id=room_session(id);
   if let Err(err)=engine.frontend.mutate(|state|{
@@ -446,8 +453,7 @@ async fn admit_owner_message(
     // Reconcile a completed Run first: source-index order stays authoritative.
     room_native::reconcile_ready(engine,id).await.map_err(bad)?;
     let current=engine.groups.get(id).await.ok_or_else(missing)?;
-    if config_of(&current).tools_enabled
-        &&!current.client_messages.contains_key(&input.client_message_id)
+    if !current.client_messages.contains_key(&input.client_message_id)
         &&room_native::unsettled(engine,&current).await{
         return Err((StatusCode::CONFLICT,Json(json!({
             "error":"previous native Room speaker has not settled; resolve approval or reconcile its Run before sending a new owner message",
@@ -513,14 +519,9 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
             .ok_or_else(||bad("selected room agent was deleted"))?;
         (agent.provider_id.clone(),agent.model.clone())
     };
-    room=match if config.tools_enabled{
-        room_native::execute(engine,id,&agent_id,&provider,&model).await
-    }else{
-        let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?
-            .with_session_affinity(&format!("dominion-room-{id}"));
-        engine.providers.throttle(&provider).await;
-        engine.groups.next_for(&selected_model,id,Some(&agent_id)).await
-    }{
+    // All frontend Room speaker turns use the ONE native Engine/Harness.
+    // The Run chooses model_only or read-only tools by the Room capability.
+    room=match room_native::execute(engine,id,&agent_id,&provider,&model).await{
       Ok(next)=>next,
       Err(error)=>{
         let snapshot=engine.groups.get(id).await.ok_or_else(missing)?;
@@ -556,7 +557,7 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
     };
     // Native Run may pause for approval, or a provider call may still be
     // executing. Neither is an accepted speaker reply yet.
-    if config.tools_enabled && room.messages.last().is_none_or(|m|m.speaker!=agent_id){
+    if room.messages.last().is_none_or(|m|m.speaker!=agent_id){
         break;
     }
     turns+=1;

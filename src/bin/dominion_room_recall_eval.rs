@@ -1,6 +1,6 @@
 //! Opt-in semantic recall of a REAL 100-owner-turn, two-speaker Room.
 //! No mock benchmark is ever promoted into a model-accuracy claim.
-//! Tool-free participants use the existing cache-aware Room provider lane.
+//! Tool-free participants use the same source-linked native model-only Run as Chat.
 //! Usage comes from actual provider/Room receipts, not token estimates.
 use dominion::{config::Settings,group::{FrontendRoom,NewRoom,Participant},
     sdk::Dominion};

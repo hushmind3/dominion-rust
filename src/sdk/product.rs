@@ -109,9 +109,18 @@ impl Dominion {
         self.engine.read_subagent_file(parent,child,path).await
     }
     pub async fn group_turn(&self,id:Uuid)->Result<Room,String>{
-        let selected=self.engine.model.with_session_affinity(
-            &format!("dominion-room-{id}"));
-        self.engine.groups.next(&selected,id).await
+        let room=self.engine.groups.get(id).await.ok_or("Room not found")?;
+        if room.participants.is_empty(){return Err("Room has no participants".into());}
+        let who=&room.participants[crate::group::Groups::select(&room)].name;
+        let (provider,model)=if let Some(selected)=room.frontend.as_ref()
+            .filter(|cfg|!cfg.auto_models&&!cfg.models.is_empty())
+            .and_then(|cfg|cfg.models.get(room.rounds%cfg.models.len())){
+            (selected["providerId"].as_str().unwrap_or("dominion-native").to_owned(),
+             selected["model"].as_str().unwrap_or(self.engine.settings.main.name.as_str()).to_owned())
+        }else{
+            ("dominion-native".to_owned(),self.engine.settings.main.name.clone())
+        };
+        crate::frontend_rooms::room_native::execute(&self.engine,id,who,&provider,&model).await
     }
     /// Explicitly retrieve verified procedures from successful user-driven runs.
     /// No recursive self-modification, trial scheduler or background learning.

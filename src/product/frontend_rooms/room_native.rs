@@ -1,5 +1,5 @@
-//! Product adapter for tool-enabled Rooms. Never owns an agent loop or a
-//! privileged tool executor: each speaker is one source-linked native Run.
+//! All Room speaker turns are source-linked native Runs, whether tool-free or
+//! read-only tool-enabled. This adapter owns no independent model loop.
 use super::*;
 use crate::{domain::{CreateRun,Run,RunStatus,RoomRunBinding},
     group::Groups,sdk::Dominion};
@@ -42,7 +42,6 @@ pub(super) async fn unsettled(engine:&Arc<Engine>,room:&Room)->bool{
     false
 }
 pub(super) async fn cancel_unsettled(engine:&Arc<Engine>,room:&Room)->Result<(),String>{
-    if !config_of(room).tools_enabled{return Ok(());}
     for participant in &room.participants{
         if let Some(run)=source_run(engine,room,&participant.name).await{
             if !run.terminal(){
@@ -97,7 +96,6 @@ pub(super) async fn approvals(engine:&Arc<Engine>,room:&Room)->Vec<Value>{
 /// finished while the original HTTP sender was disconnected.
 pub(super) async fn reconcile_ready(engine:&Arc<Engine>,id:Uuid)->Result<(),String>{
     let room=engine.groups.get(id).await.ok_or("room not found")?;
-    if !config_of(&room).tools_enabled{return Ok(());}
     if !room.messages.iter().any(|m|m.speaker=="user"){
         return Ok(());
     }
@@ -132,11 +130,13 @@ pub(super) async fn execute(engine:&Arc<Engine>,id:Uuid,speaker:&str,
     }else{
         let available=(room.budget_krw-room.cost_krw).max(0.0);
         if available<=0.0{return Err("Room KRW budget exhausted before model dispatch".into());}
-        let (context,metrics)=Groups::native_speaker_context(&room,speaker)?;
+        let tools=config_of(&room).tools_enabled;
+        let (context,metrics)=Groups::native_speaker_context_for(&room,speaker,tools)?;
         let mut run=Run::new(CreateRun{
             instruction:room.messages[binding.owner_message_index].content.clone(),
-            budget_krw:Some(available),max_steps:None
+            budget_krw:Some(available),max_steps:if tools{None}else{Some(1)}
         },engine.settings.max_steps)?;
+        run.model_only=!tools;
         run.id=run_id;
         run.room_binding=Some(binding);
         run.chat_context=context;
@@ -149,6 +149,11 @@ pub(super) async fn execute(engine:&Arc<Engine>,id:Uuid,speaker:&str,
             digest[..12].iter().map(|b|format!("{b:02x}")).collect::<String>());
         run.event("room_context_attached","Room original evidence bound to native Run",
             Some(metrics));
+        run.event("room_native_mode",if tools{
+            "Native read-only inspection loop"
+        }else{
+            "Native model-only loop, no tool schemas or delegated workers"
+        },Some(json!({"model_only":!tools,"source_run":run_id})));
         engine.store.put(run).await?;
         engine.launch(run_id).await?;
     }
