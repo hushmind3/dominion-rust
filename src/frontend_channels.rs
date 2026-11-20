@@ -73,10 +73,13 @@ fn save(file:&FilePath,state:&Snapshot)->Result<(),String>{
  result
 }
 fn public(channel:&Channel)->Value{
+ let sending=channel.pending_index.is_some()&&active_sends()
+  .lock().unwrap_or_else(|e|e.into_inner()).contains(&channel.id);
  json!({
   "id":channel.id,"name":channel.name,"kind":channel.kind,
   "roomId":channel.room_id,"enabled":channel.enabled,
-  "status":if !channel.enabled{"disabled"}
+  "status":if sending{"sending"}
+   else if !channel.enabled{"disabled"}
    else if channel.pending_index.is_some(){"needs_review"}
    else if channel.runtime_error.is_some(){"error"}
    else if !channel.verified{"not_verified"}
@@ -88,7 +91,8 @@ fn public(channel:&Channel)->Value{
   "chatId":channel.chat_id,"channelId":channel.channel_id,
   "syncRoomMessages":channel.sync_room_messages,
   "delivery":{"pending":usize::from(channel.pending_index.is_some()),
-   "needsReview":usize::from(channel.pending_index.is_some()),
+   "sending":usize::from(sending),
+   "needsReview":usize::from(channel.pending_index.is_some()&&!sending),
    "pendingIndex":channel.pending_index,"cursor":channel.cursor}
  })
 }
@@ -355,7 +359,16 @@ pub async fn dispatch_room(engine:&Arc<Engine>,room:&Room){
    // If the operator disabled/suspended this channel during the claim,
    // do not send a new external message. Retain the unknown receipt for
    // deliberate reconciliation rather than silently advancing the cursor.
-   if !current.enabled || !current.sync_room_messages{break;}
+   if !current.enabled || !current.sync_room_messages{
+    // No HTTP send began. Release this locally known-unsent claim rather
+    // than asking the operator to reconcile an effect that never happened.
+    let _=update(&file,&entry.id,|row|{
+     if row.pending_index==Some(index){
+      row.pending_index=None;row.runtime_error=None;
+     }
+    });
+    break;
+   }
    let outcome=transmit(&current,&content).await;
    if let Err(error)=update(&file,&entry.id,|row|{
     if row.pending_index==Some(index){
@@ -376,6 +389,29 @@ mod tests{
  #[test]
 
  #[test]
+
+ #[test]
+ fn concurrent_outbound_claims_never_dispatch_the_same_message_twice(){
+  let base=std::env::temp_dir().join(format!("dominion-channel-{}",Uuid::new_v4()));
+  let file=base.join("channels.json");
+  let row=Channel{id:"claim-1".into(),name:"Demo".into(),kind:"telegram".into(),
+   room_id:"room".into(),enabled:true,chat_id:"123".into(),channel_id:String::new(),
+   token:"fixture-token".into(),verified:true,sync_room_messages:true,
+   cursor:0,pending_index:None,runtime_error:None};
+  let mut state=Snapshot::default();
+  state.channels.insert(row.id.clone(),row.clone());
+  save(&file,&state).expect("persist a clean channel fixture");
+  let hold=claim_delivery(&file,&row,0).expect("first claim").expect("owns send");
+  assert_eq!(public(&read(&file).unwrap().channels[&row.id])["status"],"sending");
+  assert!(claim_delivery(&file,&row,0).unwrap().is_none(),
+   "a concurrent fanout must not call the remote API twice");
+  assert_eq!(read(&file).unwrap().channels[&row.id].pending_index,Some(0));
+  drop(hold);
+  assert_eq!(public(&read(&file).unwrap().channels[&row.id])["status"],"needs_review",
+   "a process exit or uncertain result requires manual confirmation");
+  assert_eq!(public(&read(&file).unwrap().channels[&row.id])["delivery"]["sending"],0);
+  std::fs::remove_dir_all(&base).expect("clean isolated fixture");
+ }
  fn projected_delivery_status_never_misreports_disabled_sync_as_ready(){
   let mut row=Channel{id:"c".into(),name:"Channel".into(),kind:"discord".into(),
    room_id:"room".into(),enabled:true,chat_id:String::new(),channel_id:"123".into(),
