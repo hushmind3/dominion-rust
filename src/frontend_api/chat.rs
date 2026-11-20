@@ -356,6 +356,30 @@ mod context_projection_tests{
   assert!(history_chars<6500,"selection must beat the prior 6500-char chat replay");
  }
  #[test]
+ fn long_chat_compiler_reduces_actual_history_characters_below_previous_replay(){
+  let prev=(0..40).map(|i|{
+   let mut message=make(i);
+   message.content=format!("turn {i}: {}", "technical evidence ".repeat(45));
+   message
+  }).collect::<Vec<_>>();
+  let before=prev.iter().rev().take(12).rev()
+   .map(|item|format!("{}: {}",item.role,item.content))
+   .collect::<Vec<_>>().join("\n");
+  let old_chars=before.chars().count().min(6500);
+  let projected=build_chat_context("unchanged profile",None,&prev,
+    "new owner request",false).unwrap();
+  let new_history_chars=projected.iter().skip(1)
+   .filter_map(|item|item["content"].as_str())
+   .map(|content|content.chars().count()).sum::<usize>();
+  assert_eq!(old_chars,6500,"control must saturate prior replay budget");
+  assert!(new_history_chars<old_chars,
+   "projected chat history must actually send fewer characters than old replay");
+  assert_eq!(projected.len(),13,"six pinned plus six recent and one profile");
+  assert!(!projected.iter().any(|m|m["content"].as_str()
+    .is_some_and(|v|v.contains("turn 20:"))),
+    "cold middle history must not be billed every model turn");
+ }
+ #[test]
  fn only_unambiguous_social_turns_skip_toolful_native_harness(){
   for q in ["hi","안녕하세요!!","thanks","고마워~","good morning"]{
    assert!(social_only(q),"{q}");
