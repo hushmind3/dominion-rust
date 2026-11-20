@@ -117,7 +117,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
     );
     // The unmodified latest-main frontend makes /api/* requests. Its
     // compatibility endpoints operate on the same Rust Store/Engine as /api/v1.
-    let frontend=crate::frontend_api::router()
+    let frontend=crate::frontend_api::router(engine.settings.addons_enabled)
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine),authorize));
     Router::new()
         .nest("/api/v1",api)
@@ -178,7 +178,7 @@ async fn config(State(engine): State<Arc<Engine>>) -> Json<PublicSettings> {
         model:engine.settings.main.name.clone(),
         economy_model:engine.settings.economy.name.clone(),
         configured:!engine.settings.main.api_key.is_empty() || engine.settings.main.base_url.contains("localhost") || engine.settings.main.base_url.contains("127.0.0.1"),
-        shell_enabled:engine.settings.shell_enabled,strategy_learning_enabled:engine.settings.strategy_learning_enabled,max_steps:engine.settings.max_steps,mcp_server_count:engine.mcp.server_count(),context_max_chars:engine.settings.context_max_chars,max_parallel_reads:engine.settings.max_parallel_reads,
+        shell_enabled:engine.settings.shell_enabled,strategy_learning_enabled:engine.settings.strategy_learning_enabled,max_steps:engine.settings.max_steps,mcp_server_count:engine.addons.mcp.server_count(),context_max_chars:engine.settings.context_max_chars,max_parallel_reads:engine.settings.max_parallel_reads,
         denied_tools:engine.settings.denied_tools.clone(),
         tool_result_max_chars:engine.settings.tool_result_max_chars,
     })

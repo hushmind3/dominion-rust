@@ -108,3 +108,44 @@ Verification scope: focused memory, `knowledge::`, `context::`, `policy::` and w
 `Engine::drive` uses the existing durable Run timeline as its single signal source. After a model turn yields a failed tool or verifier correction, `repair_guidance::advise` examines only subsequent `tool_error`, `tool_admission_rejected`, `tool_policy_denied`, `tool_denied`, `tool_hook_denied`, `mcp_remote_outcome_unknown` or `replan` events since the most recent `model` event. Simple bounded deterministic pattern matching yields a fixed classifier ID and fixed safe next-action hint. The model is never given a tool's untrusted failure text as higher-priority instructions. The hint is inserted only if it fits the existing prompt cap and changes none of the already-persisted direct user instructions, tool admission, approval, in-flight journal or effect-reconciliation rules.
 
 An accepted model turn records the applied strategy and triggering receipt sequence alongside that turn's input/output token counters in its *existing* Store transaction. The `repair_guidance::observations` read model ties selected strategy events to subsequent real tool receipts and verified completion, capped at 64 rows, with `temporal_association_not_causal_lift` explicitly stated. SDK and HTTP expose this passive projection for offline experiments, not automatic model selection. An actual causal comparison requires held-out cases and unchanged model, tools, task contracts and budgets; no unmeasured success uplift or real-model savings are asserted. This preserves the 2026 project directive to avoid old RSI-style continuous self-tuning systems.
+
+
+## 2026-11-20 — Optional Integration Host (Sub4)
+
+The native Run kernel remains the sole executor and journal. Side-effecting
+adapters no longer appear as independent service fields in `Engine`.
+The engine owns only `Arc<addons::Host>`, and the module physically groups
+MCP protocol, managed MCP/skills registry, OAuth, connected accounts (GitHub
+and Google) and outbound Telegram/Discord under `src/addons/`.
+
+```text
+Native SDK + Rust Run / policy / journal / budgets
+            | authorized tool schema + approved dispatch
+            v
+    addons::Host  (optional, typed boundary)
+       |-- MCP transport & lazy server tools
+       |-- GitHub / Google connected-account tools
+       |-- managed skills / OAuth registration
+       '-- outbound channel adapters, delivery reconciliation
+            |
+       existing HTTP /api/* + existing Connections tabs
+```
+
+- `DOMINION_ADDONS_ENABLED=true` is the default; `false` excludes add-on
+  API routes, remote schemas and outbound room notifications while retaining
+  native models, chat, groups, filesystem and Run recovery. No external MCP
+  env configuration or managed secrets are read in disabled mode.
+- Existing `/api/mcp`, `/api/channels`, `/api/oauth` and skills URLs
+  remain unchanged when enabled. Existing six sections under Connections
+  remain unchanged. Subsection implementations load only on navigation.
+- No second executor, channel-owned Run journal, implicit approval, or
+  automatic remote mutation was introduced. Native journal and policy still
+  authorize each model-requested tool effect.
+- The UI and native SDK retain compatibility reexports for former
+  `crate::mcp`, `crate::frontend_channels`, `crate::frontend_extensions`,
+  and account connectors; their source ownership is now `src/addons/`.
+
+This is a structural boundary and code-loading isolation, not evidence that
+a channel delivery, an OAuth flow or a paid model response was tested in
+production. Real HTTP and Chromium end-to-end checks remain separate gates.
+

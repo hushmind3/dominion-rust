@@ -559,7 +559,7 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize,us
       }
     }
   }
-  crate::frontend_channels::dispatch_room(engine,&room).await;
+  crate::addons::dispatch_room(engine,&room).await;
   Ok((room,turns,expected))
 }
 async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
@@ -584,7 +584,7 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   // generate() has already dispatched completed replies; avoid a second
   // outbound-channel scan when handling a synchronous owner turn.
   if inserted&&!should_generate{
-      crate::frontend_channels::dispatch_room(&engine,&room).await;
+      crate::addons::dispatch_room(&engine,&room).await;
   }
   let message=message_rows(&room).get(index).cloned().ok_or_else(||failed("stored message disappeared".into()))?;
   Ok(Json(json!({
@@ -637,7 +637,7 @@ async fn send_background(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
       }
     });
   }else{drop(lease);}
-  if inserted{crate::frontend_channels::dispatch_room(&engine,&room).await;}
+  if inserted{crate::addons::dispatch_room(&engine,&room).await;}
   let message=message_rows(&room).get(index).cloned()
     .ok_or_else(||failed("stored message disappeared".into()))?;
   let job=if started{json!({

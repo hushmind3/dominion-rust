@@ -35,10 +35,24 @@ required_count web/src/pages/Connections.tsx '<ConnectedAccounts/>' 1
 required_count web/src/pages/Connections.tsx 'oauthEditor|quick-connect|openOAuth' 0
 required_count web/src/api.ts 'workspace=true' 1
 required_count web/src/api.ts 'repository=true' 1
-required_count src/frontend_oauth.rs 'route.*oauth/providers/\{id\}' 0
-required_count src/github_cli_login.rs 'route.*oauth/github/cli/login' 0
+required_count src/addons/oauth.rs 'route.*oauth/providers/\{id\}' 0
+required_count src/addons/github_cli_login.rs 'route.*oauth/github/cli/login' 0
 required_count web/src/components/DominionCloudAccount.tsx 'disabled=\{!socialLogin\.' 0
 required_count web/src/pages/Models.tsx 'startCliLogin|importCli\(' 0
+# Optional integrations must never merge individually into the core API.
+required_count src/frontend_api.rs 'merge\\(crate::addons::routes\\(addons_enabled\\)\\)' 1
+required_count src/frontend_api.rs 'merge\\(crate::frontend_channels|merge\\(crate::frontend_extensions|merge\\(crate::frontend_oauth' 0
+required_count src/engine.rs 'pub addons: Arc<crate::addons::Host>' 1
+required_count src/frontend_rooms.rs 'crate::addons::dispatch_room' 3
+required_count web/src/pages/Connections.tsx 'lazy\\(\\(\\)=>import\\(' 4
+for legacy in src/mcp.rs src/mcp/tests.rs src/frontend_channels.rs src/frontend_extensions.rs \\
+ src/frontend_oauth.rs src/frontend_skill_import.rs src/connected_tools.rs \\
+ src/github_work.rs src/google_workspace.rs src/github_cli_login.rs; do
+ if [[ -e "$legacy" ]]; then
+  echo "ERROR: optional integration source leaked into core root: $legacy" >&2
+  exit 1
+ fi
+done
 # Do not resurrect an independent agent run loop or retired media/RSI executor.
 for obsolete in \
   src/engine/chat/runtime.rs \

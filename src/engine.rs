@@ -26,12 +26,12 @@ pub struct Engine {
     pub settings: Settings,
     pub store: Arc<Store>,
     pub groups: Arc<crate::group::Groups>,
-    pub mcp: Arc<crate::mcp::Mcp>,
+    pub addons: Arc<crate::addons::Host>,
     pub knowledge: Arc<Knowledge>,
     pub owner_profile: Arc<crate::profile::OwnerProfileStore>,
     pub frontend: Arc<crate::frontend_state::FrontendStore>,
     pub providers: Arc<crate::provider_registry::Registry>,
-    pub extensions: Arc<crate::frontend_extensions::Extensions>,
+
     hooks: RwLock<HookChain>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
@@ -43,7 +43,11 @@ pub struct Engine {
 }
 impl Engine {
     pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>) -> Result<Arc<Self>, String> {
-        let mcp=Arc::new(crate::mcp::Mcp::from_env()?);
+        let mcp=Arc::new(if settings.addons_enabled{
+            crate::mcp::Mcp::from_env()?
+        }else{
+            crate::mcp::Mcp::new(Vec::new())?
+        });
         Self::new_with_mcp(settings,store,groups,mcp)
     }
     /// Explicit MCP dependency injection keeps server integration tests
@@ -56,12 +60,10 @@ impl Engine {
         let owner_profile=Arc::new(crate::profile::OwnerProfileStore::open(settings.data_dir.clone())?);
         let frontend=Arc::new(crate::frontend_state::FrontendStore::open(settings.data_dir.clone(),&settings.main.name)?);
         let providers=Arc::new(crate::provider_registry::Registry::open(settings.data_dir.clone())?);
-        let extensions=Arc::new(crate::frontend_extensions::Extensions::open(
-            settings.data_dir.clone(),mcp.servers_snapshot())?);
-        mcp.initialize_servers(extensions.initial_servers())?;
+        let addons=crate::addons::Host::open(&settings,mcp)?;
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
-        let engine=Arc::new(Self { settings, store, groups, mcp, knowledge, owner_profile, frontend, providers, extensions, hooks,
+        let engine=Arc::new(Self { settings, store, groups, addons, knowledge, owner_profile, frontend, providers, hooks,
             model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), focused_memory:Mutex::new(HashMap::new()), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
@@ -430,7 +432,7 @@ impl Engine {
                     continue;
                 }
                 if matches!(call.name.as_str(),"shell"|"merge_subagent") ||
-                   crate::connected_tools::mutates(&call.name) || call.name.starts_with("mcp__") {
+                   self.addons.needs_connected_approval(&call.name) || call.name.starts_with("mcp__") {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
                         run.pending_approval = Some(call.clone());
@@ -439,7 +441,7 @@ impl Engine {
                         run.event("approval_required",
                             if call.name == "shell" { format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")) }
                             else if call.name == "merge_subagent" {format!("Integrating a child Git patch needs approval: {}",call.arguments.get("id").and_then(Value::as_str).unwrap_or("?"))}
-                             else if crate::connected_tools::mutates(&call.name) {
+                             else if self.addons.needs_connected_approval(&call.name) {
                                 format!("Connected account action needs approval: {} args={}",
                                     call.name,call.arguments.to_string().chars().take(1200).collect::<String>())
                             }
@@ -559,8 +561,7 @@ impl Engine {
             let (mut available_tools,chat_schema_saved,chat_discovery_active)=
                 crate::tool_discovery::for_chat_turn(
                     &run,available_tools,&self.settings.denied_tools);
-            let mut external=self.mcp.definitions().await;
-            external.extend(crate::connected_tools::definitions(&self.settings));
+            let external=self.addons.tool_definitions(&self.settings).await;
             let (external,deferred_schema_chars,discovery_active)=
                 crate::tool_discovery::for_turn(&run,external,&self.settings.denied_tools);
             if !discovery_active && !chat_discovery_active {
@@ -851,7 +852,7 @@ impl Engine {
     async fn invoke_mcp_with_progress(&self,id:Uuid,call:&ToolCall,
         cancellation:watch::Receiver<bool>)->Result<McpCallOutcome,String>{
         let (tx,mut rx)=mpsc::channel::<McpProgress>(16);
-        let remote=self.mcp.call_with_progress(id,call,cancellation,tx);
+        let remote=self.addons.mcp.call_with_progress(id,call,cancellation,tx);
         tokio::pin!(remote);
         let mut forwarded=0usize;
         let mut last_progress=None::<f64>;
@@ -931,6 +932,9 @@ impl Engine {
         let remote_cancellation=cancellation.clone();
         let execute = async {
             if call.name.starts_with("mcp__") {
+                if !self.addons.enabled{
+                    Err("external add-ons are disabled by the operator".into())
+                }else{
                 match self.invoke_mcp_with_progress(id,&call,remote_cancellation.clone()).await {
                     Ok(McpCallOutcome::Settled(result))=>result,
                     Ok(McpCallOutcome::Uncertain(reason))=>{
@@ -939,8 +943,9 @@ impl Engine {
                     }
                     Err(error)=>Err(error),
                 }
-            } else if crate::connected_tools::supports(&call.name) {
-                match crate::connected_tools::execute(&self.settings,&call).await {
+                }
+            } else if self.addons.supports_connected(&call.name) {
+                match self.addons.invoke_connected(&self.settings,&call).await {
                     McpCallOutcome::Settled(result)=>result,
                     McpCallOutcome::Uncertain(reason)=>{
                         remote_uncertain=Some(reason.clone());
@@ -986,8 +991,7 @@ impl Engine {
                 // Native and external tools share search, current Run
                 // permissions, and the exact same subsequent schema admission.
                 let mut available=tools::definitions(self.settings.shell_enabled);
-                available.extend(self.mcp.definitions().await);
-                available.extend(crate::connected_tools::definitions(&self.settings));
+                available.extend(self.addons.tool_definitions(&self.settings).await);
                 let has_children=self.store.has_children(id).await;
                 let (authorized,_)=policy::select_catalog(&snapshot,available,
                     has_children,&self.settings.denied_tools);

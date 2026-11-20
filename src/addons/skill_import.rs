@@ -123,11 +123,11 @@ async fn import_public(engine:&Arc<Engine>,requested:&str)->Result<Value,String>
  }
  let mut added=0;
  let mut skipped=0;
- let existing=engine.extensions.skill_list().await;
+ let existing=engine.addons.extensions.skill_list().await;
  let sources=existing.iter().map(|s|s.source.clone()).collect::<std::collections::HashSet<_>>();
  for item in prepared {
   if sources.contains(&item.source){skipped+=1;continue;}
-  engine.extensions.upsert_skill(item,false).await?;
+  engine.addons.extensions.upsert_skill(item,false).await?;
   added+=1;
  }
  Ok(json!({"repo":format!("{owner}/{repo}"),"commit":commit,

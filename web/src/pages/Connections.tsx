@@ -1,11 +1,20 @@
-import {useState} from 'react'
+import {lazy,Suspense,useState} from 'react'
 import {Blocks,BookOpenText,KeyRound,RadioTower,Server,Sparkles} from 'lucide-react'
 import {Button} from '../components/Primitives'
 import {t,useLocale} from '../i18n'
-import {ConnectedAccounts} from '../components/ConnectedAccounts'
-import {ExtensionsPage,type ExtensionTab} from './Extensions'
-import {CapabilitiesPage} from './Capabilities'
-import {ChannelConnections} from './ChannelConnections'
+
+import type {ExtensionTab} from './Extensions'
+
+// The settings shell owns navigation; each optional integration gets its own
+// async code boundary. Opening Chat/Models never initializes channel/MCP UI.
+const ConnectedAccounts=lazy(()=>import('../components/ConnectedAccounts')
+ .then(module=>({default:module.ConnectedAccounts})))
+const ExtensionsPage=lazy(()=>import('./Extensions')
+ .then(module=>({default:module.ExtensionsPage})))
+const CapabilitiesPage=lazy(()=>import('./Capabilities')
+ .then(module=>({default:module.CapabilitiesPage})))
+const ChannelConnections=lazy(()=>import('./ChannelConnections')
+ .then(module=>({default:module.ChannelConnections})))
 
 type Section='channels'|'accounts'|'capabilities'|ExtensionTab
 
@@ -32,10 +41,12 @@ export function ConnectionsPage(){
     aria-current={section===id?'page':undefined}
     onClick={()=>setSection(id)}><Icon size={15}/>{label}</Button>)}
   </nav>
+  <Suspense fallback={<div role="status" className="p-6 text-sm text-[#7C7469]">{t('common.processing')}</div>}>
   {section==='channels'&&<ChannelConnections/>}
   {section==='accounts'&&<ConnectedAccounts/>}
   {section==='capabilities'&&<CapabilitiesPage embedded navigate={page=>setSection(page==='extensions'?'market':'channels')}/>}
   {(section==='market'||section==='installed'||section==='skills')&&
-   <ExtensionsPage section={section} embedded/>}
+   <ExtensionsPage section={section} embedded/>
+  </Suspense>}
  </div>
 }

@@ -34,7 +34,7 @@ fn unsupported(msg:&str)->Fault{(StatusCode::NOT_IMPLEMENTED,Json(json!({"error"
 fn broken(msg:String)->Fault{(StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":msg})))}
 fn busy(msg:impl Into<String>)->Fault{(StatusCode::CONFLICT,Json(json!({"error":msg.into()})))}
 
-pub fn router()->Router<Arc<Engine>>{
+pub fn router(addons_enabled:bool)->Router<Arc<Engine>>{
     Router::new()
         .route("/health",get(health))
         .route("/status",get(status))
@@ -78,14 +78,11 @@ pub fn router()->Router<Arc<Engine>>{
         // silently serving index.html (which the UI could mistake for success).
         .merge(crate::frontend_rooms::routes())
         .merge(crate::frontend_providers::routes())
-        .merge(crate::frontend_extensions::routes())
         .merge(crate::frontend_growth::routes())
         .merge(crate::frontend_personas::routes())
         .merge(crate::frontend_system::routes())
         .merge(crate::frontend_local_models::routes())
-        .merge(crate::frontend_channels::routes())
-        .merge(crate::frontend_skill_import::routes())
-        .merge(crate::frontend_oauth::routes())
+        .merge(crate::addons::routes(addons_enabled))
         .fallback(unsupported_endpoint)
         .method_not_allowed_fallback(||async{
             (StatusCode::METHOD_NOT_ALLOWED,Json(json!({"error":"HTTP method not allowed for this UI API endpoint"})))

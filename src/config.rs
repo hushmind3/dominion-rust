@@ -24,6 +24,8 @@ pub struct Settings {
     pub economy: ModelSettings,
     pub max_steps: usize,
     pub shell_enabled: bool,
+    /// Keep optional MCP, connected accounts and channel adapters outside the core.
+    pub addons_enabled: bool,
     /// Off by default: planning and first action share one model request.
     /// Enable to use the legacy separate planning request.
     pub separate_plan_model_call: bool,
@@ -92,6 +94,7 @@ impl Settings {
             workspace_dir: PathBuf::from(var("DOMINION_WORKSPACE_DIR", "./workspace")),
             main, economy, max_steps,
             shell_enabled: var("DOMINION_ENABLE_SHELL", "false") == "true",
+            addons_enabled: var("DOMINION_ADDONS_ENABLED", "true") != "false",
             separate_plan_model_call: var("DOMINION_SEPARATE_PLAN_MODEL_CALL", "false") == "true",
             separate_model_audit_enabled: var("DOMINION_SEPARATE_MODEL_AUDIT", "false") == "true",
             strategy_learning_enabled: var("DOMINION_STRATEGY_LEARNING","false")=="true",

@@ -70,6 +70,12 @@ fn persist(file:&std::path::Path,next:&Snapshot)->Result<(),String>{
 }
 
 impl Extensions{
+    /// Inactive integration snapshot: do not read managed credentials, MCP
+    /// endpoints or persisted extensions when the operator disables add-ons.
+    pub fn inactive(root:PathBuf)->Self{
+        Self{file:root.join("extensions.json"),
+            state:Mutex::new(Snapshot::default()),initial:Vec::new()}
+    }
     pub fn open(root:PathBuf,initial:Vec<Server>)->Result<Self,String>{
         fs::create_dir_all(&root).map_err(|e|e.to_string())?;
         let file=root.join("extensions.json");
@@ -164,7 +170,7 @@ pub fn routes()->Router<Arc<Engine>>{
         // GitHub imports are handled by the pinned-source native importer.
 }
 async fn mcp_list(State(engine):State<Arc<Engine>>)->Json<Value>{
-    Json(json!(engine.extensions.mcp_list().await.iter().map(|v|json!({
+    Json(json!(engine.addons.extensions.mcp_list().await.iter().map(|v|json!({
         "id":v.id,"name":v.name,"transport":"http",
         "url":v.url,"enabled":v.enabled
     })).collect::<Vec<_>>()))
@@ -176,11 +182,11 @@ fn managed_mcp_owner<'a>(name:&str,registered:&'a [(String,String)])->Option<&'a
 async fn mcp_discover(State(engine):State<Arc<Engine>>)->Json<Value>{
     // The model uses mcp__<server_key>__<tool>, while the UI stores a UUID.
     // Join the real native tool catalog with the owner's active MCP registry.
-    let registered=engine.extensions.mcp_list().await.into_iter()
+    let registered=engine.addons.extensions.mcp_list().await.into_iter()
         .filter(|server|server.enabled)
         .map(|server|(format!("mcp__{}__",server_key(&server.id)),server.id))
         .collect::<Vec<_>>();
-    let definitions=engine.mcp.definitions().await;
+    let definitions=engine.addons.mcp.definitions().await;
     Json(json!(definitions.iter().filter_map(|d|{
         let name=d.pointer("/function/name").and_then(Value::as_str)?;
         let description=d.pointer("/function/description")
@@ -206,7 +212,7 @@ async fn mcp_save(State(engine):State<Arc<Engine>>,Json(input):Json<McpDraft>)
     let id=input.id.as_deref().filter(|s|!s.is_empty())
         .map(str::to_owned).unwrap_or_else(||Uuid::new_v4().to_string());
     if id.len()>120{return Err(bad("MCP ID is too long"));}
-    let old=engine.extensions.mcp_list().await.into_iter().find(|x|x.id==id);
+    let old=engine.addons.extensions.mcp_list().await.into_iter().find(|x|x.id==id);
     if input.id.as_deref().is_some_and(|s|!s.is_empty())&&old.is_none(){
         return Err(bad("MCP server to update does not exist"));
     }
@@ -216,17 +222,17 @@ async fn mcp_save(State(engine):State<Arc<Engine>>,Json(input):Json<McpDraft>)
         bearer_token:input.bearer_token.filter(|s|!s.is_empty())
             .or_else(||old.map(|x|x.bearer_token)).unwrap_or_default(),
     };
-    let saved=engine.extensions.upsert_mcp(&engine.mcp,record).await.map_err(bad)?;
+    let saved=engine.addons.extensions.upsert_mcp(&engine.addons.mcp,record).await.map_err(bad)?;
     Ok(Json(json!({"id":saved.id,"name":saved.name,"transport":"http",
         "url":saved.url,"enabled":saved.enabled})))
 }
 async fn mcp_delete(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
-    engine.extensions.delete_mcp(&engine.mcp,&id).await.map_err(bad)?;
+    engine.addons.extensions.delete_mcp(&engine.addons.mcp,&id).await.map_err(bad)?;
     Ok(Json(json!({"ok":true})))
 }
 async fn skill_list(State(engine):State<Arc<Engine>>)->Json<Vec<Value>>{
-    Json(engine.extensions.skill_list().await.iter().map(|item|json!({
+    Json(engine.addons.extensions.skill_list().await.iter().map(|item|json!({
         "id":item.id,"name":item.name,"instructions":item.instructions,
         "enabled":item.enabled,"status":if item.enabled{"active"}else{"disabled"},
         "source":item.source
@@ -258,7 +264,7 @@ async fn skill_save(State(engine):State<Arc<Engine>>,Json(input):Json<SkillDraft
         enabled:input.enabled,
         source:if input.source.is_empty(){"user".into()}else{input.source}
     };
-    let record=engine.extensions.upsert_skill(record,update).await.map_err(bad)?;
+    let record=engine.addons.extensions.upsert_skill(record,update).await.map_err(bad)?;
     Ok(Json(json!({"id":record.id,"name":record.name,
         "instructions":record.instructions,"enabled":record.enabled,
         "status":if record.enabled{"active"}else{"disabled"},
@@ -266,12 +272,12 @@ async fn skill_save(State(engine):State<Arc<Engine>>,Json(input):Json<SkillDraft
 }
 async fn skill_delete(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
-    engine.extensions.delete_skill(&id).await.map_err(bad)?;
+    engine.addons.extensions.delete_skill(&id).await.map_err(bad)?;
     Ok(Json(json!({"ok":true})))
 }
 async fn skill_export(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<impl IntoResponse,Fault>{
-    let record=engine.extensions.skill(&id).await.ok_or_else(||missing("skill not found"))?;
+    let record=engine.addons.extensions.skill(&id).await.ok_or_else(||missing("skill not found"))?;
     let body=format!("# {}\n\n{}\n",record.name,record.instructions);
     Ok(([(header::CONTENT_TYPE,"text/markdown; charset=utf-8"),
         (header::CONTENT_DISPOSITION,"attachment; filename=SKILL.md"),

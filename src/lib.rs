@@ -1,4 +1,9 @@
 //! Dominion native Rust SDK and owned execution runtime.
+pub mod addons;
+pub use addons::{channels as frontend_channels, connected_tools,
+    extensions as frontend_extensions, github_cli_login, github_work,
+    google_workspace, mcp, oauth as frontend_oauth,
+    skill_import as frontend_skill_import};
 pub mod api;
 pub mod build_identity;
 pub mod config;
@@ -7,11 +12,7 @@ pub mod domain;
 pub mod engine;
 pub mod group;
 pub mod knowledge;
-pub mod github_work;
-pub mod github_cli_login;
 pub mod github_collab;
-pub mod google_workspace;
-pub mod connected_tools;
 pub mod journal;
 pub mod loop_guard;
 pub mod hooks;
@@ -22,7 +23,6 @@ pub mod read_program;
 pub mod program_ir;
 pub mod program_session;
 pub mod strategy;
-pub mod mcp;
 pub mod policy;
 pub mod provider;
 pub mod profile;
@@ -34,7 +34,6 @@ pub mod frontend_providers;
 pub mod frontend_codex_login;
 pub mod frontend_provider_public;
 pub(crate) mod frontend_public_http;
-pub mod frontend_extensions;
 pub mod frontend_growth;
 pub mod frontend_personas;
 pub mod frontend_system;
@@ -42,9 +41,6 @@ pub mod frontend_local_models;
 pub mod frontend_model_downloads;
 pub mod frontend_native_picker;
 pub mod frontend_huggingface;
-pub mod frontend_channels;
-pub mod frontend_skill_import;
-pub mod frontend_oauth;
 pub mod sandbox;
 pub mod sdk;
 pub mod skills;
