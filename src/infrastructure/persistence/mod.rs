@@ -2,6 +2,7 @@ use crate::{domain::{Run,RunStatus},journal};
 use std::{collections::{HashMap,HashSet}, path::{Path,PathBuf},sync::{Arc,Weak}};
 use tokio::{fs, io::AsyncWriteExt, sync::{Mutex,broadcast}};
 use uuid::Uuid;
+mod sqlite;
 
 /// Atomic snapshot: unique create-new temp, sync bytes, rename, sync directory.
 async fn persist(root:&Path,run:&Run)->Result<(),String>{
@@ -72,6 +73,7 @@ impl std::ops::Deref for RunIndex {
 
 pub struct Store {
     root: PathBuf,
+    sqlite_path:Option<PathBuf>,
     state: Mutex<RunIndex>,
     // A run's write-ahead snapshot must commit in order; unrelated run
     // transactions must not hold the global metadata lock during fsync.
@@ -81,17 +83,31 @@ pub struct Store {
     updates: broadcast::Sender<RunUpdate>,
 }
 impl Store {
-    pub async fn open(root: PathBuf) -> Result<Self, String> {
-        fs::create_dir_all(&root).await.map_err(|e| e.to_string())?;
-        let mut state = HashMap::new();
-        // Only recovery or migration changes require a new fsync-backed
-        // snapshot. Stable historical runs must not be rewritten on startup.
-        let mut dirty = HashSet::<Uuid>::new();
-        let mut entries = fs::read_dir(&root).await.map_err(|e| e.to_string())?;
-        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
-            if entry.path().extension().and_then(|e| e.to_str()) != Some("json") { continue; }
-            let data = fs::read(entry.path()).await.map_err(|e| e.to_string())?;
-            let mut run: Run = serde_json::from_slice(&data).map_err(|e| format!("corrupt run {}: {e}", entry.path().display()))?;
+    pub async fn open(root:PathBuf)->Result<Self,String>{
+        fs::create_dir_all(&root).await.map_err(|e|e.to_string())?;
+        let mut rows=Vec::new();
+        let mut entries=fs::read_dir(&root).await.map_err(|e|e.to_string())?;
+        while let Some(entry)=entries.next_entry().await.map_err(|e|e.to_string())?{
+            if entry.path().extension().and_then(|x|x.to_str())!=Some("json"){continue;}
+            let raw=fs::read(entry.path()).await.map_err(|e|e.to_string())?;
+            let run:Run=serde_json::from_slice(&raw)
+                .map_err(|e|format!("corrupt Run {}: {e}",entry.path().display()))?;
+            rows.push(run);
+        }
+        Self::from_snapshots(root,None,rows).await
+    }
+    /// Production bootstrap: migrate old JSON once, then use SQLite only.
+    pub async fn open_sqlite(root:PathBuf)->Result<Self,String>{
+        let parent=root.parent().ok_or("Run directory has no parent")?;
+        let database=parent.join("dominion.sqlite3");
+        let rows=sqlite::import_or_read(database.clone(),root.clone()).await?;
+        Self::from_snapshots(root,Some(database),rows).await
+    }
+    async fn from_snapshots(root:PathBuf,sqlite_path:Option<PathBuf>,
+        rows:Vec<Run>)->Result<Self,String>{
+        let mut state=HashMap::new();
+        let mut dirty=HashSet::<Uuid>::new();
+        for mut run in rows{
             // Historical terminal and stable paused records have no recovery
             // transition. Do not serialize them twice merely to prove that a
             // no-op remains a no-op. The journal owns the recovery predicate.
@@ -144,10 +160,17 @@ impl Store {
         // and multiple fsyncs per unchanged historical Run on every boot.
         for id in dirty {
             let run=state.get(&id).ok_or("recovery record missing")?;
-            persist(&root,run).await?;
+            if let Some(db)=sqlite_path.as_ref(){
+                sqlite::upsert(db.clone(),run.clone()).await?;
+            }else{persist(&root,run).await?;}
         }
         let (updates,_) = broadcast::channel(2048);
-        Ok(Self { root, state: Mutex::new(RunIndex::from_runs(state)), gates:Mutex::new(HashMap::new()), updates })
+        Ok(Self { root,sqlite_path, state: Mutex::new(RunIndex::from_runs(state)), gates:Mutex::new(HashMap::new()), updates })
+    }
+    async fn persist_current(&self,run:&Run)->Result<(),String>{
+        if let Some(path)=self.sqlite_path.as_ref(){
+            sqlite::upsert(path.clone(),run.clone()).await
+        }else{persist(&self.root,run).await}
     }
     async fn gate(&self,id:Uuid)->Arc<Mutex<()>>{
         const SWEEP_AT:usize=128;
@@ -171,7 +194,7 @@ impl Store {
         // until rename + fsync completes.
         let gate=self.gate(run.id).await;
         let _run_write=gate.lock().await;
-        persist(&self.root,&run).await?;
+        self.persist_current(&run).await?;
         let update=RunUpdate::from_run(&run);
         self.state.lock().await.insert(run.id,run);
         let _=self.updates.send(update);
@@ -295,7 +318,7 @@ impl Store {
         let mut run=self.state.lock().await.get(&id).cloned()
             .ok_or("execution not found")?;
         change(&mut run)?;
-        persist(&self.root,&run).await?;
+        self.persist_current(&run).await?;
         self.state.lock().await.insert(id,run.clone());
         let _=self.updates.send(RunUpdate::from_run(&run));
         Ok(run)

@@ -720,3 +720,21 @@ endpoints using the tool registry. `/api/v1/groups/{id}/next` now invokes
 `Dominion::group_turn` and creates a native Run, eliminating the last
 known native-v1 direct-provider route. The existing React navigation was
 not changed; a UI patch diff/review control can consume this endpoint later.
+
+## 2026-11-21 — SQLite authoritative Run and Event Journal
+
+The production Rust bootstrap now opens `Store::open_sqlite` at
+`data_dir/dominion.sqlite3`, keeping Run status/approval/budget and
+append-only event receipts in the same immediate SQLite transaction.
+WAL + FULL synchronous durability, versioned schema, a source import marker
+and immutable per-sequence event checks guard against old history corruption.
+On FIRST open, existing JSON Run snapshots are imported atomically without
+deleting the originals. On every subsequent boot the SQLite database alone
+is authoritative; the same `journal::recover` and child-budget repairs apply
+before new Runs are exposed. SQLite commits precede event broadcasts.
+`Store::open` remains an independent JSON adapter for legacy embedding
+and test fixtures. Room and Knowledge product data still have their own
+existing persistent adapters; a complete cross-product SQLite cutover
+requires separate migration and storage interoperability validation.
+
+No build, CI or migration execution has been performed at operator request.

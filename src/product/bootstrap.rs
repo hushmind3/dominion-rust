@@ -5,7 +5,7 @@ use crate::{algorithms::{AgentAlgorithm,DefaultAlgorithm},runtime_services::Runt
 use std::sync::Arc;
 
 pub async fn open_run_repository(settings:&Settings)->Result<Arc<Store>,String>{
-    Ok(Arc::new(Store::open(settings.data_dir.join("runs")).await?))
+    Ok(Arc::new(Store::open_sqlite(settings.data_dir.join("runs")).await?))
 }
 impl Engine{
     pub fn new(settings:Settings,store:Arc<Store>,groups:Arc<Groups>)
