@@ -236,3 +236,39 @@ test('single-use GPT-5.6+ request opts out of implicit cache writes',async()=>{
   assert.ok(!JSON.stringify(received).includes('prompt_cache_breakpoint'))
  }finally{globalThis.fetch=old}
 })
+
+test('DOMINION Cloud scopes GPT-5.6 cache routes independently per chat within the same verified member',async()=>{
+ const DB=database(1000000),env=configured(DB),prev=globalThis.fetch;
+ env.PAID_MODELS_JSON=JSON.stringify([{
+  id:'dominion/cache-session',provider:'openai',upstream_model:'gpt-6.1-sol',
+  input_micro_krw:2,output_micro_krw:3
+ }]);
+ const observed=[];
+ globalThis.fetch=async(_url,init)=>{
+  const payload=JSON.parse(init.body);
+  observed.push({key:payload.prompt_cache_key,scope:payload.prompt_cache_options?.mode});
+  return new Response(JSON.stringify({choices:[{message:{role:'assistant',content:'ok'}}],
+    usage:{prompt_tokens:20,completion_tokens:4,
+      prompt_tokens_details:{cached_tokens:0}}}),{status:200});
+ };
+ const post=affinity=>new Request('https://dominion-cloud.example.test/v1/chat/completions',{
+  method:'POST',headers:{origin,authorization:auth,'content-type':'application/json',
+    'x-dominion-chat-affinity':affinity},
+  body:JSON.stringify({model:'dominion/cache-session',
+    messages:[{role:'user',content:'USER-SUPPLIED AGENT PROFILE: same profile'}],
+    max_tokens:8})
+ });
+ try{
+  for(const affinity of ['a'.repeat(32),'a'.repeat(32),'b'.repeat(32)]){
+   const response=await worker.fetch(post(affinity),env);
+   assert.equal(response.status,200);
+  }
+  assert.equal(observed.length,3);
+  assert.equal(observed[0].key,observed[1].key);
+  assert.notEqual(observed[0].key,observed[2].key);
+  assert.match(observed[0].key,/^dominion-[A-Za-z0-9_-]+$/);
+  assert.equal(observed[0].scope,'explicit');
+  assert.ok(!JSON.stringify(observed).includes('google:verified'),
+    'upstream cache route must never disclose member ID');
+ }finally{globalThis.fetch=prev;}
+})

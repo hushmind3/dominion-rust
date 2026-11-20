@@ -19,7 +19,7 @@ function cors(origin, env) {
   return origin && origin === env.ALLOWED_ORIGIN ? {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'POST, GET, OPTIONS',
-    'access-control-allow-headers': 'content-type, authorization',
+    'access-control-allow-headers': 'content-type, authorization, x-dominion-chat-affinity',
     'access-control-max-age': '600',
     vary: 'Origin'
   } : {};
@@ -484,7 +484,7 @@ function modernOpenAI(name) {
   const match=/^gpt-(\d+)(?:\.(\d+))?(?:-|$)/.exec(String(name||''));
   return Boolean(match && (+match[1]>5 || (+match[1]===5 && +(match[2]||0)>=6)));
 }
-async function paidSupplierBody(body, selected, user, endpoint, modelName, maxTokens) {
+async function paidSupplierBody(body, selected, user, endpoint, modelName, maxTokens, cacheAffinity) {
   const supplier={model:modelName,messages:body.messages,max_tokens:maxTokens,stream:false,
     ...(body.tools ? {tools:body.tools}:{}),
     ...(body.tool_choice ? {tool_choice:body.tool_choice}:{})};
@@ -492,10 +492,14 @@ async function paidSupplierBody(body, selected, user, endpoint, modelName, maxTo
   // Explicit-only mode avoids cache-write billing on every changing
   // latest question, even for requests with no reusable block.
   supplier.prompt_cache_options={mode:'explicit',ttl:'30m'};
-  // The customer's opaque key is never forwarded across tenants. The
-  // upstream key is derived from the authenticated account ID and model.
-  const identity=(await hash(user.id)).slice(0,32);
-  supplier.prompt_cache_key='dominion-'+identity+'-'+String(selected?.id||modelName).slice(0,48);
+  // Cache routes are isolated by authenticated account, model and optional
+  // stable chat/session fingerprint supplied only to Dominion's own gateway.
+  // A caller-controlled value can affect *only its own account*, never
+  // another member's prefix key or provider credentials.
+  const scoped=typeof cacheAffinity==='string'&&/^[a-f0-9]{32}$/.test(cacheAffinity)?
+    cacheAffinity:'legacy-session';
+  const digest=await hash(user.id+'\n'+(selected?.id||modelName)+'\n'+scoped);
+  supplier.prompt_cache_key='dominion-'+digest.slice(0,43);
   const messages=body.messages.map(m=>({...m}));
   const profileAt=messages.findIndex(m=>m.role==='user'&&typeof m.content==='string'&&
     m.content.startsWith('USER-SUPPLIED AGENT PROFILE'));
@@ -612,7 +616,8 @@ async function proxy(request, env, user) {
     const upstream = await fetch(modelEndpoint.replace(/\/$/, '') + '/chat/completions', {
       method: 'POST',
       headers: { authorization: 'Bearer ' + modelKey, 'content-type': 'application/json' },
-      body: JSON.stringify(await paidSupplierBody(body,selected,user,modelEndpoint,upstreamModel,maxTokens)),
+      body: JSON.stringify(await paidSupplierBody(body,selected,user,modelEndpoint,upstreamModel,maxTokens,
+        request.headers.get('x-dominion-chat-affinity'))),
       signal: AbortSignal.timeout(90000)
     });
     if (!upstream.ok) {

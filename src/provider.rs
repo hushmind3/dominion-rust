@@ -110,6 +110,20 @@ impl ModelClient {
             (None,None)=>None,
         }
     }
+    /// DOMINION's own Cloud gateway is the only proxy that receives a
+    /// per-chat cache affinity. Third-party OpenAI-compatible providers do
+    /// not receive product-session identifiers or proprietary headers.
+    fn dominion_cloud_affinity_for(&self,settings:&ModelSettings)->Option<String>{
+        let url=reqwest::Url::parse(&settings.base_url).ok()?;
+        if url.scheme()!="https"
+            ||url.host_str()!=Some("dominion-cloud.dominion-hushmind.workers.dev")
+            ||url.path().trim_end_matches('/')!="/v1" {
+            return None;
+        }
+        let session=self.session_affinity.as_deref()?;
+        let digest=Sha256::digest(session.as_bytes());
+        Some(digest[..16].iter().map(|v|format!("{v:02x}")).collect())
+    }
     fn opencode_session_for(&self,settings:&ModelSettings)->Option<&str>{
         let url=reqwest::Url::parse(&settings.base_url).ok()?;
         if url.scheme()=="https" && url.host_str()==Some("opencode.ai")
@@ -317,6 +331,9 @@ impl ModelClient {
         let mut req = self.http.post(format!("{}/chat/completions", settings.base_url)).json(&body);
         if let Some(affinity)=self.affinity_for(settings){
             req=req.header("x-session-affinity",affinity);
+        }
+        if let Some(fingerprint)=self.dominion_cloud_affinity_for(settings){
+            req=req.header("x-dominion-chat-affinity",fingerprint);
         }
         if !settings.api_key.is_empty() { req = req.bearer_auth(&settings.api_key); }
         // OpenCode Go conversation affinity survives retries/restarts for
@@ -1054,6 +1071,23 @@ mod tests {
         let unrelated=base.with_session_affinity("another-chat");
         assert_ne!(unrelated.openai_cache_key_for(&proxied),Some(composite),
             "operator key must not collapse unrelated chat routing");
+    }
+    #[test]
+    fn cloud_cache_affinity_is_account_scoped_by_gateway_and_exact_hostname(){
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.main.base_url="https://dominion-cloud.dominion-hushmind.workers.dev/v1".into();
+        let base=ModelClient::new(&cfg).unwrap();
+        let session=base.with_session_affinity("dominion-chat-one");
+        let hash=session.dominion_cloud_affinity_for(&cfg.main).unwrap();
+        assert_eq!(hash.len(),32);
+        assert_ne!(hash,"dominion-chat-one");
+        assert_eq!(hash,session.dominion_cloud_affinity_for(&cfg.main).unwrap());
+        let other=base.with_session_affinity("dominion-chat-two");
+        assert_ne!(hash,other.dominion_cloud_affinity_for(&cfg.main).unwrap());
+        cfg.main.base_url="https://dominion-cloud.dominion-hushmind.workers.dev.evil.test/v1".into();
+        assert!(session.dominion_cloud_affinity_for(&cfg.main).is_none());
+        cfg.main.base_url="https://thirdparty.example/v1".into();
+        assert!(session.dominion_cloud_affinity_for(&cfg.main).is_none());
     }
     #[test]
     fn opencode_affinity_uses_durable_run_identity_and_never_leaks_to_other_hosts(){
