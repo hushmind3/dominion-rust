@@ -207,5 +207,5 @@ required_count src/engine/task_team.rs 'pub async fn advance_task_team' 1
 required_count src/engine/task_team.rs 'self[.]launch[(]task[.]run_id' 2
 required_count src/engine/task_team.rs 'impl Engine' 1
 required_count src/engine/task_team.rs 'async fn drive[(]|fn perform_tool[(]' 0
-required_count src/engine.rs 'run[.]team[.]is_some[(]' 1
+required_count src/engine.rs 'run[.]team[.]is_some[(]' 3
 echo "PASS: one native Run/tool executor, one durable journal, one strict context projection"
