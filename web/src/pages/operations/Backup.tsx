@@ -6,7 +6,6 @@ import {Action, Notice, Panel, StateTag, Subheading, useRemote} from '../../comp
 import {formatDateTime, t} from '../../i18n'
 type Backup = {name: string; path: string; bytes: number; encrypted: boolean; modifiedAt?: string}
 type KeyStatus = {activeVersion?: number; versions?: number[]; error?: string}
-type SecretStatus = {previousKeys?: number; oldKeyFiles?: string[]; error?: string}
 type MaintenanceState = {maintenance: boolean}
 
 function formatBytes(bytes?: number) {
@@ -24,7 +23,6 @@ function formatBytes(bytes?: number) {
 export function BackupPanel() {
   const backups = useRemote<Backup[]>('/api/system/backups', [])
   const backupKeys = useRemote<KeyStatus>('/api/system/backup-keys', {})
-  const secretKey = useRemote<SecretStatus>('/api/system/secret-key', {})
   const maintenance = useRemote<MaintenanceState>('/api/system/maintenance', {maintenance: false})
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -35,7 +33,7 @@ export function BackupPanel() {
   const active = maintenance.value.maintenance
 
   const reload = async () => {
-    await Promise.all([backups.reload(), backupKeys.reload(), secretKey.reload(), maintenance.reload()])
+    await Promise.all([backups.reload(), backupKeys.reload(), maintenance.reload()])
   }
 
   const run = async (name: string, task: () => Promise<void>) => {
@@ -86,12 +84,6 @@ export function BackupPanel() {
     setMessage(t('ops.backup.keysRotated', {version: result.activeVersion, count: result.reencrypted}))
   })
 
-  const rotateSecretKey = () => run('secretKey', async () => {
-    const result = await post<{secretsReencrypted: number; legacyBackupsMigrated: number}>('/api/system/secret-key/rotate', {keepOld})
-    await reload()
-    setMessage(t('ops.backup.secretRotated', {secrets: result.secretsReencrypted, backups: result.legacyBackupsMigrated}))
-  })
-
   return <Panel className="min-w-0 p-5 xl:col-span-2">
     <Subheading title={t('ops.backup')} extra={<Archive size={19}/>}/>
     <p>{t('ops.backup.desc')}</p>
@@ -107,7 +99,7 @@ export function BackupPanel() {
         <RefreshCw size={15}/> {t('ops.refresh')}
       </Button>
     </div>
-    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+    <div className="mt-4 grid gap-3">
       <div className="rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-3">
         <div className="flex items-center justify-between gap-2">
           <strong className="text-[12px] text-[#3A342D]">{t('ops.backup.keys')}</strong>
@@ -118,16 +110,7 @@ export function BackupPanel() {
           <KeyRound size={15}/> {busy === 'backupKeys' ? t('ops.backup.rotating') : t('ops.backup.rotateKeys')}
         </Button>
       </div>
-      <div className="rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-3">
-        <div className="flex items-center justify-between gap-2">
-          <strong className="text-[12px] text-[#3A342D]">{t('ops.backup.secret')}</strong>
-          <span className="text-[11px] text-[#8A8176]">{t('ops.backup.previousKeys', {count: secretKey.value.previousKeys ?? 0})}</span>
-        </div>
-        <p className="mt-1 text-[11px] leading-5 text-[#8A8176]">{t('ops.backup.secret.desc')}</p>
-        <Button variant="secondary" className="mt-2" onClick={rotateSecretKey} disabled={!active || Boolean(busy)}>
-          <KeyRound size={15}/> {busy === 'secretKey' ? t('ops.backup.rotating') : t('ops.backup.rotateSecret')}
-        </Button>
-      </div>
+
     </div>
     <label className="mt-3 flex items-center gap-2 text-[11px] text-[#5C544A]">
       <TextInput type="checkbox" checked={keepOld} onChange={event => setKeepOld(event.target.checked)}/>

@@ -210,29 +210,11 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/system/maintenance",get(maintenance_status).post(maintenance_set))
   .route("/system/backup-keys",get(backup_keys))
   .route("/system/backup-keys/rotate",post(rotate_backup_keys))
-  .route("/system/secret-key",get(secret_status))
-  .route("/system/secret-key/rotate",post(rotate_secret_unavailable))
   .route("/system/pick-folder",post(pick_folder))
   .route("/audit",get(audit))
-  .route("/browser/status",get(browser_status))
-  .route("/dev/update",get(update_unavailable).post(update_unavailable))
-  .route("/dev/jobs/{id}",get(dev_job_missing))
-}
-// The settings screen still asks for update status. Packaged builds use the
-// signed release channel, so this install reports "unsupported" instead of
-// failing the request.
-async fn update_unavailable()->(StatusCode,Json<Value>){
- (StatusCode::NOT_IMPLEMENTED,Json(json!({"error":"Self-update requires a verified installer and restart supervisor; execution is not configured."})))
-}
-async fn dev_job_missing()->(StatusCode,Json<Value>){
- (StatusCode::NOT_FOUND,Json(json!({"error":"developer job not found"})))
 }
 async fn pick_folder(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  crate::frontend_native_picker::pick(&engine.settings,true).await
-}
-async fn browser_status()->Json<Value>{
- Json(json!({"status":{"available":false,"running":false},
-  "screenshot":null,"engine":"not_connected"}))
 }
 async fn audit(State(engine):State<Arc<Engine>>)->Json<Value>{
  let mut events=engine.store.list().await.into_iter().flat_map(|run|{
@@ -378,14 +360,6 @@ async fn rotate_backup_keys(State(engine):State<Arc<Engine>>,Json(input):Json<Ro
    "reencrypted":changed}))
  }).await.map_err(|e|bad(e.to_string()))?.map_err(bad)?;
  Ok(Json(result))
-}
-async fn secret_status()->Json<Value>{
- Json(json!({"previousKeys":0,"oldKeyFiles":[],
-  "error":"Provider credentials use their own file permissions; separate secret rotation is not configured."}))
-}
-async fn rotate_secret_unavailable()->Result<Json<Value>,Fault>{
- Err(fault(StatusCode::NOT_IMPLEMENTED,
-  "Provider secret rotation needs a transactional encrypted registry migration; it has not been configured."))
 }
 #[cfg(test)]
 mod tests{
