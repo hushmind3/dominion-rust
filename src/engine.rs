@@ -258,6 +258,13 @@ impl Engine {
         ];
         messages.extend(run.chat_context.iter().cloned());
         messages.push(json!({"role":"user","content":run.instruction}));
+        self.store.mutate(id,|current|{
+            current.event("model_request_footprint","Model-only chat: no tool schemas",
+                Some(json!({"context_chars":messages.iter().map(|m|m.to_string().chars().count()).sum::<usize>(),
+                    "history_messages":messages.len(),"tool_count":0,"tool_schema_chars":0,
+                    "mode":"model_only"})));
+            Ok(())
+        }).await?;
         self.providers.throttle(&run.provider_id).await;
         let reply=tokio::select!{
             biased;
@@ -613,6 +620,28 @@ impl Engine {
                 }
             }
             let expected_history=run.messages.len();
+            // These figures are actual serialized API components, NOT a
+            // speculative tokenizer estimate and never an invented cache hit.
+            // Recording the footprint BEFORE dispatch also explains 502 and
+            // in-flight failures with no provider usage receipt.
+            let context_chars=outbound.iter().map(|v|v.to_string().chars().count())
+                .sum::<usize>();
+            let schema_chars=catalog.iter().map(|v|v.to_string().chars().count())
+                .sum::<usize>();
+            let marked=outbound.iter().filter(|v|
+                v["dominion_cache_anchor"]==true).count();
+            self.store.mutate(id,|current|{
+                current.event("model_request_footprint",
+                    "Actual provider request context/tool-schema character footprint",
+                    Some(json!({"context_chars":context_chars,
+                        "tool_schema_chars":schema_chars,
+                        "tool_count":catalog.len(),
+                        "history_messages":outbound.len(),
+                        "stable_prefix_markers":marked,
+                        "omitted_context_messages":projection.omitted_messages,
+                        "mode":if current.chat_context.is_empty(){"agent"}else{"chat_agent"}})));
+                Ok(())
+            }).await?;
             let selected_model=self.model_for_run(&run)?;
             self.providers.throttle(&run.provider_id).await;
             let reply=tokio::select!{

@@ -134,3 +134,20 @@ test('Codex CLI login is official-device-only and separate from model-provider c
  assert.match(ui,/startCodexFlow/)
  assert.match(ui,/\/api\/providers\/codex\/device/)
 })
+
+test('room context budget control reflects the native bounded character projection, not a fake million-token window',()=>{
+ const room=source('../src/pages/Rooms.tsx')
+ assert.match(room,/대화 문맥 목표 \(토큰 근사\)/)
+ assert.match(room,/max=\{8000\} value=\{value\.contextBudgetTokens\}/)
+ assert.match(room,/Math\.min\(8000,Math\.max\(200,/)
+ const backend=source('../../src/frontend_rooms.rs')
+ assert.match(backend,/input\.context_budget_tokens>8_000/)
+ assert.match(backend,/context_budget_tokens\.clamp\(200,8_000\)/)
+})
+test('native Runs capture actual per-call prompt/tool character footprints before provider dispatch',()=>{
+ const engine=source('../../src/engine.rs')
+ assert.match(engine,/model_request_footprint/)
+ assert.match(engine,/tool_schema_chars/)
+ assert.match(engine,/history_messages/)
+ assert.match(engine,/stable_prefix_markers/)
+})
