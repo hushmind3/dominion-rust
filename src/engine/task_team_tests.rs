@@ -295,3 +295,91 @@ async fn repository_team_requires_review_and_digest_approval_before_reviewer_see
     }
     tokio::fs::remove_dir_all(path).await.unwrap();
 }
+
+#[tokio::test]
+async fn uncertain_team_patch_requires_reverse_git_witness_and_is_not_auto_replayed(){
+    use crate::domain::{CreateRun,Run,ToolCall};
+    let (engine,store,path)=mock_engine().await;
+    let sdk=Dominion::from_engine(Arc::clone(&engine));
+    let source=engine.settings.workspace_dir.join("projects").join("recovery-demo");
+    tokio::fs::create_dir_all(&source).await.unwrap();
+    async fn git(dir:&std::path::Path,args:&[&str]){
+        let output=tokio::process::Command::new("git").args(args)
+            .current_dir(dir).output().await.unwrap();
+        assert!(output.status.success(),"Git failed: {}",
+            String::from_utf8_lossy(&output.stderr));
+    }
+    git(&source,&["init","-q"]).await;
+    tokio::fs::write(source.join("verified.txt"),"baseline\n").await.unwrap();
+    git(&source,&["add","verified.txt"]).await;
+    git(&source,&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid",
+        "commit","-qm","baseline"]).await;
+    let root=sdk.create_task_team_from_repository("Crash-safe patch review".into(),
+        vec![spec("writer",&[],TeamRole::Writer)],30.0,
+        RunOptions::default(),"projects/recovery-demo").await.unwrap();
+    let writer_id=root.team.as_ref().unwrap().tasks[0].run_id;
+    let sha=root.base_commit.clone().unwrap();
+    crate::workspace::attach_at(&engine.settings,writer_id,
+        "projects/recovery-demo",Some(&sha)).await.unwrap();
+    let mut worker=Run::new(CreateRun{instruction:"Edit verified.txt".into(),
+        budget_krw:Some(30.0),max_steps:Some(3)},3).unwrap();
+    worker.id=writer_id;
+    worker.parent_run_id=Some(root.id);
+    worker.status=RunStatus::Completed;
+    worker.repository=root.repository.clone();
+    worker.base_commit=Some(sha.clone());
+    tokio::fs::write(engine.settings.workspace_dir
+        .join(writer_id.to_string()).join("verified.txt"),"approved change\n").await.unwrap();
+    let proof=crate::acceptance::inspect(&engine.settings,&worker).await.unwrap();
+    assert!(proof.satisfied&&proof.inspected);
+    worker.event("artifact_evidence_checked",proof.summary.clone(),Some(proof.json()));
+    store.put(worker).await.unwrap();
+    sdk.advance_task_team(root.id).await.unwrap();
+    let review=sdk.preview_task_team_patch(root.id,"writer").await.unwrap();
+    assert!(review.can_apply);
+
+    // Simulate a crash after the original approval was durably written but
+    // before the tool receipt. Its effect may or may not have happened.
+    let call=ToolCall{
+        id:format!("team-patch-{writer_id}"),
+        name:"team_patch_integrate".into(),
+        arguments:json!({"task_id":"writer","child_run_id":writer_id,
+            "patch_sha256":review.sha256})
+    };
+    store.mutate(root.id,|r|{
+        r.in_flight=Some(call.clone());
+        r.event("team_patch_apply_intent","Owner approved exact patch",Some(call.arguments.clone()));
+        Ok(())
+    }).await.unwrap();
+    let reopened=Store::open(path.join("data/runs")).await.unwrap();
+    let durable=reopened.get(root.id).await.unwrap();
+    assert_eq!(durable.in_flight.as_ref().unwrap().name,"team_patch_integrate");
+    drop(reopened);
+    assert!(sdk.reconcile_task_team_patch(root.id,"writer",&review.sha256).await.is_err(),
+        "missing actual changes cannot be mistaken for a completed patch");
+    sdk.advance_task_team(root.id).await.unwrap();
+    assert_eq!(sdk.task_team(root.id).await.unwrap().tasks[0].status,
+        TeamTaskState::ApprovalRequired);
+    assert_eq!(tokio::fs::read_to_string(engine.settings.workspace_dir
+        .join(root.id.to_string()).join("verified.txt")).await.unwrap(),"baseline\n");
+
+    // Git effect eventually observed: no repeat apply, only reverse-check.
+    crate::workspace::merge_team_patch_verified(&engine.settings,root.id,writer_id,
+        &sha,&sha,&review.sha256).await.unwrap();
+    sdk.reconcile_task_team_patch(root.id,"writer",&review.sha256).await.unwrap();
+    let outcome=sdk.get(root.id).await.unwrap();
+    assert!(outcome.in_flight.is_none());
+    assert_eq!(outcome.events.iter().filter(|e|e.kind=="team_patch_integrated").count(),1);
+    assert!(outcome.events.iter().any(|e|e.kind=="team_patch_integrated"
+        &&e.detail.as_ref().is_some_and(|v|v["reconciled"]==true)));
+    assert!(sdk.reconcile_task_team_patch(root.id,"writer",&review.sha256).await.is_err(),
+        "a reconciled intent must not become replayable");
+    assert_eq!(tokio::fs::read_to_string(source.join("verified.txt")).await.unwrap(),
+        "baseline\n");
+    drop(sdk);drop(engine);drop(store);
+    for id in [root.id,writer_id] {
+        git(&source,&["worktree","remove","--force",
+            &path.join("workspace").join(id.to_string()).to_string_lossy()]).await;
+    }
+    tokio::fs::remove_dir_all(path).await.unwrap();
+}
