@@ -199,7 +199,7 @@ export function ChannelConnections(){
       {bound.map(binding=>{
        const room=rooms.value.find(item=>item.id===binding.roomId)
        const target=entry.id==='telegram'?binding.chatId:binding.channelId
-       const uncertain=binding.delivery?.pendingIndex!==null&&binding.delivery?.pendingIndex!==undefined
+       const uncertain=binding.delivery?.pendingIndex!==null&&binding.delivery?.pendingIndex!==undefined&&!(binding.delivery?.sending)
        return <div key={binding.id} className="rounded-xl border border-[#E7E0D5] bg-[#FAF8F4] p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
          <strong className="break-words text-sm text-[#24211D]">{binding.name}</strong>
