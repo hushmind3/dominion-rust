@@ -59,3 +59,29 @@ First-party OpenAI GPT-5.6+ explicit cache breaks are tested with provider reque
 Rust and Cloud usage diagnostics are distinct: provider token receipts (including cached reads and cache writes), serialized context/tool characters, and pricing-known flags. A character reduction does not prove paid-token savings. In addition to existing per-session totals, successful Run metadata now retain bounded per-model-round input/cache/output and the corresponding source/tool-schema character footprints. Default remote native models without verified tariffs and separately registered remote API models explicitly signal unknown KRW pricing; zero is not reported as a known free charge. `cloud/src/index.js` settles cache reads, writes and ordinary input under configured micro-KRW tariffs and preserves the existing uncertain-reservation behavior.
 
 The 161-step synthetic benchmark asserts fewer real outgoing history characters than the previous 6,500-character replay on identical lengthy simulated messages. CI is source-contract and mocked-provider evidence only; neither an OpenAI/Anthropic paid A/B cache-hit rate nor local model prompt-prefill speedup has been observed. Do not claim a percentage or production deployment until independently measured.
+
+## 2026-11-20 live Cloudflare model sample (account-owned Workers AI, **not** Rust production)
+
+A single small *real inference* A/B was executed through the connected Cloudflare account's official Workers AI API. There was no mock usage receipt. Its exact request shape was the prior one-string 12-message/6,500-character replay versus the new role-preserving six pinned + six recent bounded-message projection. Source messages and current question were deterministic, repeated engineering notes. Model: \`@cf/meta/llama-3.1-8b-instruct-fast\`, temperature 0, maximum 24 output tokens in each arm.
+
+| Actual provider metric | Old composite transcript | New bounded projection |
+|---|---:|---:|
+| Message objects | 2 | 15 |
+| Serialized provider message characters | 6,903 | 6,401 |
+| Observed input tokens | 1,321 | 1,207 |
+| Observed output tokens | 24 | 24 |
+| Observed cached prompt tokens | 0 | 0 |
+| Observed neurons (Workers AI unit) | 6.277448654 | 5.807932377 |
+| HTTP request elapsed (single sample, milliseconds) | 639 | 788 |
+
+**Observed input-token difference: -114 (8.6%)** for this one synthetic replay workload on this model. It is **not a universal speed, quality or KRW saving**. No cache hit was observed. The new message structure has more message boundaries and a different selection of historical evidence, so output quality is not causally comparable from a single sample. The two responses were both grounded engineering advice, not task-completion proof. Wall-clock time actually increased by 149 ms in this one sample and has large variance; this is no prefill-speed claim.
+
+The connected live \`dominion-cloud\` Worker exposes only D1, Workers AI, allowed-origin and Google client-ID bindings; it currently lacks paid OpenAI/Anthropic supplier credentials and a priced paid-model registry. A live **paid OpenAI** prompt-cache hit-rate or KRW reconciliation A/B cannot be run from this deployment. The execution container has no accessible Ollama/llama.cpp process, weights or GPU; no live **local-model prefill** measurement can be inferred from cloud-only receipts. Both are kept as unmeasured, rather than fabricated numbers.
+
+The native Rust and Cloud code now pass exact cache-boundary indices through a strict single-origin header \`x-dominion-cache-anchor\`; the gateway validates the index and never marks the changing latest request as a paid cache write. Its source tests use deterministic local protocol mocks. The user-visible web model usage remains receipt-based.
+
+A one-off tagged CI push runs actual Rust HTTP + Vite + Chromium integration with a loopback HTTP provider, rather than mocking the React frontend or paid-provider usage. The live HTTP stream, persisted session, 3 ordinary conversations, tool-free catalog, usage counters and stable profile prefix are verified. This is separate from the Workers AI direct inference sample.
+
+### Release boundary
+
+Only \`dominion-sub4\` code and test files were committed. No live \`dominion-cloud\`, \`dominion-website\`, \`dominionai.kr\` or production database migrations were modified. A deployment of the experimental Sub4 backend over the user's main production service would breach the existing independent-branch constraint and cannot provide actual model credentials that are absent from the account. Release is therefore a separate controlled action after real-provider credentials and host access are available.
