@@ -18,7 +18,6 @@ use serde_json::{json,Value};
 use std::{convert::Infallible,sync::Arc,time::Duration};
 use uuid::Uuid;
 
-mod legacy;
 mod system;
 mod agents;
 mod sessions;
@@ -26,7 +25,7 @@ mod chat;
 mod operations;
 mod memory;
 mod sdk_endpoints;
-use self::{legacy::*,system::*,agents::*,sessions::*,chat::*,operations::*,memory::*,sdk_endpoints::*};
+use self::{system::*,agents::*,sessions::*,chat::*,operations::*,memory::*,sdk_endpoints::*};
 type Fault=(StatusCode,Json<Value>);
 fn bad(msg:impl Into<String>)->Fault{(StatusCode::BAD_REQUEST,Json(json!({"error":msg.into()})))}
 fn missing(msg:impl Into<String>)->Fault{(StatusCode::NOT_FOUND,Json(json!({"error":msg.into()})))}
@@ -38,12 +37,6 @@ pub fn router()->Router<Arc<Engine>>{
     Router::new()
         .route("/health",get(health))
         .route("/status",get(status))
-        .route("/system/legacy-sqlite/preview",post(legacy_sqlite_preview))
-        .route("/system/legacy-sqlite/import",post(legacy_sqlite_import))
-        .route("/system/legacy-sqlite/archive",post(legacy_sqlite_archive))
-        .route("/system/legacy-archive",get(legacy_archive_list))
-        .route("/system/legacy-archive/item",get(legacy_archive_item))
-        .route("/system/legacy-archive/promote-memory",post(legacy_archive_promote_memory))
         .route("/events",get(global_events))
         .route("/settings/owner-profile",get(owner_profile).post(save_owner_profile))
         .route("/agents",get(agents).post(save_agent))

@@ -55,11 +55,6 @@ pub fn select_catalog(run:&Run,tools:Vec<Value>,has_children:bool,denied:&[Strin
         if name.starts_with("git_") && run.repository.is_none(){return false;}
         if matches!(name,"check_subagent"|"read_subagent_file"|"merge_subagent") && !has_children{return false;}
         if name=="merge_subagent" && run.repository.is_none(){return false;}
-        if name=="compare_strategies" &&
-            (run.repository.is_none() || run.parent_run_id.is_some()
-                || run.read_only || has_children || run.max_steps.saturating_sub(run.steps)<2){
-            return false;
-        }
         true
     }).collect::<Vec<_>>();
     let remaining=selected.iter().map(|t|t.to_string().len()).sum::<usize>();

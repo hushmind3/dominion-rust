@@ -7,8 +7,6 @@ pub mod domain;
 pub mod engine;
 pub mod group;
 pub mod knowledge;
-pub mod legacy_import;
-pub mod legacy_archive;
 pub mod github_work;
 pub mod github_cli_login;
 pub mod github_collab;
