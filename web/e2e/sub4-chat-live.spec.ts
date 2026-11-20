@@ -8,7 +8,7 @@ test('native 1:1 chat streams responses, persists actual provider receipts and o
  expect(created.status()).toBe(201)
  const session=await created.json()
  try{
-  for(const input of ['안녕하세요','번역해: good morning']){
+  for(const input of ['안녕하세요','번역해: good morning','KV 캐시란 무엇인가요?']){
    const response=await request.post('/api/chat',{
     data:{sessionId:session.id,agentId:'general',input,
      toolsEnabled:true,toolsExecutionEnabled:true,
@@ -22,26 +22,27 @@ test('native 1:1 chat streams responses, persists actual provider receipts and o
   }
   const messages=await (await request.get('/api/sessions/'+session.id+'/messages')).json()
   expect(messages.map((m:{role:string})=>m.role)).toEqual([
-   'user','assistant','user','assistant'
+   'user','assistant','user','assistant','user','assistant'
   ])
   const usage=await (await request.get('/api/sessions/'+session.id+'/usage')).json()
-  expect(usage.modelRequests).toBe(2)
-  expect(usage.promptTokens).toBe(80)
-  expect(usage.cachedPromptTokens).toBe(8)
-  expect(usage.completionTokens).toBe(12)
+  expect(usage.modelRequests).toBe(3)
+  expect(usage.promptTokens).toBe(120)
+  expect(usage.cachedPromptTokens).toBe(16)
+  expect(usage.completionTokens).toBe(18)
   expect(usage.cacheUsageReported).toBe(true)
   expect(usage.providerUsageReported).toBe(true)
-  expect(usage.measuredRequestFootprints).toBe(2)
+  expect(usage.measuredRequestFootprints).toBe(3)
   expect(usage.toolSchemaChars).toBe(0)
   expect(usage.contextChars).toBeGreaterThan(0)
   const provider=await request.get('http://127.0.0.1:4876/_calls')
   expect(provider.ok()).toBeTruthy()
   const calls=(await provider.json()).requests
-  const responses=calls.slice(-2)
-  expect(responses).toHaveLength(2)
+  const responses=calls.slice(-3)
+  expect(responses).toHaveLength(3)
   expect(responses.every((c:{toolNames:string[]})=>c.toolNames.length===0)).toBe(true)
   expect(responses[0].messages[1].content).toEqual(responses[1].messages[1].content)
   expect(responses[1].messages.at(-1).content).toBe('번역해: good morning')
+  expect(responses[2].messages.at(-1).content).toBe('KV 캐시란 무엇인가요?')
   await page.goto('/#/chat')
   await expect(page.locator('#root')).toBeVisible()
   expect(await page.locator('body').innerText()).not.toContain('Server response is not JSON')
