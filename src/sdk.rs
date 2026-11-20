@@ -20,39 +20,6 @@ pub struct RunOptions {
 pub struct Dominion { engine: Arc<Engine> }
 
 impl Dominion {
-    pub async fn open(settings: Settings) -> Result<Self,String> {
-        // Apply an explicitly staged, authenticated snapshot while no native
-        // stores have opened yet; a browser reload alone is not a restore.
-        product::apply_pending_product_restore(&settings)?;
-        tokio::fs::create_dir_all(&settings.workspace_dir).await.map_err(|e|e.to_string())?;
-        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await?);
-        let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
-        let engine=Engine::new(settings,store,groups)?;
-        // Reconcile durable parent/child settlement after a previous process
-        // died between a child completion and the parent wake notification.
-        let (suspended,safe_to_resume)=engine.store.recovery_candidates().await;
-        for id in suspended {engine.settle_and_wake_ancestors(id).await?;}
-        // Restart only work for which recovery proved there was no unfinished
-        // mutating side effect. A previously approved call that never reached
-        // the execution-intent checkpoint is also safe to start.
-        for id in safe_to_resume {
-            let archived=engine.store.get(id).await.is_some_and(|run|
-                run.events.iter().any(|event|matches!(event.kind.as_str(),
-                    "reserved_unlaunched"|"strategy_candidate"
-                    |"strategy_trials_launched"|"strategy_trials_partial")));
-            if archived {
-                engine.store.mutate(id,|run|{
-                    run.status=RunStatus::Paused;
-                    run.event("archived_run_quarantined",
-                        "Retired execution cannot be replayed after restart",None);
-                    Ok(())
-                }).await?;
-                continue;
-            }
-            engine.launch(id).await?;
-        }
-        Ok(Self{engine})
-    }
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}
     pub fn engine(&self)->Arc<Engine>{Arc::clone(&self.engine)}
     /// Native extension point: ordered pre-dispatch veto and post-receipt policy.
