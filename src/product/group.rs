@@ -104,6 +104,15 @@ pub struct RoomRemoteContinuation{
     pub accumulated_chars:usize,
     #[serde(default)] pub last_notes:String,
 }
+/// Participant-specific cursor advances atomically with accepted responses.
+/// Unsettled, rejected or over-budget calls cannot mark source events as read.
+#[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
+pub struct RoomReadCursor {
+    /// Exclusive next unread source index, in the immutable Room transcript.
+    pub next_unread_index:usize,
+    pub last_reply_index:Option<usize>,
+    pub last_owner_index:Option<usize>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Room {
     pub id: Uuid, pub topic: String, pub participants: Vec<Participant>,
@@ -120,6 +129,8 @@ pub struct Room {
     /// share one participant's response ID with a different participant.
     #[serde(default,skip_serializing_if="HashMap::is_empty")]
     pub remote_continuations:HashMap<String,RoomRemoteContinuation>,
+    #[serde(default,skip_serializing_if="HashMap::is_empty")]
+    pub read_cursors:HashMap<String,RoomReadCursor>,
     /// Exceeding a limit or stopping is not successful completion.
     #[serde(default,skip_serializing_if="String::is_empty")]
     pub finish_reason:String,
@@ -158,6 +169,18 @@ pub struct NewRoom {
 }
 #[derive(Deserialize)]
 pub struct Say { pub content: String }
+impl Room {
+    /// Unread source indices for this participant. Legacy rooms derive a
+    /// compatible starting point from the last successfully stored reply.
+    pub fn unread_range(&self,speaker:&str)->std::ops::Range<usize>{
+        let start=self.read_cursors.get(speaker)
+            .map(|c|c.next_unread_index)
+            .or_else(||self.messages.iter().rposition(|m|m.speaker==speaker)
+                .map(|index|index.saturating_add(1)))
+            .unwrap_or(0).min(self.messages.len());
+        start..self.messages.len()
+    }
+}
 /// Deterministic append-only projection for provider caching. The durable
 /// Room transcript is never compacted or used as model-authored "memory".
 /// Checkpoints are reconstructed from indexed original evidence, so restart
@@ -461,7 +484,7 @@ impl Groups {
         let budget=req.budget_krw.unwrap_or(5000.0);
         if !budget.is_finite() || !(0.0..=1_000_000.0).contains(&budget) {return Err("invalid budget_krw".into());}
         let now=now_ms();
-        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
+        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
         self.save(room).await
     }
     pub async fn get(&self,id:Uuid)->Option<Room>{self.rooms.lock().await.get(&id).cloned()}
@@ -516,7 +539,7 @@ impl Groups {
         if self.active.lock().await.contains(&id){return Err("wait for the ongoing group turn to finish".into());}
         let mut room=self.get(id).await.ok_or("room not found")?;
         room.messages.clear();room.client_messages.clear();room.recipients.clear();room.rounds=0;room.cost_krw=0.0;room.used_tokens=0;
-        room.usage_receipts.clear();room.remote_continuations.clear();
+        room.usage_receipts.clear();room.remote_continuations.clear();room.read_cursors.clear();
         room.finish_reason.clear();
         room.last_provider_failure=None;
         room.status=RoomStatus::Open;room.updated_at_ms=now_ms();
@@ -840,7 +863,16 @@ impl Groups {
         let discussion=room.frontend.as_ref().is_some_and(|v|v.routing_mode=="discussion");
         let done=(!discussion && reply.text.trim_start().starts_with("[END]"))
             ||room.rounds>=room.max_rounds;
+        // The cursor commits in the exact same persisted Room as this
+        // accepted speaker message and its authoritative provider receipt.
+        let owner_message_index=room.messages.iter().rposition(|m|m.speaker=="user");
+        let last_reply_index=room.messages.len();
         room.messages.push(Utterance{speaker:participant.name.clone(),content:reply.text,at_ms:now_ms(),model:Some(reply.model)});
+        room.read_cursors.insert(participant.name.clone(),RoomReadCursor{
+            next_unread_index:room.messages.len(),
+            last_reply_index:Some(last_reply_index),
+            last_owner_index:owner_message_index,
+        });
         if done {
             room.status=RoomStatus::Finished;
             room.finish_reason=if room.rounds>=room.max_rounds{"room_lifetime_limit_reached"}
@@ -906,7 +938,7 @@ mod tests {
             participants:roles.clone(),messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
+            usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:vec![]
         };
         let common=Groups::shared_prefix(&room);
@@ -936,7 +968,7 @@ mod tests {
             messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:100,
             cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
+            usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:vec![]
         };
         for i in 0..17 {
@@ -977,7 +1009,7 @@ mod tests {
             participants:vec![member.clone()],messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:1000,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
+            usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
             frontend:None,client_messages:HashMap::new(),recipients:vec![]};
         for index in 0..100{
             let content=match index{
@@ -1023,7 +1055,7 @@ mod tests {
             participants:vec![participant.clone()],messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
+            usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
             frontend:None,client_messages:HashMap::new(),recipients:vec![]};
         room.messages.push(Utterance{speaker:"user".into(),
             content:"Remember the deployment is cobalt and the API must preserve cancellation".into(),
@@ -1050,7 +1082,7 @@ mod tests {
             participants:vec![participant.clone()],messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:1000,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
+            usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
             frontend:None,client_messages:HashMap::new(),recipients:vec![]};
         for index in 0..100{
             let content=match index{
@@ -1117,7 +1149,7 @@ mod tests {
             cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,
             used_tokens:0,usage_receipts:vec![],
-            remote_continuations:HashMap::new(),finish_reason:String::new(),
+            remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
             client_messages:HashMap::new(),recipients:vec![]
         };
@@ -1156,7 +1188,7 @@ mod tests {
             status:RoomStatus::Open,rounds:0,max_rounds:100,
             cost_krw:0.0,budget_krw:1000.0,created_at_ms:0,
             updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
+            usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
             client_messages:HashMap::new(),recipients:vec![]
         };
@@ -1198,7 +1230,7 @@ mod tests {
             messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:100,
             cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
+            usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
             client_messages:HashMap::new(),recipients:vec![]
         };
@@ -1275,7 +1307,7 @@ mod tests {
                 content:"Remember the release contract".into(),at_ms:0,model:None}],
             status:RoomStatus::Open,rounds:0,max_rounds:100,cost_krw:0.0,
             budget_krw:1000.0,created_at_ms:0,updated_at_ms:0,revision:0,
-            used_tokens:0,usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),
+            used_tokens:0,usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:Some(frontend),
             client_messages:HashMap::new(),recipients:vec![]
         };
@@ -1305,7 +1337,7 @@ mod tests {
             participants:vec![participant.clone()],messages:vec![],status:RoomStatus::Open,
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
-            usage_receipts:vec![],remote_continuations:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
+            usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
             frontend:None,client_messages:HashMap::new(),recipients:vec![]};
         for i in 0..50{
             room.messages.push(Utterance{speaker:if i%2==0{"user"}else{"peer"}.into(),
@@ -1544,6 +1576,9 @@ mod tests {
         group.say(room.id,"First owner message".into()).await.unwrap();
         group.next_for(&model,room.id,Some("analyst")).await.unwrap();
         let stored=group.get(room.id).await.unwrap();
+        assert_eq!(stored.read_cursors["analyst"].next_unread_index,2,
+            "first accepted reply must atomically commit the participant cursor");
+        assert_eq!(stored.read_cursors["analyst"].last_owner_index,Some(0));
         assert_eq!(stored.remote_continuations["analyst"].previous_response_id,
             "resp-test-1");
         assert_eq!(stored.messages.len(),2);
@@ -1576,6 +1611,9 @@ mod tests {
         let room=reopened.get(room.id).await.unwrap();
         assert_eq!(room.messages.len(),6);
         assert_eq!(room.usage_receipts.len(),3);
+        assert_eq!(room.read_cursors["analyst"].next_unread_index,6);
+        assert_eq!(room.read_cursors["analyst"].last_reply_index,Some(5));
+        assert_eq!(room.unread_range("analyst"),6..6);
         assert_eq!(room.usage_receipts.iter()
             .map(|r|r.input_tokens).sum::<u64>(),12000,
             "remote continuation reduces wire payload, not necessarily billed context");
@@ -1591,6 +1629,45 @@ mod tests {
         drop(reopened);
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
+
+    #[tokio::test]
+    async fn read_cursors_recover_from_legacy_and_preserve_independent_speaker_positions(){
+        let root=std::env::temp_dir().join(format!("dominion-cursor-{}",Uuid::new_v4()));
+        let groups=Groups::open(root.clone()).await.unwrap();
+        let mut room=groups.create(NewRoom{topic:"read cursor".into(),participants:vec![
+            Participant{name:"architect".into(),role:"design".into(),economy:false},
+            Participant{name:"critic".into(),role:"review".into(),economy:false},
+        ],max_rounds:Some(20),budget_krw:Some(2000.0)}).await.unwrap();
+        let note=|speaker:&str,content:&str|Utterance{
+            speaker:speaker.into(),content:content.into(),at_ms:now_ms(),model:None};
+        room.messages.push(note("user","first task"));
+        room.messages.push(note("architect","first answer"));
+        assert_eq!(room.unread_range("architect"),2..2);
+        assert_eq!(room.unread_range("critic"),0..2);
+        room.read_cursors.insert("architect".into(),RoomReadCursor{
+            next_unread_index:2,last_reply_index:Some(1),last_owner_index:Some(0)
+        });
+        room.messages.push(note("user","second task"));
+        assert_eq!(room.unread_range("architect"),2..3);
+        assert_eq!(room.unread_range("critic"),0..3);
+        room.messages.push(note("critic","result"));
+        room.read_cursors.insert("critic".into(),RoomReadCursor{
+            next_unread_index:4,last_reply_index:Some(3),last_owner_index:Some(2)
+        });
+        assert_eq!(room.unread_range("critic"),4..4);
+        let restored:Room=serde_json::from_slice(&serde_json::to_vec(&room).unwrap()).unwrap();
+        assert_eq!(restored.unread_range("architect"),2..4);
+        assert_eq!(restored.unread_range("critic"),4..4);
+        assert_eq!(restored.read_cursors["critic"].last_owner_index,Some(2));
+        let mut legacy=serde_json::to_value(&restored).unwrap();
+        legacy.as_object_mut().unwrap().remove("read_cursors");
+        let legacy:Room=serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.unread_range("architect"),2..4);
+        assert!(legacy.read_cursors.is_empty());
+        drop(groups);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn mention_selects_correct_participant() {
         let root=std::env::temp_dir().join(format!("dominion-room-{}",Uuid::new_v4()));

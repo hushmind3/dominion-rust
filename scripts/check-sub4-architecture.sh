@@ -167,6 +167,10 @@ required_count src/sdk/product.rs 'pub async fn (chat_sessions|create_group|reme
 required_count src/product/frontend_api.rs 'merge\(crate::addons::routes\(addons_enabled\)\)' 1
 required_count src/product/frontend_api.rs 'merge\(crate::frontend_channels|merge\(crate::frontend_extensions|merge\(crate::frontend_oauth' 0
 required_count src/product/mod.rs 'pub addons:Arc<addons::Host>' 1
+required_count src/product/group.rs 'pub struct RoomReadCursor' 1
+required_count src/product/group.rs 'room[.]read_cursors[.]insert' 1
+required_count src/product/group.rs 'room[.]read_cursors[.]clear' 1
+required_count src/product/coordination.rs 'unread_range[(]' 1
 required_count src/product/frontend_rooms.rs 'crate::addons::dispatch_room' 3
 required_count web/src/pages/Connections.tsx 'lazy\(\(\)=>import\(' 4
 for legacy in src/mcp.rs src/mcp/tests.rs src/frontend_channels.rs src/frontend_extensions.rs \

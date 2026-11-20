@@ -21,6 +21,10 @@ pub struct WorkTicket {
     pub agent_id:String,
     pub status:WorkStatus,
     pub result_message_index:Option<usize>,
+    /// Source index interval not yet acknowledged by this participant's
+    /// last accepted reply, independent of other participants' cursors.
+    pub unread_start_index:usize,
+    pub unread_end_index:usize,
 }
 
 #[derive(Clone,Debug)]
@@ -61,6 +65,7 @@ impl RoomWorkBoard {
                 room.messages.iter().enumerate().skip(idx+1)
                     .take_while(|(_,m)|m.speaker!="user")
                     .find(|(_,m)|m.speaker==agent_id).map(|(i,_)|i));
+            let unread=room.unread_range(&agent_id);
             let status=if result_message_index.is_some(){
                 WorkStatus::Completed
             }else{WorkStatus::Pending};
@@ -69,6 +74,7 @@ impl RoomWorkBoard {
                     room.id,owner.unwrap_or(0),agent_id),
                 room_id:room.id,owner_message_index:owner,
                 agent_id,status,result_message_index,
+                unread_start_index:unread.start,unread_end_index:unread.end,
             }
         }).collect();
         Self{owner_message_index:owner,tickets}
@@ -122,6 +128,9 @@ mod tests{
         assert_eq!(projected.completed(),1);
         assert_eq!(projected.pending_agents(),vec!["reviewer"]);
         assert_eq!(projected.tickets[0].result_message_index,Some(1));
+        assert_eq!(projected.tickets[0].unread_start_index,2);
+        assert_eq!(projected.tickets[0].unread_end_index,2);
+        assert_eq!(projected.tickets[1].unread_start_index,0);
         room.messages.push(message("user","Start a fresh review"));
         let next=RoomWorkBoard::project(&room);
         assert_eq!(next.owner_message_index,Some(2));

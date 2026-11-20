@@ -452,3 +452,22 @@ Source of truth for the native sub4 execution path:
 Moving the async body out of `src/algorithms/runner.rs` changes physical
 ownership, not the runtime semantics or existing SDK/HTTP contracts. This
 is a modular-monolith layout, NOT a new binary, WASM module or microservice.
+
+### Indexed Room read cursors (source of truth: append-only Room journal)
+
+Each successful accepted group response now commits a
+`RoomReadCursor` keyed by participant within the same atomic Room
+snapshot as the original utterance and provider usage receipt. The
+cursor stores the *next unread source message index*, prior accepted
+reply index and latest owner instruction index. The work-board
+projects unread index spans separately for each participant.
+Read positions do not advance on upstream provider failure or a
+billed response rejected by room budget controls. `Room::unread_range`
+derives the same read floor from original messages for legacy Room
+snapshots with no cursor field. Reset clears cursors. Serialization
+uses defaults and preserves compatibility with existing room JSON.
+
+This is a deterministic *index* on source events, not a synthetic
+LLM-memory replacement and not an instruction to forward every
+speaker message into every other speaker's prompt. Room context
+projection retains existing bounded/cacheable source excerpts.
