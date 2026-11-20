@@ -118,7 +118,12 @@ required_count src/engine.rs 'McpProgress|McpCallOutcome|call_with_progress|star
 required_count src/addons/execution.rs '^pub async fn invoke\(' 1
 required_count src/addons/execution.rs 'journal::begin|journal::finish|pub async fn drive' 0
 # The execution Engine must own native Run state, not application products.
-required_count src/engine.rs 'product: crate::product::ProductHost' 1
+required_count src/engine.rs 'product: Arc<crate::product::ProductHost>' 1
+required_count src/engine.rs 'pub[(]crate[)] services: Arc<dyn RuntimeServices>' 1
+required_count src/engine.rs 'self[.](knowledge|addons|providers)[.]' 0
+required_count src/algorithms/runner.rs 'self[.](knowledge|addons|providers)[.]' 0
+required_count src/runtime_services.rs 'pub trait RuntimeServices' 1
+required_count src/product/runtime_services.rs 'impl RuntimeServices for ProductHost' 1
 required_count src/engine.rs 'pub groups:|pub addons:|pub knowledge:|pub frontend:|pub providers:|pub owner_profile:' 0
 required_count src/engine.rs 'frontend_local_models::|provider_registry::|frontend_state::|Knowledge::open' 0
 required_count src/product/mod.rs 'pub struct ProductHost' 1

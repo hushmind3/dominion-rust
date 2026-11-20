@@ -371,3 +371,22 @@ strategy) and `loop_bound` (pure turn controller). A later restart that
 selects a different component refuses to resume existing queued work before
 any external effect is dispatched. Existing legacy Runs without a loop marker
 bind to the currently configured default controller on their first upgrade.
+
+## 2026-11-20 — Runtime capability port and product adapter
+
+The async engine/agent loop now accesses model selection/rate-limiting,
+external-tool advertisement/approval/invocation, durable knowledge search/write,
+focused note retrieval and run-scoped cache disposal solely through the
+object-safe `src/runtime_services.rs::RuntimeServices` capability port.
+Concrete implementations live in `src/product/runtime_services.rs` and own
+provider registry, MCP integrations and durable memory. The runtime contains
+no direct `self.providers`, `self.addons` or `self.knowledge` calls.
+The kernel continues to own all tool permission checks, approval journals,
+in-flight intent, receipt persistence and effect reconciliation.
+
+`Engine` currently retains an `Arc<ProductHost>` only for historical native
+HTTP/SDK field-access compatibility. Its worker and algorithm depend on
+`Arc<dyn RuntimeServices>` rather than the ProductHost implementation.
+This is an incremental, real service-injection boundary: remove the
+compatibility Deref once callers are converted to explicit product access
+or an application facade, without changing HTTP contracts.

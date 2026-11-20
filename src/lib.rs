@@ -38,6 +38,7 @@ pub use infrastructure::{model_transport as provider, local_tools as tools, sand
 pub use addons::{read_program,program_ir,program_session};
 pub use product::config;
 pub mod ports;
+pub mod runtime_services;
 // Public compatibility alias, actual DB implementation is outside the core.
 pub use infrastructure::persistence as store;
 

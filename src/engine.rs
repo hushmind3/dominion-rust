@@ -1,4 +1,4 @@
-use crate::{algorithms::AgentAlgorithm,program_session,hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall, ToolEffectOutcome}, provider::{ModelClient, Reply}, ports::RunStorePort, tools, policy, journal, tool_schema, tool_batch};
+use crate::{runtime_services::RuntimeServices,algorithms::AgentAlgorithm,program_session,hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall, ToolEffectOutcome}, provider::{ModelClient, Reply}, ports::RunStorePort, tools, policy, journal, tool_schema, tool_batch};
 use serde_json::{json, Value};
 use std::{collections::{HashMap,HashSet}, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
@@ -19,7 +19,8 @@ pub struct Engine {
     pub(crate) loop_driver:Arc<dyn dominion_agent_core::AgentLoop>,
     /// All GUI, memory, account, room and model-catalog services live outside
     /// the Run kernel. The Deref compatibility surface does not own a runner.
-    product: crate::product::ProductHost,
+    product: Arc<crate::product::ProductHost>,
+    pub(crate) services: Arc<dyn RuntimeServices>,
 
     pub(crate) hooks: RwLock<HookChain>,
     pub(crate) model: ModelClient,
@@ -47,10 +48,21 @@ impl Engine {
     pub(crate) fn from_ports_with_loop(settings:Settings,store:Arc<crate::ports::RunStorePort>,
         product:crate::product::ProductHost,algorithm:Arc<dyn AgentAlgorithm>,
         loop_driver:Arc<dyn dominion_agent_core::AgentLoop>)->Result<Arc<Self>,String>{
+        let product=Arc::new(product);
+        let services:Arc<dyn RuntimeServices>=product.clone();
+        Self::from_ports_with_services(settings,store,product,algorithm,loop_driver,services)
+    }
+    /// Host composition injects an independent port: the same native
+    /// scheduler works with alternative model/memory/tool providers.
+    pub(crate) fn from_ports_with_services(settings:Settings,
+        store:Arc<RunStorePort>,product:Arc<crate::product::ProductHost>,
+        algorithm:Arc<dyn AgentAlgorithm>,
+        loop_driver:Arc<dyn dominion_agent_core::AgentLoop>,
+        services:Arc<dyn RuntimeServices>)->Result<Arc<Self>,String>{
         let model=ModelClient::new(&settings)?;
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
-        let engine=Arc::new(Self { settings, store, product, algorithm, loop_driver, hooks,
+        let engine=Arc::new(Self { settings, store, product, services, algorithm, loop_driver, hooks,
             model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
@@ -115,7 +127,7 @@ impl Engine {
     /// Model and provider catalogs belong to the product host, not the
     /// native instruction/execute/verify kernel.
     pub fn model_for_selection(&self,provider:&str,model:&str)->Result<ModelClient,String>{
-        self.product.model_for_selection(&self.settings,&self.model,provider,model)
+        self.services.select_model(&self.settings,&self.model,provider,model)
     }
     pub fn model_for_run(&self,run:&Run)->Result<ModelClient,String>{
         // Every native Run receives a durable UUID-bound routing identity.
@@ -205,7 +217,7 @@ impl Engine {
             }
             engine.active.lock().await.remove(&id);
             engine.cancellation.lock().await.remove(&id);
-            engine.product.release_run_context(id).await;
+            engine.services.release(id).await;
             engine.active_notify.notify_waiters();
             // A completed worker releases unused budget to its parent. The
             // notification propagates up the delegation tree, and may wake a
@@ -274,10 +286,10 @@ impl Engine {
         // receiver borrowed by tokio::select! below.
         let remote_cancellation=cancellation.clone();
         let execute = async {
-            if self.addons.handles_tool(&call.name) {
+            if self.services.handles(&call.name) {
                 // The kernel journals and authorizes all effects; the add-on
                 // adapter owns its own protocol, progress and remote IO.
-                match self.addons.invoke_external(
+                match self.services.invoke(
                     &self.settings,&self.store,id,&call,remote_cancellation.clone()).await {
                     Ok(ToolEffectOutcome::Settled(result))=>result,
                     Ok(ToolEffectOutcome::Uncertain(reason))=>{
@@ -325,7 +337,7 @@ impl Engine {
                 // Native and external tools share search, current Run
                 // permissions, and the exact same subsequent schema admission.
                 let mut available=tools::definitions(self.settings.shell_enabled);
-                available.extend(self.addons.tool_definitions(&self.settings).await);
+                available.extend(self.services.tools(&self.settings).await);
                 let has_children=self.store.has_children(id).await;
                 let (authorized,_)=policy::select_catalog(&snapshot,available,
                     has_children,&self.settings.denied_tools);
@@ -356,13 +368,13 @@ impl Engine {
                 let query=call.arguments.get("query").and_then(Value::as_str).ok_or("memory search query required")?;
                 if query.len()>512{return Err("memory search query too long".into());}
                 let run=self.store.get(id).await.ok_or("run not found")?;
-                let found=self.knowledge.search(run.repository.as_deref().unwrap_or("global"),query,8).await;
+                let found=self.services.memory_search(run.repository.as_deref().unwrap_or("global"),query,8).await;
                 Ok(json!(found).to_string())
             } else if call.name == "memory_store" {
                 let title=call.arguments.get("title").and_then(Value::as_str).ok_or("memory title required")?;
                 let content=call.arguments.get("content").and_then(Value::as_str).ok_or("memory content required")?;
                 let run=self.store.get(id).await.ok_or("run not found")?;
-                let saved=self.knowledge.remember(run.repository.as_deref().unwrap_or("global"),title,content).await?;
+                let saved=self.services.memory_save(run.repository.as_deref().unwrap_or("global"),title,content).await?;
                 Ok(json!(saved).to_string())
             } else if call.name == "merge_subagent" {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;

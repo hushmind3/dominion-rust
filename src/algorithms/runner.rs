@@ -26,7 +26,7 @@ impl Engine {
                     "mode":"model_only"})));
             Ok(())
         }).await?;
-        self.providers.throttle(&run.provider_id).await;
+        self.services.throttle(&run.provider_id).await;
         let reply=tokio::select!{
             biased;
             _=cancellation.changed()=>return Ok(()),
@@ -206,7 +206,7 @@ impl Engine {
                     continue;
                 }
                 if matches!(call.name.as_str(),"shell"|"merge_subagent") ||
-                   self.addons.needs_external_approval(&call.name) {
+                   self.services.requires_approval(&call.name) {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
                         run.pending_approval = Some(call.clone());
@@ -215,7 +215,7 @@ impl Engine {
                         run.event("approval_required",
                             if call.name == "shell" { format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")) }
                             else if call.name == "merge_subagent" {format!("Integrating a child Git patch needs approval: {}",call.arguments.get("id").and_then(Value::as_str).unwrap_or("?"))}
-                             else if self.addons.needs_connected_approval(&call.name) {
+                             else if self.services.connected_approval(&call.name) {
                                 format!("Connected account action needs approval: {} args={}",
                                     call.name,call.arguments.to_string().chars().take(1200).collect::<String>())
                             }
@@ -249,7 +249,7 @@ impl Engine {
                 let messages=self.algorithm.planning_request(&run,self.settings.context_max_chars)?;
                 let planning_history_len=run.messages.len();
                 let selected_model=self.model_for_run(&run)?;
-                self.providers.throttle(&run.provider_id).await;
+                self.services.throttle(&run.provider_id).await;
                 let reply=tokio::select!{
                     biased;
                     _=cancellation.changed()=>return Ok(()),
@@ -286,7 +286,7 @@ impl Engine {
             // strategy can choose which ones to expose. Returning invented
             // or rewritten schemas cannot grant a capability.
             let native=tools::definitions(self.settings.shell_enabled);
-            let external=self.addons.tool_definitions(&self.settings).await;
+            let external=self.services.tools(&self.settings).await;
             let mut combined=native.clone();
             combined.extend(external.iter().cloned());
             let has_children=self.store.has_children(id).await;
@@ -317,7 +317,7 @@ impl Engine {
                     }
                 }
             }
-            let notes=self.focused_notes(&run).await;
+            let notes=self.services.focused_notes(&run).await;
             let mut skill_names=None;
             if run.steps==0{
                 let skills=crate::skills::list(&self.settings,id).await.unwrap_or_default();
@@ -353,7 +353,7 @@ impl Engine {
                 Ok(())
             }).await?;
             let selected_model=self.model_for_run(&run)?;
-            self.providers.throttle(&run.provider_id).await;
+            self.services.throttle(&run.provider_id).await;
             let reply=tokio::select!{
                 biased;
                 _=cancellation.changed()=>return Ok(()),
@@ -504,7 +504,7 @@ impl Engine {
                 &git_evidence,&reply.text,self.settings.context_max_chars)?;
             let expected_verify_history=latest.messages.len();
             let selected_model=self.model_for_run(&latest)?;
-            self.providers.throttle(&latest.provider_id).await;
+            self.services.throttle(&latest.provider_id).await;
             let verdict=tokio::select!{
                 biased;
                 _=cancellation.changed()=>return Ok(()),
