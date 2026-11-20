@@ -172,21 +172,19 @@ impl ModelClient {
             }
             let content=entry.get("content").and_then(Value::as_str)
                 .ok_or("Responses input message has no text")?;
-            items.push(json!({"role":role,"content":content}));
+            let mut message=json!({"role":role,"content":content});
+            if entry.get("dominion_cache_anchor")==Some(&Value::Bool(true)){
+                message["dominion_cache_anchor"]=json!(true);
+            }
+            items.push(message);
         }
         let mut body=json!({"model":settings.name,"input":items,"store":true});
         if let Some(id)=previous_response_id{
             if id.is_empty(){return Err("empty previous_response_id".into());}
             body["previous_response_id"]=json!(id);
         }
-        if settings.base_url=="https://api.openai.com/v1"{
-            if let Some(ttl)=&settings.cache_ttl{
-                body["prompt_cache_options"]=json!({"ttl":ttl});
-            }
-            if let Some(key)=self.openai_cache_key_for(settings){
-                body["prompt_cache_key"]=json!(key);
-            }
-        }
+        configure_openai_cache(&mut body,settings,
+            self.openai_cache_key_for(settings),"input");
         let mut req=self.http.post(format!("{}/responses",settings.base_url))
             .json(&body);
         if !settings.api_key.is_empty(){req=req.bearer_auth(&settings.api_key);}
@@ -290,17 +288,12 @@ impl ModelClient {
             return self.request_ollama(settings,messages,tools).await;
         }
         let mut body = json!({"model": settings.name, "messages": messages, "stream": false});
-        // Internal group-only markers are Anthropic content-block controls.
-        // Never leak them as unknown JSON keys to OpenAI-compatible gateways.
-        strip_internal_cache_markers(&mut body);
-        // OpenAI-specific cache controls are explicitly gated to the native
-        // endpoint so OpenAI-compatible third-party servers are not broken.
-        if settings.base_url=="https://api.openai.com/v1"{
-            if let Some(ttl)=&settings.cache_ttl{body["prompt_cache_options"]=json!({"ttl":ttl});}
-            if let Some(key)=self.openai_cache_key_for(settings){
-                body["prompt_cache_key"]=json!(key);
-            }
-        }
+        // GPT-5.6+ requires an explicit stable-prefix boundary to avoid
+        // repeatedly charging cache writes for a changing final message.
+        // Compatibility gateways and earlier OpenAI models only see the
+        // original string-message contract (internal markers are removed).
+        configure_openai_cache(&mut body,settings,
+            self.openai_cache_key_for(settings),"messages");
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
             body["tool_choice"] = json!("auto");
@@ -627,6 +620,62 @@ fn openai_compatible_usage(raw:&Value)->(u64,u64,u64,u64,bool){
         .min(input.saturating_sub(cached));
     (input,output,cached,written,reported)
 }
+/// Explicit breakpoints are a GPT-5.6+ 2026 provider contract, not a
+/// generic OpenAI-compatible option. Never attach an unsupported request
+/// extension to local, proxy, or older API backends.
+fn openai_explicit_cache_model(name:&str)->bool{
+    let Some(version)=name.strip_prefix("gpt-")else{return false};
+    let first=version.split(|c:char|!c.is_ascii_digit()).next().unwrap_or("");
+    let major=first.parse::<u32>().unwrap_or(0);
+    if major>5{return true;}
+    if major!=5{return false;}
+    let Some(minor)=version.strip_prefix("5.")else{return false};
+    let digits=minor.split(|c:char|!c.is_ascii_digit()).next().unwrap_or("");
+    digits.parse::<u32>().is_ok_and(|n|n>=6)
+}
+/// Convert stable run/room annotations to the supported GPT-5.6+ typed
+/// content-block shape. Markers are always stripped from the wire. When
+/// no stable cache boundary exists, leave caching at its provider default.
+fn configure_openai_cache(body:&mut Value,settings:&ModelSettings,
+    key:Option<&str>,field:&str){
+    let modern=settings.base_url=="https://api.openai.com/v1"
+        &&openai_explicit_cache_model(&settings.name);
+    let mut anchors=0usize;
+    if let Some(items)=body.get_mut(field).and_then(Value::as_array_mut){
+        for item in items {
+            let marked=item.get("dominion_cache_anchor")==Some(&Value::Bool(true));
+            if let Some(object)=item.as_object_mut(){
+                object.remove("dominion_cache_anchor");
+            }
+            if marked && modern && key.is_some() {
+                if let Some(text)=item.get("content").and_then(Value::as_str){
+                    let kind=if field=="input"{"input_text"}else{"text"};
+                    let block=if field=="input"{
+                        json!({"type":kind,"text":text,
+                            "prompt_cache_breakpoint":{"mode":"explicit"}})
+                    }else{
+                        json!({"type":kind,"text":text,
+                            "prompt_cache_breakpoint":{"mode":"explicit"}})
+                    };
+                    item["content"]=json!([block]);
+                    anchors+=1;
+                }
+            }
+        }
+    }
+    if settings.base_url=="https://api.openai.com/v1"{
+        if let Some(key)=key{body["prompt_cache_key"]=json!(key);}
+        if modern {
+            // Only 30m is currently valid for GPT-5.6+; legacy 12h
+            // environment values are not forwarded to this API.
+            if anchors>0 {
+                body["prompt_cache_options"]=json!({"mode":"explicit","ttl":"30m"});
+            } else if settings.cache_ttl.as_deref()==Some("30m"){
+                body["prompt_cache_options"]=json!({"ttl":"30m"});
+            }
+        }
+    }
+}
 fn strip_internal_cache_markers(body:&mut Value){
     if let Some(list)=body["messages"].as_array_mut(){
         for message in list{
@@ -843,6 +892,52 @@ mod tests {
         assert!(native[1]["content"][0].get("cache_control").is_none());
         let (_,proxy)=anthropic_messages(&history,false).unwrap();
         assert!(proxy[0]["content"][0].get("cache_control").is_none());
+    }
+    #[test]
+    fn latest_openai_cache_breakpoints_pin_stable_chat_prefix_and_strip_annotations(){
+        let mut settings=Settings::from_env().unwrap().main;
+        settings.name="gpt-6.1-sol".into();
+        settings.base_url="https://api.openai.com/v1".into();
+        settings.cache_ttl=Some("12h".into()); // unsupported on GPT-5.6+
+        let mut request=json!({"model":settings.name,"messages":[
+            {"role":"system","content":"stable agent rules","dominion_cache_anchor":true},
+            {"role":"user","content":"old owner evidence","dominion_cache_anchor":true},
+            {"role":"user","content":"new owner question"}
+        ]});
+        configure_openai_cache(&mut request,&settings,Some("chat-session"),"messages");
+        assert_eq!(request["prompt_cache_options"]["mode"],"explicit");
+        assert_eq!(request["prompt_cache_options"]["ttl"],"30m");
+        assert_eq!(request["prompt_cache_key"],"chat-session");
+        assert_eq!(request["messages"][0]["content"][0]["type"],"text");
+        assert_eq!(request["messages"][1]["content"][0]["prompt_cache_breakpoint"]["mode"],"explicit");
+        assert_eq!(request["messages"][2]["content"],"new owner question");
+        assert!(!request.to_string().contains("dominion_cache_anchor"));
+        assert!(!request.to_string().contains("12h"));
+    }
+    #[test]
+    fn responses_cache_uses_input_text_and_other_providers_keep_legacy_schema(){
+        let mut settings=Settings::from_env().unwrap().main;
+        settings.name="gpt-5.6".into();
+        settings.base_url="https://api.openai.com/v1".into();
+        let history=json!([{"role":"developer","content":"stable instructions",
+            "dominion_cache_anchor":true},{"role":"user","content":"new task"}]);
+        let mut request=json!({"input":history});
+        configure_openai_cache(&mut request,&settings,Some("run-1"),"input");
+        assert_eq!(request["input"][0]["content"][0]["type"],"input_text");
+        assert_eq!(request["input"][1]["content"],"new task");
+        let mut proxy=json!({"messages":history});
+        settings.base_url="https://thirdparty.example/v1".into();
+        configure_openai_cache(&mut proxy,&settings,Some("run-1"),"messages");
+        assert!(proxy.get("prompt_cache_key").is_none());
+        assert!(proxy.get("prompt_cache_options").is_none());
+        assert_eq!(proxy["messages"][0]["content"],"stable instructions");
+        assert!(!proxy.to_string().contains("dominion_cache_anchor"));
+        settings.base_url="https://api.openai.com/v1".into();
+        settings.name="gpt-5.5".into();
+        let mut older=json!({"messages":history});
+        configure_openai_cache(&mut older,&settings,Some("run-1"),"messages");
+        assert!(older.get("prompt_cache_options").is_none());
+        assert_eq!(older["messages"][0]["content"],"stable instructions");
     }
     #[test]
     fn annotated_group_messages_never_reach_openai_or_ollama_json_schemas(){
