@@ -2,14 +2,16 @@
 
 ## Scope
 
+The current source paths and execution owner are described below; dated notes later in this document retain historical migration context rather than prescribing old module locations.
+
 Dominion's active execution loop is native Rust. Neither the web UI nor TypeScript SDK owns a second decision engine. External services are available through explicit MCP/connected-tool adapters without embedded media producers or experiment schedulers.
 
 ```
 User / Chat / TypeScript SDK / HTTP
                   |
-           src/sdk.rs + src/api.rs
+           src/sdk.rs + src/product/native_api.rs
                   |
-         src/engine.rs (one Run)
+         src/engine.rs + src/harness/runner.rs (one Run loop)
           /      |       \
    Provider    Tool/MCP   Delegate
        \         |       /
@@ -25,22 +27,22 @@ User / Chat / TypeScript SDK / HTTP
 ## Real execution path
 
 1. A request creates a `Run` in `src/domain.rs`. `Store::put` writes the JSON record with fsync before it becomes visible.
-2. `Engine::launch` is the sole work scheduler. It uses an unbounded wake channel and active-task notifications; no four-worker 400ms full-job polling loop exists in this branch. The implementation is split into `src/engine.rs` (main drive), `src/engine/delegation.rs` (child work and budget settlement), and `src/engine/tests.rs` (native regressions).
-3. `Engine::drive` plans with the pinned root instruction and direct user amendments. `context::compact_strict` reduces old conversation/tool receipt material without silently dropping new user instructions.
+2. `Engine::launch` is the sole work scheduler. It uses an unbounded wake channel and active-task notifications; no four-worker 400ms full-job polling loop exists in this branch. The implementation is split into `src/engine.rs` (Run scheduler, journalled effect dispatch), `src/harness/runner.rs` (the single native drive loop), `src/engine/delegation.rs` (child work and budget settlement), and `src/engine/tests.rs` (native regressions).
+3. `Engine::drive` in `src/harness/runner.rs` plans with the pinned root instruction and direct user amendments. `context::compact_strict` reduces old conversation/tool receipt material without silently dropping new user instructions.
 4. `tool_schema`, `policy`, `hooks` and `loop_guard` check each requested operation before dispatch. Two identical consecutive failed calls lead to a corrective rejection; repeated uncorrected loops pause instead of continuing work blindly.
 5. Read-only tools may run in a bounded, model-ordered parallel batch. Mutations and external MCP calls remain exclusive barriers. Shell, MCP and merges need explicit approval unless an operator policy explicitly permits them.
 6. A pending side effect is journaled as `in_flight` **before** dispatch. After execution, one durable result receipt and its correlation ID settle the intent. Interrupted uncertain effects are never speculatively replayed; manual reconciliation is necessary.
 7. `verification::verifier_messages` builds a bounded audit input from exact user requirements, current workspace/Git observations and real tool receipts. The verifier requires an unambiguous `PASS` to finish the Run; a correction returns to the execution loop.
 8. After each committed Store update, the broadcast channel emits one small `RunUpdate`. `/api/events` forwards these updates by SSE. A lagged client receives a resync indication. Idle tabs do **not** clone the entire stored job history every 1.5 seconds.
-9. The frontend and SDK read the same native `Run` and memory records. Planning checks only direct-child existence; delegation limits use direct-child snapshots; settlement reads one consistent two-level family snapshot rather than cloning every historical Run. Explicit scheduled tasks remain available via `src/automations.rs`; retired RSI campaigns are not scheduled.
+9. The frontend and SDK read the same native `Run` and memory records. Planning checks only direct-child existence; delegation limits use direct-child snapshots; settlement reads one consistent two-level family snapshot rather than cloning every historical Run. No separate built-in RSI or scheduled-experiment executor remains.
 
 ## Data ownership
 
-- `src/store.rs`: durable native Run metadata, messages, planned tool calls, receipts, token/cost measurements and status. Startup diffs the semantic recovered Run against the loaded record and fsyncs only changed snapshots; unrelated historical records are not rewritten. `recovery_candidates` returns only paused/safe Run IDs instead of cloning every stored transcript into the SDK on restart.
-- `src/knowledge.rs`: user-managed notes, corrections and reusable procedures.
-- `src/frontend_state.rs`: chat sessions, agents and user-visible messages.
-- `src/group.rs`: group requests.
-- `src/frontend_system.rs`: encrypted backup/restore and maintenance.
+- `src/infrastructure/persistence/mod.rs`: durable native Run metadata, messages, planned tool calls, receipts, token/cost measurements and status. Startup diffs the semantic recovered Run against the loaded record and fsyncs only changed snapshots; unrelated historical records are not rewritten. `recovery_candidates` returns only paused/safe Run IDs instead of cloning every stored transcript into the SDK on restart.
+- `src/product/knowledge.rs`: user-managed notes, corrections and reusable procedures.
+- `src/product/frontend_state.rs`: chat sessions, agents and user-visible messages.
+- `src/product/group.rs`: group requests.
+- `src/product/frontend_system.rs`: encrypted backup/restore and maintenance.
 
 Old-format records are not automatically replayed or deleted. Native chat, Run and memory stores retain their ordinary on-disk formats. Historical experiment receipts are quarantined from startup recovery and explicit resume.
 
@@ -56,18 +58,18 @@ Follow-up frontend synchronization imports the latest main `web/src/refreshEvent
 
 ## Provider and pricing boundary
 
-`src/provider.rs` handles OpenAI-compatible chat completions and Anthropic Messages with selected models. A provider response reporting truncation or missing tool-call payload is not a final answer. The provider adapter applies a bounded 8MiB response limit. Only a definite HTTP 429 rejection is eligible for automatic retry/fallback: transport loss and HTTP 5xx may have already consumed billable tokens.
+`src/infrastructure/model_transport.rs` handles OpenAI-compatible chat completions and Anthropic Messages with selected models. A provider response reporting truncation or missing tool-call payload is not a final answer. The provider adapter applies a bounded 8MiB response limit. Only a definite HTTP 429 rejection is eligible for automatic retry/fallback: transport loss and HTTP 5xx may have already consumed billable tokens.
 
 Configured KRW per-million-token prices are used for provider-reported usage; unknown third-party rates cannot establish a real zero cost. `policy::effective_budget_krw` reserves delegated child budgets and `Engine::account` durably records observed usage. These controls do not claim globally enforced exactly-once billing.
 
 ## SDK and API compatibility
 
 - `Dominion::open(Settings)` in `src/sdk.rs`: native SDK entry and startup recovery.
-- `src/api.rs`: native `/api/v1` entry including runs, approvals, reconciliation, skills, artifacts, groups and memory.
-- `src/frontend_api.rs`: React UI `/api` adapter; no separate execution kernel.
+- `src/product/native_api.rs`: native `/api/v1` entry including runs, approvals, reconciliation, skills, artifacts, groups and memory.
+- `src/product/frontend_api.rs`: React UI `/api` adapter; no separate execution kernel.
 - `sdk/typescript/src/index.ts`: typed, thin transport client.
 - `web/src/App.tsx`: active Chat, Models, Agents, Groups, Connections, Memory, Operations and Developer navigation.
-- `src/mcp.rs`: extensibility for external creative, search, code, data and other tools, with explicit consent and durable receipts.
+- `src/addons/mcp.rs`: extensibility for external creative, search, code, data and other tools, with explicit consent and durable receipts.
 
 ## Validation and limits
 
