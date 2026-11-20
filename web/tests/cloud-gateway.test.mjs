@@ -256,3 +256,15 @@ test('Workers AI transport failure retains admitted free quota',async()=>{
   assert.equal(second.status,429);
   assert.equal(calls,1);
 });
+
+test('Workers AI without a native usage receipt does not invent zero spent tokens',async()=>{
+ const DB=db(),env={DB,ALLOWED_ORIGIN:origin,
+  AI:{run:async()=>({response:'answer without token telemetry'})}};
+ let loaded;await worker.scheduled(null,env,{waitUntil(p){loaded=p}});await loaded;
+ const body={model:'@cf/meta/llama-3.1-8b-instruct-fast',
+  messages:[{role:'user',content:'hello'}]};
+ const response=await worker.fetch(endpoint('/v1/chat/completions','POST',body,{authorization:auth}),env)
+ assert.equal(response.status,200)
+ assert.equal(Object.hasOwn(await response.json(),'usage'),false,
+  'unknown provider token counts must not masquerade as zero-cost inference')
+})

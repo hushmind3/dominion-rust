@@ -411,7 +411,13 @@ async function freeProxy(request, env, user) {
           'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', ...quotaHeaders
         } });
       }
-      return json({ id: completionId, object: 'chat.completion', model: model.id, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } }, 200, quotaHeaders);
+      const measuredInput=answer?.usage?.prompt_tokens ?? answer?.usage?.input_tokens;
+      const measuredOutput=answer?.usage?.completion_tokens ?? answer?.usage?.output_tokens;
+      const usage=Number.isSafeInteger(measuredInput)&&measuredInput>=0 &&
+        Number.isSafeInteger(measuredOutput)&&measuredOutput>=0 ?
+        {usage:{prompt_tokens:measuredInput,completion_tokens:measuredOutput,
+          total_tokens:measuredInput+measuredOutput}}:{};
+      return json({ id: completionId, object: 'chat.completion', model: model.id, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],...usage }, 200, quotaHeaders);
     } catch { markModelResult(model.id, false); return uncertainFree(); }
   }
   let upstream;
@@ -466,6 +472,58 @@ function paidModels(env) {
       endpoint: providers[m.provider].url, apiKey: providers[m.provider].key,
       upstream_model: m.upstream_model || m.id }));
 }
+// The Cloud Worker must account for cache READ and cache WRITE at their
+// independently configured tariffs; cached reads are not free upstream and
+// cache writes may be more expensive than uncached input (GPT-5.6+).
+function nonnegativeMicroPrice(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : NaN;
+}
+function modernOpenAI(name) {
+  const match=/^gpt-(\d+)(?:\.(\d+))?(?:-|$)/.exec(String(name||''));
+  return Boolean(match && (+match[1]>5 || (+match[1]===5 && +(match[2]||0)>=6)));
+}
+async function paidSupplierBody(body, selected, user, endpoint, modelName, maxTokens) {
+  const supplier={model:modelName,messages:body.messages,max_tokens:maxTokens,stream:false,
+    ...(body.tools ? {tools:body.tools}:{}),
+    ...(body.tool_choice ? {tool_choice:body.tool_choice}:{})};
+  if(endpoint!=='https://api.openai.com/v1'||!modernOpenAI(modelName))return supplier;
+  // The customer's opaque key is never forwarded across tenants. The
+  // upstream key is derived from the authenticated account ID and model.
+  const identity=(await hash(user.id)).slice(0,32);
+  supplier.prompt_cache_key='dominion-'+identity+'-'+String(selected?.id||modelName).slice(0,48);
+  const messages=body.messages.map(m=>({...m}));
+  const profileAt=messages.findIndex(m=>m.role==='user'&&typeof m.content==='string'&&
+    m.content.startsWith('USER-SUPPLIED AGENT PROFILE'));
+  if(profileAt>=0){
+    let last=profileAt;
+    // The first four preserved chat turns remain byte-stable as the chat
+    // continues. A rolling tail or current owner request is never marked.
+    const end=Math.min(profileAt+5,messages.length-1);
+    for(let i=profileAt;i<end;i++){
+      if(messages[i].role==='user'&&typeof messages[i].content==='string')last=i;
+    }
+    if(typeof messages[last].content==='string'){
+      messages[last].content=[{type:'text',text:messages[last].content,
+        prompt_cache_breakpoint:{mode:'explicit'}}];
+      supplier.messages=messages;
+      supplier.prompt_cache_options={mode:'explicit',ttl:'30m'};
+    }
+  }else{
+    // Native rooms place a shared stable system prompt first, followed by
+    // source-indexed owner evidence. The current participant suffix varies.
+    const stable=messages.findIndex(m=>m.role==='user'&&typeof m.content==='string'&&
+      m.content.startsWith('Indexed older room evidence'));
+    if(stable>=0){
+      messages[stable].content=[{type:'text',text:messages[stable].content,
+        prompt_cache_breakpoint:{mode:'explicit'}}];
+      supplier.messages=messages;
+      supplier.prompt_cache_options={mode:'explicit',ttl:'30m'};
+    }
+  }
+  return supplier;
+}
 async function proxy(request, env, user) {
   if (!(await identityStatus(env,user)).verified) return err('Identity verification required for paid models',403);
   const body = await maxBody(request);
@@ -494,13 +552,19 @@ async function proxy(request, env, user) {
   const maxTokens = Math.min(4096, Math.max(1, Number(body.max_tokens || 1024)));
   if (!Number.isSafeInteger(maxTokens)) return err('Invalid max_tokens');
   const inputPrice = Number(selected?.input_micro_krw ?? env.PRICE_INPUT_MICRO_KRW), outputPrice = Number(selected?.output_micro_krw ?? env.PRICE_OUTPUT_MICRO_KRW);
-  if (![inputPrice, outputPrice].every(n => Number.isSafeInteger(n) && n > 0)) return err('Invalid pricing configuration', 503);
+  const cachedPrice=nonnegativeMicroPrice(selected?.cached_input_micro_krw ?? env.PRICE_CACHED_INPUT_MICRO_KRW,inputPrice);
+  const defaultWrite=modernOpenAI(upstreamModel)&&modelEndpoint==='https://api.openai.com/v1'?
+    Math.ceil(inputPrice*1.25):inputPrice;
+  const writePrice=nonnegativeMicroPrice(selected?.cache_write_micro_krw ?? env.PRICE_CACHE_WRITE_MICRO_KRW,defaultWrite);
+  if (![inputPrice, outputPrice].every(n => Number.isSafeInteger(n) && n > 0)||
+    ![cachedPrice,writePrice].every(n=>Number.isSafeInteger(n)&&n>=0))
+    return err('Invalid pricing configuration', 503);
   const encoded = JSON.stringify({messages:body.messages,tools:body.tools||[],tool_choice:body.tool_choice||'auto'});
   const inputBytes = new TextEncoder().encode(encoded).length;
   if (inputBytes > 100000) return err('Context too large');
   // UTF-8 bytes conservatively bound standard BPE input; the settlement
   // still refuses to debit beyond the amount explicitly reserved.
-  const reserve = inputBytes * inputPrice + maxTokens * outputPrice;
+  const reserve = inputBytes * Math.max(inputPrice,cachedPrice,writePrice) + maxTokens * outputPrice;
   if (!Number.isSafeInteger(reserve) || reserve > 1000000000) return err('Request exceeds limit');
   // One guarded D1 UPSERT admits concurrent requests under the same global
   // daily ceiling. A SELECT followed by INSERT was a spending race.
@@ -545,9 +609,7 @@ async function proxy(request, env, user) {
     const upstream = await fetch(modelEndpoint.replace(/\/$/, '') + '/chat/completions', {
       method: 'POST',
       headers: { authorization: 'Bearer ' + modelKey, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: upstreamModel, messages: body.messages, max_tokens: maxTokens, stream: false,
-        ...(body.tools ? { tools: body.tools } : {}),
-        ...(body.tool_choice ? { tool_choice: body.tool_choice } : {}) }),
+      body: JSON.stringify(await paidSupplierBody(body,selected,user,modelEndpoint,upstreamModel,maxTokens)),
       signal: AbortSignal.timeout(90000)
     });
     if (!upstream.ok) {
@@ -562,7 +624,14 @@ async function proxy(request, env, user) {
     const input = result.usage?.prompt_tokens, output = result.usage?.completion_tokens;
     if (!Number.isSafeInteger(input) || !Number.isSafeInteger(output) || input < 0 || output < 0)
       throw new Error('Upstream usage unavailable');
-    const measured = input * inputPrice + output * outputPrice;
+    const cached = result.usage?.prompt_tokens_details?.cached_tokens ??
+      result.usage?.input_tokens_details?.cached_tokens ?? 0;
+    const writes = result.usage?.prompt_tokens_details?.cache_write_tokens ??
+      result.usage?.input_tokens_details?.cache_write_tokens ?? 0;
+    if (![cached,writes].every(v=>Number.isSafeInteger(v)&&v>=0) ||
+      cached+writes>input)throw new Error('Invalid upstream cache usage');
+    const measured = (input-cached-writes)*inputPrice +
+      cached*cachedPrice + writes*writePrice + output*outputPrice;
     if (!Number.isSafeInteger(measured) || measured > reserve)
       throw new Error('Usage exceeds reserved tokens; reconciliation required');
     charge = measured;

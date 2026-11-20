@@ -232,3 +232,11 @@ rejection may safely fall back to the next model. Error JSON carries
 not proof of provider billing and this request allowance is not a
 token-denominated spending cap. This request ceiling is separate from
 paid micro-KRW allowances and supplier billing.
+
+## Sub4 2026 native prompt caching and cost reconciliation
+
+When a paid model uses the first-party OpenAI endpoint and GPT-5.6+, the Worker creates a server-side tenant-bound cache key and an explicit stable chat/room prefix breakpoint. Changing user suffixes are not eligible for cache writes. No cache extension is sent to other upstreams. Latest OpenAI requires a 30m breakpoint TTL; legacy 12h cache TTL hints must not be forwarded.
+
+Optional tariff fields in `PAID_MODELS_JSON` are integer **micro-KRW per token**: `cached_input_micro_krw` and `cache_write_micro_krw` in addition to existing `input_micro_krw` and `output_micro_krw`. Legacy model settings can use Worker variables `PRICE_CACHED_INPUT_MICRO_KRW` and `PRICE_CACHE_WRITE_MICRO_KRW`. Unconfigured cached-input pricing defaults conservatively to ordinary input pricing rather than inventing a discount. First-party GPT-5.6+ cache-write reservations default to 1.25× ordinary input; explicitly verify real supplier tariffs for production. D1 settlement uses provider-observed `cached_tokens` and `cache_write_tokens` separately. Missing or inconsistent provider usage retains an uncertain reservation for later reconciliation; it is not a confirmed charge.
+
+Workers AI model replies without a token usage receipt omit `usage` rather than reporting fabricated zero tokens. The Rust adapter classifies such requests as unmetered.

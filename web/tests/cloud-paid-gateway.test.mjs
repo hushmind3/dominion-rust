@@ -161,3 +161,56 @@ test('invalid paid tool requests never reserve the operator budget',async()=>{
  assert.equal(DB.state.admissions,0)
  assert.equal(DB.state.credits,1000000)
 })
+
+test('2026 paid OpenAI caches stable chat prefix and settles discounted reads and charged writes',async()=>{
+ const DB=database(2000000),env=configured(DB),initial=DB.state.credits
+ env.PAID_MODELS_JSON=JSON.stringify([{
+  id:'dominion/cache-model',provider:'openai',upstream_model:'gpt-6.1-sol',
+  input_micro_krw:20,cached_input_micro_krw:2,
+  cache_write_micro_krw:25,output_micro_krw:3
+ }])
+ const largeProfile='USER-SUPPLIED AGENT PROFILE (not higher-priority than system policy):\n'+
+  'Review our technical requirements. '.repeat(120)
+ const body={model:'dominion/cache-model',messages:[
+  {role:'system',content:'You are a safe assistant.'},
+  {role:'user',content:largeProfile},
+  {role:'user',content:'stable first requirement'},
+  {role:'assistant',content:'prior answer'},
+  {role:'user',content:'new question'}],max_tokens:10}
+ const old=globalThis.fetch;let observed
+ globalThis.fetch=async(_url,init)=>{
+  observed=JSON.parse(init.body)
+  return new Response(JSON.stringify({choices:[{finish_reason:'stop',
+    message:{role:'assistant',content:'cached response'}}],
+    usage:{prompt_tokens:200,completion_tokens:10,
+      prompt_tokens_details:{cached_tokens:120,cache_write_tokens:40}}}),
+    {status:200,headers:{'content-type':'application/json'}})
+ }
+ try{
+  const response=await worker.fetch(endpoint(body),env)
+  assert.equal(response.status,200)
+  assert.equal(observed.prompt_cache_options.mode,'explicit')
+  assert.equal(observed.prompt_cache_options.ttl,'30m')
+  assert.match(observed.prompt_cache_key,/^dominion-/)
+  assert.equal(observed.messages[2].content[0].prompt_cache_breakpoint.mode,'explicit')
+  assert.equal(observed.messages.at(-1).content,'new question')
+  const charged=40*20+120*2+40*25+10*3
+  assert.equal([...DB.state.usage.values()][0].charged,charged)
+  assert.equal(initial-DB.state.credits,charged)
+ }finally{globalThis.fetch=old}
+})
+test('invalid provider cache receipt never settles as a measured discount',async()=>{
+ const DB=database(),env=configured(DB),old=globalThis.fetch
+ globalThis.fetch=async()=>new Response(JSON.stringify({
+  choices:[{message:{role:'assistant',content:'invalid cache'}}],
+  usage:{prompt_tokens:10,completion_tokens:2,
+    prompt_tokens_details:{cached_tokens:30,cache_write_tokens:0}}
+ }),{status:200})
+ try{
+  const result=await worker.fetch(endpoint(payload),env)
+  assert.equal(result.status,503)
+  const row=[...DB.state.usage.values()][0]
+  assert.equal(row.status,'uncertain')
+  assert.equal(row.charged,row.reserved)
+ }finally{globalThis.fetch=old}
+})
