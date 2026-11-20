@@ -85,3 +85,70 @@ A one-off tagged CI push runs actual Rust HTTP + Vite + Chromium integration wit
 ### Release boundary
 
 Only \`dominion-sub4\` code and test files were committed. No live \`dominion-cloud\`, \`dominion-website\`, \`dominionai.kr\` or production database migrations were modified. A deployment of the experimental Sub4 backend over the user's main production service would breach the existing independent-branch constraint and cannot provide actual model credentials that are absent from the account. Release is therefore a separate controlled action after real-provider credentials and host access are available.
+
+## 2026-11-20: Repeatable real inference receipts
+
+### Real Workers AI A/B: three paired independent requests
+
+Through the authenticated Cloudflare Workers AI endpoint, the actual model
+@cf/meta/llama-3.1-8b-instruct-fast received the same historical engineering
+data and task under the previous 12-turn composite prompt and the Sub4-style
+six stable + six recent role-preserving projection. All three pairs returned
+identical token counters for the selected deterministic input (temperature 0;
+max 24 output tokens). **This is direct Workers AI inference, not a deployed
+DOMINION Rust runtime.** Answer quality is not inferred from the token counts.
+
+| Upstream receipt | Old composite | New bounded projection |
+|---|---:|---:|
+| Input tokens, each of 3 samples | 1,321 | 1,207 |
+| Output tokens, each sample | 24 | 24 |
+| Cache-read tokens, each sample | 0 | 0 |
+| Workers AI neurons, each sample | 6.277448654 | 5.807932377 |
+| HTTP elapsed, ms | 639, 715, 595 | 788, 664, 476 |
+
+**Observed difference: 114 fewer input tokens per call, or 8.6%, for this
+synthetic prompt workload.** Neurons decreased roughly 7.5%; median HTTP
+latency was 639ms old and 664ms new, so no latency saving is claimed.
+There were no cache hits. Because different history was selected, completion
+quality and capability must be compared separately before a general claim.
+
+### Actual llama.cpp / Qwen3.5 CPU prefill
+
+[Successful isolated GitHub Actions run](https://github.com/hushmind3/dominion-rust/actions/runs/44711254578)
+used a real 2026 Qwen3.5-0.8B-Q4_K_M GGUF (public Unsloth distribution,
+about 508MB) inside the official ggml-org llama.cpp server Docker image.
+The GitHub-hosted CPU had a 4-vCPU limit, a single model slot and one stable
+8,878-character prompt head; three /completion requests differed only in
+their current-question suffix. Cache reuse was enabled on each request.
+
+| Server receipt | Cold | Warm 1 | Warm 2 |
+|---|---:|---:|---:|
+| HTTP elapsed, ms | 9,913.3 | 284.9 | 269.9 |
+| Prompt evaluated tokens (prompt_n) | 1,520 | 2 | 3 |
+| Prefill time (prompt_ms) | 9,688.328 | 77.546 | 58.624 |
+| Server-reported tokens_cached | 1,527 | 1,525 | 1,526 |
+| Server-reported tokens_evaluated | 1,520 | 1,518 | 1,519 |
+| Generated tokens | 8 | 8 | 8 |
+
+This directly verifies a huge **local KV-prefill reuse** on a fixed
+prefix for that llama.cpp instance. The two token fields above preserve
+the server's own naming/meaning; cached KV tokens are not a billing discount.
+It is NOT a measurement of the user's local RTX 3070, an Ollama service,
+or a 27B model, and the extremely short outputs are not an agent benchmark.
+[Download the actual JSON result on GitHub](https://github.com/hushmind3/dominion-rust/actions/runs/44711254578/artifacts/14616927567).
+
+### Verification boundaries
+
+- Real Rust HTTP + React/Vite + Chromium, with a transparent loopback
+  model **fixture**, passed the 9-test E2E suite on
+  [run 44709808079](https://github.com/hushmind3/dominion-rust/actions/runs/44709808079).
+- Real independent Workers AI model inference: three old/new pairs above,
+  including real upstream model usage receipts.
+- Real llama.cpp Qwen3.5 local CPU inference: cold and warmed KV receipts
+  above, no fabricated tokenizer counters.
+- Real first-party paid OpenAI GPT-5.6+ cache economics in KRW: NOT measured.
+  The connected production Cloudflare Worker exposes only D1, Workers AI,
+  allowed-origin and Google OAuth client ID; no paid supplier secret or model
+  tariff is configured.
+- Production Dominion website, Worker and user hardware are unchanged.
+  No Sub4 code was silently released onto the production main service.
