@@ -8,6 +8,20 @@ pub fn effective_budget_krw(run:&Run)->f64{
 }
 
 pub fn allowed_tool(run:&Run,name:&str)->bool{
+    // Room participants are lower-trust peers, not independent delegated
+    // Worker owners. Even a corrupted read_only flag cannot grant a Room
+    // shell, write, external MCP effect or spawn permission.
+    if run.room_binding.is_some(){
+        return run.read_only && matches!(name,
+            "list_files"|"read_file"|"read_tool_receipt"|
+            "search_tool_receipts"|"search_files"|"git_status"|"git_diff"|
+            "read_program"|"memory_search"|"list_skills"|"load_skill"|
+            "github_list_repositories"|"github_read_file"|
+            "github_list_branches"|"github_list_issues"|"github_get_issue"|
+            "github_list_pull_requests"|"github_get_pull_request"|
+            "google_drive_search"|"google_drive_read_text"|
+            "google_docs_get"|"google_sheets_get"|"tool_search");
+    }
     // Task-oriented children share the parent model/runtime but expose only
     // task-relevant tool classes. Unknown tools never bypass this scope.
     if run.parent_run_id.is_some(){
@@ -64,6 +78,27 @@ pub fn select_catalog(run:&Run,tools:Vec<Value>,has_children:bool,denied:&[Strin
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn room_peer_cannot_delegate_or_escalate_through_read_only_flag(){
+        let mut run=crate::domain::Run::new(crate::domain::CreateRun{
+            instruction:"Inspect".into(),budget_krw:Some(100.0),
+            max_steps:Some(3)},3).unwrap();
+        run.room_binding=Some(crate::domain::RoomRunBinding{
+            room_id:uuid::Uuid::new_v4(),
+            owner_message_index:0,owner_at_ms:10,participant:"peer".into()
+        });
+        run.read_only=true;
+        assert!(admitted_tool(&run,"read_file",&[]));
+        assert!(admitted_tool(&run,"memory_search",&[]));
+        assert!(!admitted_tool(&run,"spawn_subagent",&[]));
+        assert!(!admitted_tool(&run,"merge_subagent",&[]));
+        assert!(!admitted_tool(&run,"run_program",&[]));
+        assert!(!admitted_tool(&run,"shell",&[]));
+        assert!(!admitted_tool(&run,"mcp__remote__get",&[]));
+        run.read_only=false;
+        assert!(!admitted_tool(&run,"write_file",&[]));
+        assert!(!admitted_tool(&run,"read_file",&[]));
+    }
     use crate::{domain::{CreateRun,ToolCall},tools};
     use serde_json::json;
     #[test]

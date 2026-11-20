@@ -615,3 +615,7 @@ The historical **tool-free** Room provider route retains its cache-aware Respons
 ### Native Room event correlation and owner-turn admission
 
 The native Room lane now prevents a new owner turn or Room reset while an earlier source-linked Run lacks a committed Room outcome. Exact clientMessageId retries remain permissible. The existing /rooms/{id}/state payload exposes the underlying Run status/ID and pending native approval metadata; /approvals resolves the same native Run ID and includes the room session ID. /rooms/{id}/messages lazily reconciles completed Run receipts, never dispatching additional model calls. Unified Room event projections expose originRunId only when a durable accepted Room receipt refers to a native Run, preserving existing source-local Room seq numbers.
+
+### Native Room authority and stop boundaries
+
+A native Room Run is constrained by a Room-specific read-only native policy even when model-authored tool arguments, old queued calls, or an accidentally unset read_only flag attempt to request more permission. New owner turns, Room reset and room configuration changes are blocked while a source-linked Run has no durable Room receipt. Owner stop propagates through the existing Engine cancellation path; uncertain external effects still need manual reconciliation. Concurrent terminal Run finalizers use the original Room revision gate and recognize a competing already-committed source Run receipt rather than duplicating billing.

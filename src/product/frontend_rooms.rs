@@ -340,6 +340,13 @@ async fn save(State(engine):State<Arc<Engine>>,Json(input):Json<RoomDraft>)
 }
 async fn update_existing(engine:&Arc<Engine>,id:Uuid,view:FrontendRoom,participants:Vec<Participant>)
   ->Result<Json<Value>,Fault>{
+  room_native::reconcile_ready(engine,id).await.map_err(bad)?;
+  let prior=engine.groups.get(id).await.ok_or_else(missing)?;
+  if room_native::unsettled(engine,&prior).await{
+    return Err((StatusCode::CONFLICT,Json(json!({
+        "error":"cannot change Room configuration while native speaker Run is unsettled"
+    }))));
+  }
   let room=engine.groups.configure(id,view.clone(),participants).await.map_err(bad)?;
   let session_id=room_session(id);
   if let Err(err)=engine.frontend.mutate(|data|{
@@ -679,6 +686,10 @@ async fn reset(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
 }
 async fn stop(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Value>,Fault>{
+  let snapshot=engine.groups.get(id).await.ok_or_else(missing)?;
+  // Owner STOP propagates to the original Engine cancellation lifecycle.
+  // In-flight tool effects remain uncertain until journal reconciliation.
+  room_native::cancel_unsettled(&engine,&snapshot).await.map_err(bad)?;
   let room=engine.groups.stop(id).await.map_err(bad)?;
   Ok(Json(json!({"ok":true,"room":room_view(&room)})))
 }

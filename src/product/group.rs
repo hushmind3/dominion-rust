@@ -833,7 +833,21 @@ impl Groups {
             });
         }
         room.updated_at_ms=now_ms();
-        self.save(room).await
+        // A Room state reader and the original HTTP request can both
+        // observe this terminal Run at once. The first wins the fsync
+        // revision; the other must recognize its committed receipt rather
+        // than returning a spurious stale-write error or rebilling.
+        match self.save(room).await{
+            Ok(committed)=>Ok(committed),
+            Err(error) if error.contains("changed concurrently")=>{
+                let latest=self.get(binding.room_id).await.ok_or("Room disappeared")?;
+                if latest.usage_receipts.iter().any(|receipt|
+                    receipt.origin_run_id==Some(run.id)){
+                    Ok(latest)
+                }else{Err(error)}
+            }
+            Err(error)=>Err(error)
+        }
     }
     pub async fn next(&self,model:&ModelClient,id:Uuid)->Result<Room,String>{
         self.next_for(model,id,None).await

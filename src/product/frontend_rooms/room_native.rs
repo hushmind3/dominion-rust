@@ -41,6 +41,17 @@ pub(super) async fn unsettled(engine:&Arc<Engine>,room:&Room)->bool{
     }
     false
 }
+pub(super) async fn cancel_unsettled(engine:&Arc<Engine>,room:&Room)->Result<(),String>{
+    if !config_of(room).tools_enabled{return Ok(());}
+    for participant in &room.participants{
+        if let Some(run)=source_run(engine,room,&participant.name).await{
+            if !run.terminal(){
+                engine.cancel(run.id).await?;
+            }
+        }
+    }
+    Ok(())
+}
 pub(super) async fn executions(engine:&Arc<Engine>,room:&Room)->Vec<Value>{
     let mut runs=Vec::new();
     for participant in &room.participants{
