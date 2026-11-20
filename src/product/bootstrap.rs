@@ -1,6 +1,6 @@
 //! Application composition root: actual file storage and external adapters
 //! are chosen here, not by the natural-language instruction executor.
-use crate::{algorithms::{AgentAlgorithm,DefaultAlgorithm},config::Settings,engine::Engine,group::Groups,mcp::Mcp,
+use crate::{algorithms::{AgentAlgorithm,DefaultAlgorithm},runtime_services::RuntimeServices,config::Settings,engine::Engine,group::Groups,mcp::Mcp,
     ports::{RunRepository,RunStorePort},store::Store};
 use std::sync::Arc;
 
@@ -48,6 +48,21 @@ impl Engine{
         let product=super::ProductHost::open(&settings,groups,mcp)?;
         Engine::from_ports_with_loop(settings,
             Arc::new(RunStorePort::new(backend)),product,algorithm,loop_driver)
+    }
+    /// Full host injection for embedders. The supplied port may choose any
+    /// model, memory backend and external tool adapter, but cannot replace
+    /// the native intent journal, approval gate or receipt admission logic.
+    pub fn new_with_runtime_services(settings:Settings,
+        backend:Arc<dyn RunRepository>,groups:Arc<Groups>,mcp:Arc<Mcp>,
+        algorithm:Arc<dyn AgentAlgorithm>,
+        loop_driver:Arc<dyn dominion_agent_core::AgentLoop>,
+        services:Arc<dyn RuntimeServices>)->Result<Arc<Self>,String>{
+        // Compatibility product services remain available to HTTP/SDK callers
+        // while the native execution kernel exclusively uses the injected port.
+        let product=Arc::new(super::ProductHost::open(&settings,groups,mcp)?);
+        Engine::from_ports_with_services(settings,
+            Arc::new(RunStorePort::new(backend)),product,algorithm,
+            loop_driver,services)
     }
 }
 /// Operator-owned optional prompt profile. No Run can read arbitrary files

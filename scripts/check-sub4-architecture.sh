@@ -113,6 +113,7 @@ required_count src/algorithms/runner.rs 'Self::admit_algorithm_catalog' 1
 required_count src/engine.rs 'fn admit_algorithm_catalog' 1
 required_count src/engine.rs 'const SYSTEM|local_task_catalog::|tool_discovery::|compact_execution\\(' 0
 required_count src/product/bootstrap.rs 'pub fn new_with_algorithm' 2
+required_count src/product/bootstrap.rs 'pub fn new_with_runtime_services' 1
 # The Run kernel must not know a remote transport or duplicate progress loop.
 required_count src/engine.rs 'McpProgress|McpCallOutcome|call_with_progress|starts_with\("mcp__"\)' 0
 required_count src/addons/execution.rs '^pub async fn invoke\(' 1

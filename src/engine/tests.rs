@@ -645,3 +645,72 @@ async fn workflow_loop_identity_is_pinned_before_queued_work_resumes(){
     drop(engine);
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+
+/// An embedding host can substitute model/memory/tool capabilities without
+/// touching the native Run state machine or production ProductHost.
+struct DenyOnlyServices;
+impl crate::runtime_services::RuntimeServices for DenyOnlyServices{
+    fn select_model(&self,_settings:&Settings,_base:&ModelClient,
+        _provider:&str,_model:&str)->Result<ModelClient,String>{
+        Err("injected model route selected".into())
+    }
+    fn throttle<'a>(&'a self,_provider:&'a str)
+        ->crate::runtime_services::ServiceFuture<'a,()>{
+        Box::pin(async {})
+    }
+    fn tools<'a>(&'a self,_settings:&'a Settings)
+        ->crate::runtime_services::ServiceFuture<'a,Vec<Value>>{
+        Box::pin(async {Vec::new()})
+    }
+    fn handles(&self,_name:&str)->bool{false}
+    fn requires_approval(&self,_name:&str)->bool{true}
+    fn connected_approval(&self,_name:&str)->bool{true}
+    fn invoke<'a>(&'a self,_settings:&'a Settings,
+        _store:&'a Arc<RunStorePort>,_id:Uuid,_call:&'a ToolCall,
+        _cancel:watch::Receiver<bool>)
+        ->crate::runtime_services::ServiceFuture<'a,Result<ToolEffectOutcome,String>>{
+        Box::pin(async{Ok(ToolEffectOutcome::Settled(Err("external tools disabled".into())))})
+    }
+    fn memory_search<'a>(&'a self,_scope:&'a str,_query:&'a str,_limit:usize)
+        ->crate::runtime_services::ServiceFuture<'a,Value>{
+        Box::pin(async{json!([{"title":"injected-only-note"}])})
+    }
+    fn memory_save<'a>(&'a self,_scope:&'a str,_title:&'a str,
+        _content:&'a str)
+        ->crate::runtime_services::ServiceFuture<'a,Result<Value,String>>{
+        Box::pin(async{Err("injected memory store is read-only".into())})
+    }
+    fn focused_notes<'a>(&'a self,_run:&'a Run)
+        ->crate::runtime_services::ServiceFuture<'a,String>{
+        Box::pin(async{String::new()})
+    }
+    fn release<'a>(&'a self,_id:Uuid)
+        ->crate::runtime_services::ServiceFuture<'a,()>{
+        Box::pin(async{})
+    }
+}
+#[tokio::test]
+async fn runtime_injects_model_and_memory_without_reaching_product_backend(){
+    let root=std::env::temp_dir().join(format!("dominion-runtime-port-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    settings.addons_enabled=false;
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+    let backend:Arc<dyn crate::ports::RunRepository>=store;
+    let mcp=Arc::new(crate::mcp::Mcp::new(Vec::new()).unwrap());
+    let engine=Engine::new_with_runtime_services(settings,backend,groups,mcp,
+        Arc::new(crate::algorithms::DefaultAlgorithm::default()),
+        Arc::new(dominion_agent_algo::ReActLoop),Arc::new(DenyOnlyServices)).unwrap();
+    assert_eq!(engine.model_for_selection("any","model").err().unwrap(),
+        "injected model route selected");
+    assert_eq!(engine.services.memory_search("global","note",5).await,
+        json!([{"title":"injected-only-note"}]));
+    assert!(engine.services.memory_save("global","note","content").await.is_err());
+    assert!(engine.knowledge.list("global").await.is_empty(),
+        "runtime calls must not fall through to the product memory database");
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}

@@ -408,3 +408,14 @@ cannot change speaker as `Room.rounds` increments. Existing routes,
 room UI, request/response contracts and sequential write serialization
 remain intact. This is a durable task board for room turns, not a generic
 parallel agent DAG executor or a new database.
+
+### Direct runtime service injection (native SDK embedders)
+
+`Engine::new_with_runtime_services(settings,repository,groups,mcp,algorithm,
+loop_driver,services)` accepts an operator-implemented
+`Arc<dyn RuntimeServices>`. The concrete product host remains a compatibility
+surface for existing HTTP routes, while model resolution, request throttling,
+tool advertisement/invocation and memory retrieval/save used by workers are
+exclusively dispatched through the supplied runtime service port. A regression
+test injects a deny-only provider and an isolated mock memory result and
+asserts neither request falls through to the normal ProductHost.
