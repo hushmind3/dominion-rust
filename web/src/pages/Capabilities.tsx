@@ -15,7 +15,7 @@ const families=[
  {id:'builtin',label:t('cap.builtin'),icon:TerminalSquare},
 ] as const
 
-export function CapabilitiesPage({navigate}:{navigate:(page:Page)=>void}){
+export function CapabilitiesPage({navigate,embedded=false}:{navigate:(page:Page)=>void;embedded?:boolean}){
  useLocale()
  const data=useRemote<{items:Capability[]}>('/api/capabilities',{items:[]})
  const catalog=useRemote<Channel[]>('/api/channels/catalog',[])
@@ -33,7 +33,7 @@ export function CapabilitiesPage({navigate}:{navigate:(page:Page)=>void}){
   setRefreshing(true)
   try{await Promise.all([data.reload(),catalog.reload()])}finally{setRefreshing(false)}
  }
- return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
+ return <div className={embedded?"min-w-0":"mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8"}>
   <Headline eyebrow={t('ui.eyebrow.capabilities')} title={t('cap.title')} description={t('cap.description')} actions={<Button variant="secondary" disabled={refreshing} onClick={()=>void reload()}><RefreshCw size={16}/> {t('cap.refresh')}</Button>}/>
   <Notice message={data.error||catalog.error}/>
   <div className="mb-4 flex items-center gap-2"><Search size={16}/><TextInput aria-label={t('cap.searchAria')} value={query} onChange={event=>setQuery(event.target.value)} placeholder={t('cap.searchPlaceholder')}/></div>
