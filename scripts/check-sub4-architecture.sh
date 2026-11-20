@@ -19,11 +19,11 @@ required_count src/engine.rs '^[[:space:]]*async fn perform_tool\(' 1
 required_count src/journal.rs '^[[:space:]]*pub fn begin\(' 1
 required_count src/journal.rs '^[[:space:]]*pub fn finish\(' 1
 # Prevent split admission contracts and duplicate credential-free metadata fetchers.
-required_count src/frontend_rooms.rs '^[[:space:]]*async fn admit_owner_message\\(' 1
-required_count src/frontend_rooms.rs 'engine\\.groups\\.say_once\\(' 1
-required_count src/frontend_public_http.rs '^[[:space:]]*pub\\(crate\\) async fn read_json\\(' 1
-required_count src/frontend_huggingface.rs 'reqwest::Client::builder\\(' 0
-required_count src/frontend_provider_public.rs 'reqwest::Client::builder\\(' 0
+required_count src/frontend_rooms.rs '^[[:space:]]*async fn admit_owner_message' 1
+required_count src/frontend_rooms.rs 'engine[.]groups[.]say_once' 1
+required_count src/frontend_public_http.rs '^[[:space:]]*pub[(]crate[)] async fn read_json' 1
+required_count src/frontend_huggingface.rs 'reqwest::Client::builder' 0
+required_count src/frontend_provider_public.rs 'reqwest::Client::builder' 0
 # Do not resurrect an independent agent run loop or retired media/RSI executor.
 for obsolete in \
   src/engine/chat/runtime.rs \

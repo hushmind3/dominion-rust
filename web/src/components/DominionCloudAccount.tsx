@@ -17,7 +17,7 @@ const catalogProviderKind=(provider:CatalogProvider):'anthropic'|'openai'=>/anth
 // Existing Dominion-owned Worker; staging deployments override this at build time.
 const cloudUrl=(import.meta.env.VITE_DOMINION_CLOUD_URL||'https://dominion-cloud.dominion-hushmind.workers.dev').replace(/\/$/,'')
 const configuredClientId=import.meta.env.VITE_DOMINION_GOOGLE_CLIENT_ID||''
-export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initialProviderId,hideManagementNavigation=false}:{onProviderAdded:()=>Promise<unknown>;initialTab?:'cloud'|'providers';initialProviderId?:string;hideManagementNavigation?:boolean}) {
+export function DominionCloudAccount({onProviderAdded,initialTab='cloud',hideManagementNavigation=false}:{onProviderAdded:()=>Promise<unknown>;initialTab?:'cloud'|'providers';hideManagementNavigation?:boolean}) {
  const button=useRef<HTMLDivElement>(null)
  const [googleClientId,setGoogleClientId]=useState(configuredClientId)
  const [socialLogin,setSocialLogin]=useState({kakao:false,naver:false})
@@ -61,7 +61,6 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
  const [catalogProviderId,setCatalogProviderId]=useState('')
  const [catalogBusy,setCatalogBusy]=useState(false)
  const catalogBrowseSeq=useRef(0)
- const initialCatalogApplied=useRef('')
  const [registered,setRegistered]=useState<{providerId:string;model:string;source:'catalog'|'openrouter'|'cloud'}|null>(null)
  const [routerSelected,setRouterSelected]=useState('')
  const [catalogMessage,setCatalogMessage]=useState('')
@@ -223,18 +222,6 @@ export function DominionCloudAccount({onProviderAdded,initialTab='cloud',initial
   }catch(e){setCatalogMessage((e as Error).message)}finally{setCatalogBusy(false)}
  }
  useEffect(()=>{if(managementTab==='providers'&&!catalog.length)void loadCatalog()},[managementTab])
- useEffect(()=>{
-  if(!initialProviderId||managementTab!=='providers'||!catalog.length||initialCatalogApplied.current===initialProviderId)return
-  const ordered=[...catalog].sort((a,b)=>a.name.localeCompare(b.name))
-  const index=ordered.findIndex(p=>p.id===initialProviderId)
-  if(index<0)return
-  initialCatalogApplied.current=initialProviderId
-  setCatalogSearch('');setProviderSort('name');setProviderMinModels(false)
-  setProviderPage(Math.floor(index/40))
-  setCatalogId(initialProviderId);setCatalogModel('');setCatalogModels([])
-  setCatalogModelSearch('');setCatalogKey('');setRegistered(null)
-  void loadCatalogModels(initialProviderId)
- },[initialProviderId,managementTab,catalog])
  async function loadCatalogModels(providerId=catalogId){
   const request=++catalogBrowseSeq.current
   if(!providerId)return

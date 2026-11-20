@@ -131,15 +131,6 @@ test('OpenRouter free model lookup remains separate from authenticated registrat
  assert.match(source,/무료 모델 조회 \(키 불필요\)/)
 })
 
-test('public catalog opens the provider model list without entering an API key',()=>{
- const models=readFileSync(new URL('../src/pages/Models.tsx',import.meta.url),'utf8')
- const account=readFileSync(new URL('../src/components/DominionCloudAccount.tsx',import.meta.url),'utf8')
- assert.match(models,/setBrowseProviderId\(p\.id\);setTab\('connect'\)/)
- assert.match(models,/initialProviderId=\{tab==='connect'\?browseProviderId:undefined\}/)
- assert.match(account,/initialCatalogApplied\.current=initialProviderId/)
- assert.match(account,/void loadCatalogModels\(initialProviderId\)/)
- assert.match(account,/setProviderPage\(Math\.floor\(index\/40\)\)/)
-})
 test('authenticated model registration can open the exact newly registered provider in chat',()=>{
  const account=readFileSync(new URL('../src/components/DominionCloudAccount.tsx',import.meta.url),'utf8')
  assert.match(account,/provider:registered\.providerId,model:registered\.model/)
@@ -189,6 +180,8 @@ test('provider discovery has one searchable connection surface rather than dupli
  assert.doesNotMatch(hub,/id:'catalog'/)
  assert.doesNotMatch(hub,/catalogVisible|setCatalogSort|setCatalogLimit|CatalogResponse/)
  assert.ok(!hub.includes("'/api/providers/catalog'"),'provider list loads only in the connection surface')
+ assert.ok(!account.includes('initialCatalogApplied')&&!account.includes('initialProviderId'),
+  'retired cross-tab activation props must not remain')
  assert.ok(account.includes("'/api/providers/catalog'"),
   'the consolidated surface retains public credential-free discovery')
  assert.ok(account.includes("/api/providers/catalog/"),
