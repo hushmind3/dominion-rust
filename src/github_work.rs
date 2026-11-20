@@ -248,7 +248,7 @@ async fn execute_with(token:&str,base:&str,call:&ToolCall)->McpCallOutcome{
 #[cfg(test)]
 mod tests{
  use super::*;
- use axum::{extract::{Path,State},routing::{get,put},http::{StatusCode as AxumStatus,HeaderMap},Json,Router};
+ use axum::{extract::{Path,State},routing::get,http::{StatusCode as AxumStatus,HeaderMap},Json,Router};
  use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
  #[test]
  fn github_paths_require_explicit_branch_and_reject_workflow_edits(){

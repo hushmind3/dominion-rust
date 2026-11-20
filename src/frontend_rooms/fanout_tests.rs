@@ -3,7 +3,7 @@
 //! Rust Groups + registered frontend API path, not invented transcript rows.
 use super::*;
 use crate::{
-    config::Settings,domain::CreateRun,group::{Groups,NewRoom,Participant},
+    config::Settings,group::{Groups,NewRoom,Participant},
     store::Store,
 };
 use axum::{extract::State as MockState,routing::post,Json,Router};

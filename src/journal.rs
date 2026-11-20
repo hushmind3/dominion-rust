@@ -343,7 +343,6 @@ pub fn needs_recovery(run:&Run)->bool{
 }
 pub fn recover(run:&mut Run)->bool{
     if !needs_recovery(run){return false;}
-    let interrupted=matches!(run.status,RunStatus::Running|RunStatus::Queued);
     let approved_but_not_started=run.status==RunStatus::AwaitingApproval
         && run.approval_decision.is_some();
     run.status=RunStatus::Paused;
