@@ -116,6 +116,8 @@ pub(crate) fn room_usage(room:&Room)->Value{
     let writes=room.usage_receipts.iter().map(|m|m.cache_write_tokens).sum::<u64>();
     let unmetered=room.usage_receipts.iter().filter(|m|
         m.provider_usage_reported!=Some(true)).count();
+    let unknown_cache=room.usage_receipts.iter().filter(|m|
+        m.cache_usage_reported!=Some(true)).count();
     let delivered=room.usage_receipts.iter().filter(|m|m.accepted).count();
     let delta_calls=room.usage_receipts.iter()
         .filter(|m|m.reused_server_continuation).count();
@@ -128,6 +130,8 @@ pub(crate) fn room_usage(room:&Room)->Value{
             .collect::<Vec<_>>();
         let not_reported=receipts.iter().filter(|r|
             r.provider_usage_reported!=Some(true)).count();
+        let unknown_cache=receipts.iter().filter(|r|
+            r.cache_usage_reported!=Some(true)).count();
         json!({"agentId":p.name,"calls":receipts.len(),
             "unmeteredCalls":not_reported,
             "deliveredCalls":receipts.iter().filter(|r|r.accepted).count(),
@@ -138,6 +142,7 @@ pub(crate) fn room_usage(room:&Room)->Value{
                 .filter(|r|r.remote_history_rebased).count(),
             "wirePromptChars":receipts.iter().map(|r|r.wire_prompt_chars).sum::<usize>(),
             "providerUsageReported":!receipts.is_empty() && not_reported==0,
+            "cacheUsageReported":!receipts.is_empty() && unknown_cache==0,
             "promptTokens":receipts.iter().map(|r|r.input_tokens).sum::<u64>(),
             "completionTokens":receipts.iter().map(|r|r.output_tokens).sum::<u64>(),
             "cachedPromptTokens":receipts.iter().map(|r|r.cached_input_tokens).sum::<u64>(),
@@ -163,6 +168,8 @@ pub(crate) fn room_usage(room:&Room)->Value{
         "wirePromptChars":total_wire_chars,
         "wireUnits":"characters_transmitted_not_provider_billing_tokens",
         "unmeteredCalls":unmetered,
+        "cacheUnreportedCalls":unknown_cache,
+        "cacheUsageReported":!room.usage_receipts.is_empty()&&unknown_cache==0,
         "providerUsageReported":!room.usage_receipts.is_empty()&&unmetered==0,
         "usageStatus":if room.usage_receipts.is_empty(){"not_started"}
             else if unmetered>0{"partial_or_unreported"}else{"reported"},
@@ -206,6 +213,7 @@ pub fn message_rows(room:&Room)->Vec<UiMessage>{
         "cachedPromptTokens":receipt.cached_input_tokens,
         "cacheWriteTokens":receipt.cache_write_tokens,
         "providerUsageReported":receipt.provider_usage_reported,
+        "cacheUsageReported":receipt.cache_usage_reported,
         "wirePromptChars":receipt.wire_prompt_chars,
         "serverContinuation":receipt.reused_server_continuation,
         "expiredContinuationRebase":receipt.remote_history_rebased,
