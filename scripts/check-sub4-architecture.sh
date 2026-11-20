@@ -20,12 +20,12 @@ required_count src/journal.rs '^[[:space:]]*pub fn begin\(' 1
 # The kernel owns business-state transitions, not the DB or filesystem
 # durability implementation. File I/O is an infrastructure adapter.
 required_count src/engine.rs 'pub store: Arc<RunStorePort>' 1
-required_count src/engine.rs 'store::Store|Store::open|tokio::fs|std::fs|persist\\(' 0
+required_count src/engine.rs 'store::Store|Store::open|tokio::fs|std::fs|persist\(' 0
 required_count src/sdk.rs 'Store::open|store::Store' 0
 required_count src/ports.rs 'pub trait RunRepository' 1
-required_count src/ports.rs 'tokio::fs|std::fs|persist\\(' 0
+required_count src/ports.rs 'tokio::fs|std::fs|persist\(' 0
 required_count src/infrastructure/persistence/mod.rs 'impl crate::ports::RunRepository for Store' 1
-required_count src/infrastructure/persistence/mod.rs 'async fn persist\\(' 1
+required_count src/infrastructure/persistence/mod.rs 'async fn persist\(' 1
 required_count src/product/bootstrap.rs 'Store::open' 1
 if [[ -e src/store.rs || -e src/store/tests.rs ]]; then
  echo "ERROR: concrete DB implementation leaked into execution root" >&2
@@ -54,7 +54,7 @@ required_count src/addons/oauth.rs 'route.*oauth/providers/\{id\}' 0
 required_count src/addons/github_cli_login.rs 'route.*oauth/github/cli/login' 0
 required_count web/src/components/DominionCloudAccount.tsx 'disabled=\{!socialLogin\.' 0
 required_count web/src/pages/Models.tsx 'startCliLogin|importCli\(' 0
-required_count src/sdk.rs 'frontend_local_models::|providers[.]get\\(' 0
+required_count src/sdk.rs 'frontend_local_models::|providers[.]get\(' 0
 required_count src/sdk/product.rs 'pub fn http_router' 1
 required_count src/sdk.rs 'pub fn http_router' 0
 for old in src/api.rs src/build_identity.rs; do
@@ -72,7 +72,7 @@ if [[ -e src/product.rs ]]; then
 fi
 for candidate in src/*.rs; do
  case "${candidate##*/}" in
- acceptance.rs|config.rs|context.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|loop_guard.rs|main.rs|policy.rs|program_ir.rs|program_session.rs|provider.rs|read_program.rs|repair_guidance.rs|sandbox.rs|sdk.rs|store.rs|tool_batch.rs|tool_discovery.rs|tool_schema.rs|tools.rs|verification.rs|workspace.rs) ;;
+ acceptance.rs|config.rs|context.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|loop_guard.rs|main.rs|policy.rs|program_ir.rs|program_session.rs|provider.rs|read_program.rs|repair_guidance.rs|sandbox.rs|sdk.rs|ports.rs|tool_batch.rs|tool_discovery.rs|tool_schema.rs|tools.rs|verification.rs|workspace.rs) ;;
  *) echo "ERROR: unexpected root module $candidate (classify core vs product/addons)" >&2; exit 1 ;;
  esac
 done
