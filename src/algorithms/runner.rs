@@ -17,7 +17,6 @@ impl Engine {
         ->Result<(),String>{
         let run=self.store.get(id).await.ok_or("execution not found")?;
         if run.status!=RunStatus::Running||!run.model_only{return Ok(());}
-        let selected=self.model_for_run(&run)?;
         let messages=self.algorithm.model_only_messages(&run);
         self.store.mutate(id,|current|{
             current.event("model_request_footprint","Model-only chat: no tool schemas",
@@ -30,7 +29,8 @@ impl Engine {
         let reply=tokio::select!{
             biased;
             _=cancellation.changed()=>return Ok(()),
-            answer=selected.complete(&messages,&[],false)=>answer
+            answer=self.services.complete(&self.settings,&self.model,
+                &run,&messages,&[],false)=>answer
         };
         self.store.mutate(id,|run|{
             // A concurrent cancellation or restart always wins: no answer
@@ -248,12 +248,12 @@ impl Engine {
                 // Never stringify historic tool outputs into an initial plan.
                 let messages=self.algorithm.planning_request(&run,self.settings.context_max_chars)?;
                 let planning_history_len=run.messages.len();
-                let selected_model=self.model_for_run(&run)?;
                 self.services.throttle(&run.provider_id).await;
                 let reply=tokio::select!{
                     biased;
                     _=cancellation.changed()=>return Ok(()),
-                    response=selected_model.complete(&messages,&[],true)=>response?
+                    response=self.services.complete(&self.settings,&self.model,
+                        &run,&messages,&[],true)=>response?
                 };
                 self.store.mutate(id, |run| {
                     Self::account(run,&reply);
@@ -352,12 +352,12 @@ impl Engine {
                         "mode":if current.chat_context.is_empty(){"agent"}else{"chat_agent"}})));
                 Ok(())
             }).await?;
-            let selected_model=self.model_for_run(&run)?;
             self.services.throttle(&run.provider_id).await;
             let reply=tokio::select!{
                 biased;
                 _=cancellation.changed()=>return Ok(()),
-                response=selected_model.complete(&outbound,&catalog,false)=>response?
+                response=self.services.complete(&self.settings,&self.model,
+                    &run,&outbound,&catalog,false)=>response?
             };
             let terminal_candidate = reply.calls.is_empty();
             let mut accepted=false;
@@ -503,12 +503,12 @@ impl Engine {
                 &latest,&workspace.display().to_string(),&paths,
                 &git_evidence,&reply.text,self.settings.context_max_chars)?;
             let expected_verify_history=latest.messages.len();
-            let selected_model=self.model_for_run(&latest)?;
             self.services.throttle(&latest.provider_id).await;
             let verdict=tokio::select!{
                 biased;
                 _=cancellation.changed()=>return Ok(()),
-                response=selected_model.complete(&verify_messages,&[],true)=>response?
+                response=self.services.complete(&self.settings,&self.model,
+                    &latest,&verify_messages,&[],true)=>response?
             };
             let passed = crate::verification::strict_pass(&verdict.text);
             let mut verified=false;

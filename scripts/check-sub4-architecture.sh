@@ -124,6 +124,9 @@ required_count src/engine.rs 'pub[(]crate[)] services: Arc<dyn RuntimeServices>'
 required_count src/engine.rs 'self[.](knowledge|addons|providers)[.]' 0
 required_count src/algorithms/runner.rs 'self[.](knowledge|addons|providers)[.]' 0
 required_count src/runtime_services.rs 'pub trait RuntimeServices' 1
+required_count src/runtime_services.rs 'fn complete' 1
+required_count src/product/runtime_services.rs 'fn complete' 1
+required_count src/algorithms/runner.rs 'selected[.]complete|selected_model[.]complete|model_for_run' 0
 required_count src/product/runtime_services.rs 'impl RuntimeServices for ProductHost' 1
 required_count src/engine.rs 'pub groups:|pub addons:|pub knowledge:|pub frontend:|pub providers:|pub owner_profile:' 0
 required_count src/engine.rs 'frontend_local_models::|provider_registry::|frontend_state::|Knowledge::open' 0

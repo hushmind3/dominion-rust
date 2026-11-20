@@ -2,7 +2,7 @@
 //! The algorithm/kernel see this only as `dyn RuntimeServices`.
 use super::ProductHost;
 use crate::{config::Settings,domain::{Run,ToolCall,ToolEffectOutcome},
-    ports::RunStorePort,provider::ModelClient,
+    ports::RunStorePort,provider::{ModelClient,Reply},
     runtime_services::{RuntimeServices,ServiceFuture}};
 use serde_json::Value;
 use std::sync::Arc;
@@ -13,6 +13,21 @@ impl RuntimeServices for ProductHost {
     fn select_model(&self,settings:&Settings,base:&ModelClient,
         provider:&str,model:&str)->Result<ModelClient,String>{
         ProductHost::model_for_selection(self,settings,base,provider,model)
+    }
+    fn complete<'a>(&'a self,settings:&'a Settings,base:&'a ModelClient,
+        run:&'a Run,messages:&'a [Value],tools:&'a [Value],economy:bool)
+        ->ServiceFuture<'a,Result<Reply,String>>{
+        Box::pin(async move{
+            // A Run owns a stable routing identity even across restarts. No
+            // cross-vendor silent fallback and no shared global cache key.
+            let affinity=if run.provider_session_affinity.is_empty(){
+                format!("dominion-run-{}",run.id)
+            }else{run.provider_session_affinity.clone()};
+            let selected=ProductHost::model_for_selection(self,settings,base,
+                &run.provider_id,&run.model_name)?
+                .with_session_affinity(&affinity);
+            selected.complete(messages,tools,economy).await
+        })
     }
     fn throttle<'a>(&'a self,provider:&'a str)->ServiceFuture<'a,()>{
         Box::pin(async move{self.providers.throttle(provider).await})

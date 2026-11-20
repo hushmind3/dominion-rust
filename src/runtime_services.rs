@@ -2,7 +2,7 @@
 //! capabilities, never on the GUI, memory database or provider registry types.
 //! The application composes the concrete adapter in product/runtime_services.rs.
 use crate::{config::Settings,domain::{Run,ToolCall,ToolEffectOutcome},
-    ports::RunStorePort,provider::ModelClient};
+    ports::RunStorePort,provider::{ModelClient,Reply}};
 use serde_json::Value;
 use std::{future::Future,pin::Pin,sync::Arc};
 use tokio::sync::watch;
@@ -15,6 +15,12 @@ pub type ServiceFuture<'a,T> = Pin<Box<dyn Future<Output=T>+Send+'a>>;
 pub trait RuntimeServices:Send+Sync {
     fn select_model(&self,settings:&Settings,base:&ModelClient,
         provider:&str,model:&str)->Result<ModelClient,String>;
+    /// The native loop requests an inference receipt through this host port.
+    /// Provider protocols, credentials, local llama.cpp endpoints and cache
+    /// affinity remain outside the agent decision/execution loop.
+    fn complete<'a>(&'a self,settings:&'a Settings,base:&'a ModelClient,
+        run:&'a Run,messages:&'a [Value],tools:&'a [Value],economy:bool)
+        ->ServiceFuture<'a,Result<Reply,String>>;
     fn throttle<'a>(&'a self,provider:&'a str)->ServiceFuture<'a,()>;
     fn tools<'a>(&'a self,settings:&'a Settings)->ServiceFuture<'a,Vec<Value>>;
     fn handles(&self,name:&str)->bool;

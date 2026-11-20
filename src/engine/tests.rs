@@ -655,6 +655,19 @@ impl crate::runtime_services::RuntimeServices for DenyOnlyServices{
         _provider:&str,_model:&str)->Result<ModelClient,String>{
         Err("injected model route selected".into())
     }
+    fn complete<'a>(&'a self,_settings:&'a Settings,_base:&'a ModelClient,
+        _run:&'a Run,_messages:&'a [Value],_tools:&'a [Value],_economy:bool)
+        ->crate::runtime_services::ServiceFuture<'a,Result<Reply,String>>{
+        Box::pin(async{
+            Ok(Reply{
+                message:json!({"role":"assistant","content":"mocked model result"}),
+                text:"mocked model result".into(),calls:Vec::new(),
+                input_tokens:3,cached_input_tokens:0,cache_write_tokens:0,
+                cache_usage_reported:false,usage_reported:true,
+                output_tokens:4,cost_krw:0.0,model:"injected-mock".into(),
+            })
+        })
+    }
     fn throttle<'a>(&'a self,_provider:&'a str)
         ->crate::runtime_services::ServiceFuture<'a,()>{
         Box::pin(async {})
@@ -711,6 +724,25 @@ async fn runtime_injects_model_and_memory_without_reaching_product_backend(){
     assert!(engine.services.memory_save("global","note","content").await.is_err());
     assert!(engine.knowledge.list("global").await.is_empty(),
         "runtime calls must not fall through to the product memory database");
+    // Both chat and tool-capable worker paths execute a real native Run
+    // solely through the injected model port (no local/API model server).
+    let sdk=crate::sdk::Dominion::from_engine(Arc::clone(&engine));
+    for model_only in [true,false]{
+        let mut run=Run::new(CreateRun{
+            instruction:"Summarize the owner request".into(),
+            budget_krw:Some(100.0),max_steps:Some(3),
+        },3).unwrap();
+        run.model_only=model_only;
+        let id=run.id;
+        engine.store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        let final_run=sdk.wait(id,std::time::Duration::from_secs(6)).await.unwrap();
+        assert_eq!(final_run.status,RunStatus::Completed,
+            "injected model failed to complete model_only={model_only}");
+        assert_eq!(final_run.answer.as_deref(),Some("mocked model result"));
+        assert_eq!(final_run.input_tokens,3);
+    }
+    drop(sdk);
     drop(engine);
     tokio::fs::remove_dir_all(root).await.unwrap();
 }

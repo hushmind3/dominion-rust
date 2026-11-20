@@ -419,3 +419,15 @@ tool advertisement/invocation and memory retrieval/save used by workers are
 exclusively dispatched through the supplied runtime service port. A regression
 test injects a deny-only provider and an isolated mock memory result and
 asserts neither request falls through to the normal ProductHost.
+
+### Agent inference execution also goes through host port
+
+The native `src/algorithms/runner.rs` no longer constructs a
+`ModelClient` or calls `ModelClient::complete` directly. Planning,
+normal tool-capable decisions, tool-free chat and optional independent
+verification all invoke `RuntimeServices::complete`. The default
+product adapter supplies the original model routing, stable UUID-bound
+provider affinity and metered Reply. Alternate operator-provided
+implementations may use local or remote inference without rewriting
+the agent scheduler. Existing `Engine::model_for_run` stays available
+for source-compatible SDK/HTTP clients, separate from worker execution.
