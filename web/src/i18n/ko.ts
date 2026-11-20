@@ -871,6 +871,8 @@ const ko = {
   'usage.cacheWrite': '캐시 쓰기 {count}',
   'usage.unmetered': '토큰 사용량 미계측',
   'usage.cached': '캐시 {count}',
+  'usage.pricingUnknown': 'API 요금 미설정',
+  'usage.requestFootprint': '문맥 {count}자 · 도구 {tools}자',
   'usage.cacheUnknown': '캐시 미보고',
   'usage.output': '출력 {count}',
   'usage.tokens': '{count} 토큰',

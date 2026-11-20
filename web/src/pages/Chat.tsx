@@ -40,7 +40,8 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const messageUsage=useMemo(()=>messages.reduce((sum,message)=>sum+(Number(message.metadata?.usage?.totalTokens)||0),0),[messages])
  type SessionUsage={totalTokens?:number;promptTokens?:number;completionTokens?:number;
  cachedPromptTokens?:number;uncachedPromptTokens?:number;cacheWriteTokens?:number;
- modelRequests?:number;unmeteredModelRequests?:number;providerUsageReported?:boolean}
+ modelRequests?:number;unmeteredModelRequests?:number;providerUsageReported?:boolean;
+ pricingKnown?:boolean;toolSchemaChars?:number;contextChars?:number}
  const [serverUsage,setServerUsage]=useState<SessionUsage>({});
  const approvals=useRemote<Approval[]>('/api/approvals',[],active);
  const [input,setInput]=useState('');
@@ -404,7 +405,11 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
        [t('usage.newInput',{count:(serverUsage.uncachedPromptTokens??0).toLocaleString()}),
         t('usage.cached',{count:(serverUsage.cachedPromptTokens??0).toLocaleString()}),
         t('usage.output',{count:(serverUsage.completionTokens??0).toLocaleString()}),
-        serverUsage.unmeteredModelRequests?t('usage.unmetered'):''].filter(Boolean).join(' · '):''}
+        serverUsage.unmeteredModelRequests?t('usage.unmetered'):'',
+        serverUsage.pricingKnown===false?t('usage.pricingUnknown'):'',
+        serverUsage.toolSchemaChars?t('usage.requestFootprint',{
+          count:(serverUsage.contextChars??0).toLocaleString(),
+          tools:(serverUsage.toolSchemaChars??0).toLocaleString()}):''].filter(Boolean).join(' · '):''}
       className="hidden rounded-lg border border-[#E7DDCC] bg-[#F7F1E6] px-2 py-1 text-[10px] font-semibold text-[#8A775F] sm:inline-flex">
       {t('usage.sessionTotal',{count:(serverUsage.totalTokens||messageUsage).toLocaleString()})}
      </span>}

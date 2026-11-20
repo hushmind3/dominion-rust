@@ -21,7 +21,12 @@ if(!usage.totalTokens&&!unmetered)return null
   ?t('usage.calls',{count:count(usage.modelCalls)})+' · ':''
  const writes=typeof usage.cacheWriteTokens==='number'&&usage.cacheWriteTokens>0
  ?t('usage.cacheWrite',{count:count(usage.cacheWriteTokens)})+' · ':'' 
-const detail=`${calls}${input} · ${cached} · ${writes}${output}${unmetered?' · '+t('usage.unmetered'):''}`
+const footprint=usage.modelRounds?.length?
+    ' · '+t('usage.requestFootprint',{
+      count:count(usage.modelRounds[0].contextChars),
+      tools:count(usage.modelRounds[0].toolSchemaChars)}):''
+ const cost=usage.pricingKnown===false?' · '+t('usage.pricingUnknown'):''
+ const detail=`${calls}${input} · ${cached} · ${writes}${output}${unmetered?' · '+t('usage.unmetered'):''}${footprint}${cost}`
  return <span className={className} title={detail}>
   {unmetered&&!usage.totalTokens?t('usage.unmetered'):t(usage.estimated?'usage.tokensEstimated':'usage.tokens',{count:count(usage.totalTokens)})}
   <span> · {detail}</span>

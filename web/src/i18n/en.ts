@@ -872,6 +872,8 @@ const en: Record<LocaleKey, string> = {
   'usage.cacheWrite': 'Cache writes {count}',
   'usage.unmetered': 'Provider tokens not reported',
   'usage.cached': 'cached {count}',
+  'usage.pricingUnknown': 'API pricing not configured',
+  'usage.requestFootprint': 'Context {count} chars · tools {tools} chars',
   'usage.cacheUnknown': 'cache unreported',
   'usage.output': 'output {count}',
   'usage.tokens': '{count} tokens',

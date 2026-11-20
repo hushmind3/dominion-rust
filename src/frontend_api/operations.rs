@@ -95,8 +95,9 @@ pub(super) fn native_run_usage(run:&Run)->Value{
             }));
         }
     }
+    let observed_rounds=rounds.len();
     usage["modelRounds"]=json!(rounds);
-    usage["unlistedModelRounds"]=json!(requests.saturating_sub(rounds.len()));
+    usage["unlistedModelRounds"]=json!(requests.saturating_sub(observed_rounds));
     usage["contextChars"]=json!(total_context);
     usage["toolSchemaChars"]=json!(total_schemas);
     usage["measuredRequestFootprints"]=json!(measured);

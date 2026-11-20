@@ -141,6 +141,9 @@ pub(super) async fn session_usage(State(engine):State<Arc<Engine>>,Path(id):Path
     let mut prompt=0u64;let mut output=0u64;let mut cached=0u64;
     let mut written=0u64;let mut requests=0usize;let mut unmetered=0usize;
     let mut cost=0.0f64;let mut cache_unknown=0usize;
+    let mut pricing_unknown=0usize;
+    let mut context_chars=0u64;let mut tool_schema_chars=0u64;
+    let mut measured_footprints=0u64;
     for message in &record.messages{
         let Some(meta)=message.metadata.as_ref()else{continue};
         let Some(usage)=meta.get("usage")else{continue};
@@ -160,10 +163,20 @@ pub(super) async fn session_usage(State(engine):State<Arc<Engine>>,Path(id):Path
                     calls as u64
                 }else{0}) as usize);
         cost+=meta["costKrw"].as_f64().unwrap_or(0.0).max(0.0);
+        if usage["pricingKnown"]==false{pricing_unknown+=1;}
+        context_chars=context_chars.saturating_add(usage["contextChars"].as_u64().unwrap_or(0));
+        tool_schema_chars=tool_schema_chars.saturating_add(usage["toolSchemaChars"].as_u64().unwrap_or(0));
+        measured_footprints=measured_footprints.saturating_add(
+            usage["measuredRequestFootprints"].as_u64().unwrap_or(0));
     }
     let mut result=usage_values(prompt,cached,written,output,requests,unmetered,cost);
     result["cacheUsageReported"]=json!(requests>0&&cache_unknown==0);
     result["cacheUnreportedCalls"]=json!(cache_unknown);
+    result["pricingKnown"]=json!(pricing_unknown==0);
+    result["pricingUnknownTurns"]=json!(pricing_unknown);
+    result["contextChars"]=json!(context_chars);
+    result["toolSchemaChars"]=json!(tool_schema_chars);
+    result["measuredRequestFootprints"]=json!(measured_footprints);
     Ok(Json(result))
 }
 #[derive(Deserialize)]
