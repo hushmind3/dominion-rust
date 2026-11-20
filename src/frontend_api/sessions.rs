@@ -140,7 +140,7 @@ pub(super) async fn session_usage(State(engine):State<Arc<Engine>>,Path(id):Path
     // or a 0-cache-hit claim.
     let mut prompt=0u64;let mut output=0u64;let mut cached=0u64;
     let mut written=0u64;let mut requests=0usize;let mut unmetered=0usize;
-    let mut cost=0.0f64;
+    let mut cost=0.0f64;let mut cache_unknown=0usize;
     for message in &record.messages{
         let Some(meta)=message.metadata.as_ref()else{continue};
         let Some(usage)=meta.get("usage")else{continue};
@@ -151,6 +151,9 @@ pub(super) async fn session_usage(State(engine):State<Arc<Engine>>,Path(id):Path
         let calls=usage["modelRequests"].as_u64()
             .or_else(||usage["modelCalls"].as_u64()).unwrap_or(0) as usize;
         requests=requests.saturating_add(calls);
+        cache_unknown=cache_unknown.saturating_add(
+            usage["cacheUnreportedCalls"].as_u64().unwrap_or_else(||if calls>0&&
+                usage["cacheUsageReported"]!=true{calls as u64}else{0}) as usize);
         unmetered=unmetered.saturating_add(
             usage["unmeteredModelRequests"].as_u64()
                 .unwrap_or_else(||if calls>0&&usage["providerUsageReported"]!=true{
@@ -158,7 +161,10 @@ pub(super) async fn session_usage(State(engine):State<Arc<Engine>>,Path(id):Path
                 }else{0}) as usize);
         cost+=meta["costKrw"].as_f64().unwrap_or(0.0).max(0.0);
     }
-    Ok(Json(usage_values(prompt,cached,written,output,requests,unmetered,cost)))
+    let mut result=usage_values(prompt,cached,written,output,requests,unmetered,cost);
+    result["cacheUsageReported"]=json!(requests>0&&cache_unknown==0);
+    result["cacheUnreportedCalls"]=json!(cache_unknown);
+    Ok(Json(result))
 }
 #[derive(Deserialize)]
 pub(super) struct Rename{title:String}
@@ -359,6 +365,7 @@ mod selected_model_receipt_tests{
   assert_eq!(receipt["usage"]["totalTokens"],51);
   assert_eq!(receipt["usage"]["uncachedPromptTokens"],42);
   assert_eq!(receipt["usage"]["providerUsageReported"],false);
+  assert_eq!(receipt["usage"]["cacheUsageReported"],false);
   assert_eq!(receipt["usage"]["usageStatus"],"not_started");
   assert_eq!(receipt["costKrw"],12.5);
   let summary=session_usage(State(engine.clone()),Path(session.clone())).await.unwrap().0;
