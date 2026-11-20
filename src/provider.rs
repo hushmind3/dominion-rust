@@ -92,10 +92,21 @@ impl ModelClient {
     /// Only the official OpenAI endpoint receives prompt_cache_key. The
     /// operator's configured key has priority; otherwise the persisted
     /// native chat/Run affinity is stable across calls and model retries.
-    fn openai_cache_key_for<'a>(&'a self,settings:&'a ModelSettings)->Option<&'a str>{
-        if settings.base_url=="https://api.openai.com/v1"{
-            settings.cache_key.as_deref().or(self.session_affinity.as_deref())
-        }else{None}
+    fn openai_cache_key_for(&self,settings:&ModelSettings)->Option<String>{
+        if settings.base_url!="https://api.openai.com/v1"{return None}
+        match (settings.cache_key.as_deref(),self.session_affinity.as_deref()){
+            (Some(operator),Some(session))=>{
+                // A shared operator key by itself makes unrelated chats
+                // contend for one ~15 RPM cache route. Bind it to a stable,
+                // one-way session fingerprint without logging account IDs.
+                let hash=Sha256::digest(session.as_bytes());
+                let suffix=hash[..16].iter().map(|v|format!("{v:02x}")).collect::<String>();
+                Some(format!("{}:{suffix}",operator.chars().take(80).collect::<String>()))
+            },
+            (Some(operator),None)=>Some(operator.to_owned()),
+            (None,Some(session))=>Some(session.to_owned()),
+            (None,None)=>None,
+        }
     }
     fn opencode_session_for(&self,settings:&ModelSettings)->Option<&str>{
         let url=reqwest::Url::parse(&settings.base_url).ok()?;
@@ -183,8 +194,9 @@ impl ModelClient {
             if id.is_empty(){return Err("empty previous_response_id".into());}
             body["previous_response_id"]=json!(id);
         }
+        let cache_key=self.openai_cache_key_for(settings);
         configure_openai_cache(&mut body,settings,
-            self.openai_cache_key_for(settings),"input");
+            cache_key.as_deref(),"input");
         let mut req=self.http.post(format!("{}/responses",settings.base_url))
             .json(&body);
         if !settings.api_key.is_empty(){req=req.bearer_auth(&settings.api_key);}
@@ -292,8 +304,9 @@ impl ModelClient {
         // repeatedly charging cache writes for a changing final message.
         // Compatibility gateways and earlier OpenAI models only see the
         // original string-message contract (internal markers are removed).
+        let cache_key=self.openai_cache_key_for(settings);
         configure_openai_cache(&mut body,settings,
-            self.openai_cache_key_for(settings),"messages");
+            cache_key.as_deref(),"messages");
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
             body["tool_choice"] = json!("auto");
@@ -1015,7 +1028,7 @@ mod tests {
         config.main.cache_key=None;
         let base=ModelClient::new(&config).unwrap();
         let selected=base.with_session_affinity("dominion-chat-stable");
-        assert_eq!(selected.openai_cache_key_for(&config.main),
+        assert_eq!(selected.openai_cache_key_for(&config.main).as_deref(),
             Some("dominion-chat-stable"));
         assert_eq!(base.openai_cache_key_for(&config.main),None);
         let mut proxied=config.main.clone();
@@ -1023,8 +1036,13 @@ mod tests {
         assert_eq!(selected.openai_cache_key_for(&proxied),None);
         proxied.base_url="https://api.openai.com/v1".into();
         proxied.cache_key=Some("operator-owned-key".into());
-        assert_eq!(selected.openai_cache_key_for(&proxied),
-            Some("operator-owned-key"));
+        let composite=selected.openai_cache_key_for(&proxied).unwrap();
+        assert!(composite.starts_with("operator-owned-key:"));
+        assert!(composite.len()<=128);
+        assert!(!composite.contains("dominion-chat-stable"));
+        let unrelated=base.with_session_affinity("another-chat");
+        assert_ne!(unrelated.openai_cache_key_for(&proxied),Some(composite),
+            "operator key must not collapse unrelated chat routing");
     }
     #[test]
     fn opencode_affinity_uses_durable_run_identity_and_never_leaks_to_other_hosts(){
