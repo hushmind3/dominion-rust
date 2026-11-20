@@ -2,6 +2,7 @@
 pub mod addons;
 pub use addons::{github_collab,skills};
 pub mod product;
+pub use product::{native_api as api,build_identity};
 pub use product::strategy;
 // Compatible public paths point into product/; the native Run kernel does not
 // own React API, room UI, provider pickers or platform configuration.
@@ -13,8 +14,6 @@ pub use addons::{channels as frontend_channels, connected_tools,
     extensions as frontend_extensions, github_cli_login, github_work,
     google_workspace, mcp, oauth as frontend_oauth,
     skill_import as frontend_skill_import};
-pub mod api;
-pub mod build_identity;
 pub mod config;
 pub mod context;
 pub mod domain;

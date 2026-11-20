@@ -3,6 +3,8 @@
 //! The Run scheduler remains native; the surrounding presentation, room,
 //! profile, catalog and stored-memory facilities are product services.
 pub mod group;
+pub mod native_api;
+pub mod build_identity;
 pub mod strategy;
 pub mod knowledge;
 pub mod profile;
@@ -50,6 +52,24 @@ pub struct ProductHost {
     focused_memory:Mutex<HashMap<Uuid,FocusedMemory>>,
 }
 impl ProductHost {
+    /// Product catalog and local model metadata determine whether token
+    /// pricing is *unknown*. The execution kernel only records the receipt.
+    pub fn pricing_unknown(&self,settings:&Settings,provider:&str,model:&str)->bool{
+        if provider.is_empty()||provider=="dominion-native"{
+            let selected=&settings.main;
+            let local_library=crate::frontend_local_models::native_override(
+                settings,model).is_some();
+            let local_origin=reqwest::Url::parse(&selected.base_url).ok()
+                .and_then(|url|url.host_str().map(|host|
+                    matches!(host,"localhost"|"127.0.0.1"|"::1")))
+                .unwrap_or(false);
+            !local_library&&!local_origin&&(selected.input_krw_per_million==0.0
+                ||selected.output_krw_per_million==0.0)
+        }else{
+            !self.providers.get(provider).is_some_and(|entry|entry.local)
+        }
+    }
+
     #[cfg(test)]
     pub(crate) async fn recall_cache_query(&self,id:Uuid)->Option<String>{
         self.focused_memory.lock().await.get(&id).map(|entry|entry.query.clone())

@@ -39,6 +39,15 @@ required_count src/addons/oauth.rs 'route.*oauth/providers/\{id\}' 0
 required_count src/addons/github_cli_login.rs 'route.*oauth/github/cli/login' 0
 required_count web/src/components/DominionCloudAccount.tsx 'disabled=\{!socialLogin\.' 0
 required_count web/src/pages/Models.tsx 'startCliLogin|importCli\(' 0
+required_count src/sdk.rs 'frontend_local_models::|providers[.]get\\(' 0
+required_count src/sdk/product.rs 'pub fn http_router' 1
+required_count src/sdk.rs 'pub fn http_router' 0
+for old in src/api.rs src/build_identity.rs; do
+ if [[ -e "$old" ]]; then
+  echo "ERROR: HTTP/build metadata must not live at Run-kernel root: $old" >&2
+  exit 1
+ fi
+done
 # The execution Engine must own native Run state, not application products.
 required_count src/engine.rs 'product: crate::product::ProductHost' 1
 required_count src/engine.rs 'pub groups:|pub addons:|pub knowledge:|pub frontend:|pub providers:|pub owner_profile:' 0

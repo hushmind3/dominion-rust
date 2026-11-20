@@ -1,8 +1,17 @@
 //! Optional product-facing SDK methods: sessions, profiles, rooms, memory,
 //! skill catalogs and integration discovery. Does not create another Run loop.
 use super::*;
+use crate::group::{NewRoom,Room,Say};
+use axum::Router;
+
+pub(super) fn apply_pending_product_restore(settings:&Settings)->Result<(),String>{
+    crate::frontend_system::apply_pending(settings)
+}
 
 impl Dominion {
+    /// HTTP is a product adapter, not a requirement of the native SDK.
+    pub fn http_router(&self)->Router{crate::api::router(Arc::clone(&self.engine))}
+
     /// Main frontend and native SDK share the same durable profile/session
     /// records. These entries are presentation data; runs still execute only
     /// through the independent Engine and Store.

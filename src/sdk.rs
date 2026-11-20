@@ -1,6 +1,5 @@
 //! Primary native Rust SDK. HTTP/TypeScript/Studio are optional adapters.
-use crate::{hooks::ToolHook,api,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,group::{Groups,NewRoom,Room,Say},store::Store,tools};
-use axum::Router;
+use crate::{hooks::ToolHook,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,group::Groups,store::Store,tools};
 use serde_json::{json,Value};
 use std::{sync::Arc,time::{Duration,Instant}};
 use uuid::Uuid;
@@ -24,7 +23,7 @@ impl Dominion {
     pub async fn open(settings: Settings) -> Result<Self,String> {
         // Apply an explicitly staged, authenticated snapshot while no native
         // stores have opened yet; a browser reload alone is not a restore.
-        crate::frontend_system::apply_pending(&settings)?;
+        product::apply_pending_product_restore(&settings)?;
         tokio::fs::create_dir_all(&settings.workspace_dir).await.map_err(|e|e.to_string())?;
         let store=Arc::new(Store::open(settings.data_dir.join("runs")).await?);
         let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
@@ -56,7 +55,6 @@ impl Dominion {
     }
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}
     pub fn engine(&self)->Arc<Engine>{Arc::clone(&self.engine)}
-    pub fn http_router(&self)->Router{api::router(Arc::clone(&self.engine))}
     /// Native extension point: ordered pre-dispatch veto and post-receipt policy.
     /// HTTP/TypeScript clients use the same engine with operator-owned hooks.
     pub async fn register_tool_hook(&self,hook:Arc<dyn ToolHook>){
@@ -71,21 +69,8 @@ impl Dominion {
             self.engine.model_for_selection(&options.provider_id,&options.model)?;
             run.provider_id=options.provider_id;
             run.model_name=options.model;
-            let unknown=if run.provider_id.is_empty()||
-                run.provider_id=="dominion-native" {
-                let selected=&self.engine.settings.main;
-                let local_library=crate::frontend_local_models::native_override(
-                    &self.engine.settings,&run.model_name).is_some();
-                let local_origin=reqwest::Url::parse(&selected.base_url).ok()
-                    .and_then(|url|url.host_str().map(|host|
-                        matches!(host,"localhost"|"127.0.0.1"|"::1")))
-                    .unwrap_or(false);
-                !local_library&&!local_origin&&(selected.input_krw_per_million==0.0
-                    ||selected.output_krw_per_million==0.0)
-            }else{
-                !self.engine.providers.get(&run.provider_id)
-                    .is_some_and(|entry|entry.local)
-            };
+            let unknown=self.engine.pricing_unknown(
+                &self.engine.settings,&run.provider_id,&run.model_name);
             if unknown{
                 run.event("pricing_unknown",
                     "Supplier token tariffs are not configured; zero recorded KRW is not free inference",None);

@@ -212,3 +212,14 @@ GitHub collaborative operations and skill browsing now belong to
 verification of real tool effects and actual Rust model calls remain in
 the native kernel. No strategy evaluator or second executor was introduced.
 Public Rust aliases retain existing source/API compatibility.
+
+## HTTP and build metadata are product adapters
+
+`src/api.rs` moved to `src/product/native_api.rs`;
+`src/build_identity.rs` moved to `src/product/build_identity.rs`.
+`Dominion::http_router` and staged browser backup restoration now live in
+`src/sdk/product.rs`. Native SDK run submission no longer imports HTTP
+router types, frontend restore handlers, local model picker metadata or
+provider catalog pricing logic. Stable public paths and HTTP endpoints are
+retained through reexports. Model choice validation still occurs before
+launch; price uncertainty still emits the same persistent event.
