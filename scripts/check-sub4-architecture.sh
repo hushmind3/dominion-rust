@@ -49,7 +49,7 @@ required_count src/product.rs 'async fn focused_notes' 1
 # Optional integrations must never merge individually into the core API.
 required_count src/frontend_api.rs 'merge\(crate::addons::routes\(addons_enabled\)\)' 1
 required_count src/frontend_api.rs 'merge\(crate::frontend_channels|merge\(crate::frontend_extensions|merge\(crate::frontend_oauth' 0
-required_count src/engine.rs 'pub addons: Arc<crate::addons::Host>' 1
+required_count src/product.rs 'pub addons:Arc<addons::Host>' 1
 required_count src/frontend_rooms.rs 'crate::addons::dispatch_room' 3
 required_count web/src/pages/Connections.tsx 'lazy\(\(\)=>import\(' 4
 for legacy in src/mcp.rs src/mcp/tests.rs src/frontend_channels.rs src/frontend_extensions.rs \

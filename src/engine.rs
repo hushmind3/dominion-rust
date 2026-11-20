@@ -166,7 +166,7 @@ impl Engine {
             }
             engine.active.lock().await.remove(&id);
             engine.cancellation.lock().await.remove(&id);
-            engine.focused_memory.lock().await.remove(&id);
+            engine.product.release_run_context(id).await;
             engine.active_notify.notify_waiters();
             // A completed worker releases unused budget to its parent. The
             // notification propagates up the delegation tree, and may wake a

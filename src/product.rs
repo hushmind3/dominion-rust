@@ -27,9 +27,14 @@ pub struct ProductHost {
     pub owner_profile:Arc<OwnerProfileStore>,
     pub frontend:Arc<FrontendStore>,
     pub providers:Arc<Registry>,
-    pub(crate) focused_memory:Mutex<HashMap<Uuid,FocusedMemory>>,
+    focused_memory:Mutex<HashMap<Uuid,FocusedMemory>>,
 }
 impl ProductHost {
+    /// Product-owned scoped recall is released when a native Run terminates.
+    /// The execution kernel does not own user-memory indexes or cache state.
+    pub(crate) async fn release_run_context(&self,id:Uuid){
+        self.focused_memory.lock().await.remove(&id);
+    }
     pub fn open(settings:&Settings,groups:Arc<Groups>,mcp:Arc<mcp::Mcp>)
         ->Result<Self,String>{
         Ok(Self{
