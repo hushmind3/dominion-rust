@@ -49,6 +49,9 @@ pub(super) fn usage_values(input:u64,cached:u64,written:u64,output:u64,
         "costKrw":cost
     })
 }
+/// Actual provider token receipts, correlated by event sequence with the
+/// serialized context+tool footprint. This is diagnostic evidence, NOT a
+/// tokenizer estimate or a fabricated cache hit.
 pub(super) fn native_run_usage(run:&Run)->Value{
     let requests=run.events.iter().filter(|e|e.kind=="model").count();
     let missing=run.events.iter().filter(|e|e.kind=="model"
@@ -58,8 +61,74 @@ pub(super) fn native_run_usage(run:&Run)->Value{
         run.output_tokens,requests,missing,run.cost_krw);
     usage["cacheUsageReported"]=json!(requests>0&&run.cache_unreported_requests==0);
     usage["cacheUnreportedCalls"]=json!(run.cache_unreported_requests);
+    usage["pricingKnown"]=json!(!run.events.iter().any(|e|e.kind=="pricing_unknown"));
+    let mut outstanding:Option<&Value>=None;
+    let mut rounds=Vec::<Value>::new();
+    let mut total_context=0u64;
+    let mut total_schemas=0u64;
+    let mut measured=0usize;
+    for event in &run.events {
+        if event.kind=="model_request_footprint"{
+            outstanding=event.detail.as_ref();
+            continue;
+        }
+        if event.kind!="model"{continue}
+        let footprint=outstanding.take();
+        let context=footprint.and_then(|v|v["context_chars"].as_u64());
+        let schemas=footprint.and_then(|v|v["tool_schema_chars"].as_u64());
+        if let Some(n)=context{
+            total_context=total_context.saturating_add(n);measured+=1;
+        }
+        if let Some(n)=schemas{total_schemas=total_schemas.saturating_add(n);}
+        if rounds.len()<20{
+            let details=event.detail.as_ref();
+            rounds.push(json!({
+                "inputTokens":details.and_then(|v|v["input_tokens"].as_u64()),
+                "cachedTokens":details.and_then(|v|v["cached_input_tokens"].as_u64()),
+                "cacheWriteTokens":details.and_then(|v|v["cache_write_tokens"].as_u64()),
+                "outputTokens":details.and_then(|v|v["output_tokens"].as_u64()),
+                "providerUsageReported":details.is_some_and(|v|v["usage_reported"]==true),
+                "cacheUsageReported":details.is_some_and(|v|v["cache_usage_reported"]==true),
+                "contextChars":context,"toolSchemaChars":schemas,
+                "toolCount":footprint.and_then(|v|v["tool_count"].as_u64()),
+                "mode":footprint.and_then(|v|v["mode"].as_str()),
+            }));
+        }
+    }
+    usage["modelRounds"]=json!(rounds);
+    usage["unlistedModelRounds"]=json!(requests.saturating_sub(rounds.len()));
+    usage["contextChars"]=json!(total_context);
+    usage["toolSchemaChars"]=json!(total_schemas);
+    usage["measuredRequestFootprints"]=json!(measured);
     usage
 }
+
+#[cfg(test)]
+mod per_call_metering_tests{
+    use super::*;
+    #[test]
+    fn request_character_footprints_do_not_impersonate_cached_tokens(){
+        let mut run=Run::new(CreateRun{instruction:"x".into(),
+            budget_krw:None,max_steps:Some(3)},3).unwrap();
+        run.event("model_request_footprint","one",Some(json!({
+            "context_chars":1800,"tool_schema_chars":910,
+            "tool_count":4,"mode":"chat_agent"})));
+        run.event("model","one",Some(json!({
+            "input_tokens":460,"cached_input_tokens":0,
+            "cache_write_tokens":0,"output_tokens":20,
+            "usage_reported":true,"cache_usage_reported":false})));
+        run.input_tokens=460;run.output_tokens=20;
+        run.cache_unreported_requests=1;
+        run.event("pricing_unknown","no verified tariff",None);
+        let usage=native_run_usage(&run);
+        assert_eq!(usage["modelRounds"][0]["contextChars"],1800);
+        assert_eq!(usage["toolSchemaChars"],910);
+        assert_eq!(usage["modelRounds"][0]["cacheUsageReported"],false);
+        assert_eq!(usage["cachedPromptTokens"],0);
+        assert_eq!(usage["pricingKnown"],false);
+    }
+}
+
 pub(super) fn native_header_usage(run:&crate::store::RunHeader)->Value{
     let mut usage=usage_values(run.input_tokens,run.cached_input_tokens,run.cache_write_tokens,
         run.output_tokens,run.model_requests,run.unmetered_model_requests,run.cost_krw);
