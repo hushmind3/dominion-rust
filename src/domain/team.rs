@@ -3,7 +3,7 @@
 use serde::{Deserialize,Serialize};
 use std::collections::{HashMap,HashSet};
 use uuid::Uuid;
-use super::RunStatus;
+use super::{Run,RunStatus};
 
 #[derive(Clone,Copy,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
@@ -15,6 +15,17 @@ impl TeamRole{
         Self::Reviewer=>"verification"
     }}
 }
+/// Owner-authored, optional post-run evidence requirements. A worker's
+/// natural-language claim of completion never satisfies a receipt check.
+#[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
+#[serde(tag="kind",rename_all="snake_case")]
+pub enum TaskAcceptanceCheck{
+    /// Requires an actual successful receipt from the single native harness.
+    SuccessfulTool{name:String},
+    /// Requires an exact PASS receipt from the configured model auditor.
+    /// A plain "completed" Run or model final answer is insufficient.
+    AuditorPassed,
+}
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct TaskSpec{
     pub id:String,
@@ -24,6 +35,8 @@ pub struct TaskSpec{
     pub role:TeamRole,
     pub budget_krw:f64,
     pub max_steps:usize,
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    pub acceptance_checks:Vec<TaskAcceptanceCheck>,
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct TeamTask{
@@ -48,6 +61,10 @@ pub struct TeamTaskView{
     pub depends_on:Vec<String>,
     pub workspace:String,
     pub status:TeamTaskState,
+    /// Empty for accepted or not-yet-finished workers. Only real receipts
+    /// are used; unfulfilled requirements block dependent tasks.
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    pub unmet_acceptance:Vec<String>,
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct TeamView{
@@ -81,6 +98,23 @@ impl TeamGraph{
                 ||!task.budget_krw.is_finite()||task.budget_krw<0.0{
                 return Err("invalid team task step or budget cap".into());
             }
+            if task.acceptance_checks.len()>8 {
+                return Err("at most 8 team task acceptance checks".into());
+            }
+            let mut seen_checks=HashSet::new();
+            for check in &task.acceptance_checks{
+                let key=match check{
+                    TaskAcceptanceCheck::SuccessfulTool{name}=>{
+                        if name.is_empty()||name.len()>128||!name.bytes().all(|b|
+                            b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-'|b'.'|b':')){
+                            return Err("invalid team acceptance tool name".into());
+                        }
+                        format!("tool:{name}")
+                    }
+                    TaskAcceptanceCheck::AuditorPassed=>"auditor:pass".into()
+                };
+                if !seen_checks.insert(key){return Err("duplicate team acceptance check".into());}
+            }
             allocated+=task.budget_krw;
             if !allocated.is_finite(){return Err("invalid team budget sum".into());}
         }
@@ -112,10 +146,43 @@ impl TeamGraph{
         Ok(Self{schema_version:1,tasks:specs.into_iter().map(|spec|
             TeamTask{spec,run_id:Uuid::new_v4()}).collect()})
     }
+    /// Pure proof evaluation: never infer a tool call from an answer, a
+    /// requested tool call, an error receipt or a failed reconciliation.
+    pub fn unmet_acceptance(task:&TeamTask,run:&Run)->Vec<String>{
+        if run.status!=RunStatus::Completed{
+            return Vec::new();
+        }
+        task.spec.acceptance_checks.iter().filter_map(|check|match check{
+            TaskAcceptanceCheck::SuccessfulTool{name}=>{
+                let observed=run.events.iter().any(|event|{
+                    if !matches!(event.kind.as_str(),"tool_result"|"tool_reconciled"){
+                        return false;
+                    }
+                    let Some(detail)=event.detail.as_ref() else{return false};
+                    if detail.get("name").and_then(serde_json::Value::as_str)!=Some(name){
+                        return false;
+                    }
+                    match detail.get("succeeded").and_then(serde_json::Value::as_bool){
+                        Some(true)=>true,Some(false)=>false,
+                        None=>event.kind=="tool_result", // legacy read batch
+                    }
+                });
+                (!observed).then(||format!("successful_tool:{name}"))
+            }
+            TaskAcceptanceCheck::AuditorPassed=>{
+                (!run.events.iter().any(|event|event.kind=="verification"
+                    &&event.message.trim()=="PASS")).then(||"auditor_passed".into())
+            }
+        }).collect()
+    }
     /// A read-only worker may run in parallel. A writer holds a named
     /// workspace lease until terminal; no parallel writer can claim it.
     /// Dependencies must be completed, never merely queued or paused.
     pub fn view(&self,root:Uuid,states:&HashMap<Uuid,RunStatus>)->TeamView{
+        self.view_with_acceptance(root,states,&HashMap::new())
+    }
+    pub fn view_with_acceptance(&self,root:Uuid,states:&HashMap<Uuid,RunStatus>,
+        unmet:&HashMap<Uuid,Vec<String>>)->TeamView{
         let by_id=self.tasks.iter().map(|t|(t.spec.id.as_str(),t.run_id))
             .collect::<HashMap<_,_>>();
         let mut active_writers=HashSet::new();
@@ -151,6 +218,7 @@ impl TeamGraph{
                 id:task.spec.id.clone(),run_id:task.run_id,role:task.spec.role,
                 depends_on:task.spec.depends_on.clone(),
                 workspace:task.spec.workspace.clone(),status,
+                unmet_acceptance:unmet.get(&task.run_id).cloned().unwrap_or_default(),
             });
         }
         let completed=tasks.iter().filter(|t|t.status==TeamTaskState::Completed).count();
@@ -167,7 +235,8 @@ mod tests{
     fn item(id:&str,depends_on:&[&str],role:TeamRole)->TaskSpec{
         TaskSpec{id:id.into(),instruction:format!("Do {id}"),
             depends_on:depends_on.iter().map(|s|s.to_string()).collect(),
-            workspace:"repo-a".into(),role,budget_krw:100.0,max_steps:5}
+            workspace:"repo-a".into(),role,budget_krw:100.0,max_steps:5,
+            acceptance_checks:Vec::new()}
     }
     #[test]fn rejects_cycles_bad_references_and_unfunded_graphs(){
         assert!(TeamGraph::new(vec![
@@ -199,6 +268,42 @@ mod tests{
         assert_eq!(b.tasks[2].status,TeamTaskState::Ready);
         states.insert(graph.tasks[2].run_id,RunStatus::Failed);
         assert_eq!(graph.view(root,&states).tasks[3].status,TeamTaskState::Blocked);
+    }
+    #[test]fn acceptance_requires_actual_successful_receipt_and_explicit_audit(){
+        let mut spec=item("research",&[],TeamRole::Investigator);
+        spec.acceptance_checks=vec![
+            TaskAcceptanceCheck::SuccessfulTool{name:"read_file".into()},
+            TaskAcceptanceCheck::AuditorPassed,
+        ];
+        let graph=TeamGraph::new(vec![spec],100.0).unwrap();
+        let task=&graph.tasks[0];
+        let mut run=Run::new(super::super::CreateRun{
+            instruction:"Inspect".into(),budget_krw:Some(100.0),max_steps:Some(2)},2).unwrap();
+        run.status=RunStatus::Completed;
+        run.answer=Some("I called read_file and passed audit".into());
+        assert_eq!(TeamGraph::unmet_acceptance(task,&run).len(),2);
+        run.event("tool_error","read_file failed",Some(serde_json::json!({
+            "name":"read_file","succeeded":false})));
+        run.event("tool_reconciled","read_file failed reconciliation",
+            Some(serde_json::json!({"name":"read_file","succeeded":false})));
+        assert_eq!(TeamGraph::unmet_acceptance(task,&run).len(),2);
+        run.event("tool_result","read_file completed",Some(serde_json::json!({
+            "name":"read_file","call_id":"genuine-1","succeeded":true})));
+        assert_eq!(TeamGraph::unmet_acceptance(task,&run),
+            vec!["auditor_passed".to_string()]);
+        run.event("verification","PASS",None);
+        assert!(TeamGraph::unmet_acceptance(task,&run).is_empty());
+    }
+    #[test]fn invalid_and_duplicate_acceptance_rules_are_rejected(){
+        let mut spec=item("x",&[],TeamRole::Writer);
+        spec.acceptance_checks=vec![
+            TaskAcceptanceCheck::SuccessfulTool{name:"run_shell".into()},
+            TaskAcceptanceCheck::SuccessfulTool{name:"run_shell".into()},
+        ];
+        assert!(TeamGraph::new(vec![spec.clone()],100.0).is_err());
+        spec.acceptance_checks=vec![TaskAcceptanceCheck::SuccessfulTool{
+            name:"../escape".into()}];
+        assert!(TeamGraph::new(vec![spec],100.0).is_err());
     }
     #[test]fn graph_serialization_keeps_stable_run_assignment(){
         let g=TeamGraph::new(vec![item("a",&[],TeamRole::Investigator)],100.0).unwrap();
