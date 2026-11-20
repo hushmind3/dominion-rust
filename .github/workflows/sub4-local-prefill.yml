@@ -1,0 +1,52 @@
+name: Sub4 isolated local CPU prompt-cache measurement
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - '.github/workflows/sub4-local-prefill.yml'
+      - 'benchmarks/local_prefill_probe.py'
+  workflow_dispatch:
+concurrency:
+  group: sub4-local-prefill-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+local-prefill:
+    name: 2026 Qwen3.5 GGUF on real llama.cpp CPU cache probe
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download 2026 GGUF model (public Unsloth quantization)
+        run: |
+          mkdir -p .models
+          curl -fL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 360 \
+            -o .models/Qwen3.5-0.8B-Q4_K_M.gguf \
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf?download=true"
+          test "$(stat -c %s .models/Qwen3.5-0.8B-Q4_K_M.gguf)" -gt 100000000
+      - name: Start official prebuilt llama.cpp CPU container
+        run: |
+          docker run -d --rm --name dominion-sub4-llama \
+            --cpus=4 -v "$PWD/.models:/models:ro" -p 127.0.0.1:8099:8080 \
+            ghcr.io/ggml-org/llama.cpp:server \
+            -m /models/Qwen3.5-0.8B-Q4_K_M.gguf \
+            --host 0.0.0.0 --port 8080 -c 4096 -np 1 -n 16 --threads 4
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8099/health >/dev/null 2>&1; then exit 0; fi
+            sleep 2
+          done
+          docker logs dominion-sub4-llama
+          exit 1
+      - name: Collect actual cold/warm KV prefix evidence
+        run: python3 benchmarks/local_prefill_probe.py
+      - name: Upload actual local inference receipts (no user data)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub4-2026-llama-local-prefill
+          path: /tmp/sub4-local-prefill.json
+          if-no-files-found: ignore
+      - name: Stop isolated inference container
+        if: always()
+        run: docker rm -f dominion-sub4-llama || true
+
