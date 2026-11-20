@@ -221,7 +221,7 @@ impl Engine {
                                     call.name,call.arguments.to_string().chars().take(1200).collect::<String>())
                              }
                              else if self.services.connected_approval(&call.name) {
-                                format!("Connected account action needs approval: {} args={}
+                                format!("Connected account action needs approval: {} args={}",
                                     call.name,call.arguments.to_string().chars().take(1200).collect::<String>())
                             }
                             else { format!("External MCP tool needs approval: {}",call.name) },
