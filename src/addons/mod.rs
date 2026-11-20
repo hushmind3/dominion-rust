@@ -31,6 +31,9 @@ impl Host {
             mcp.initialize_servers(store.initial_servers())?;
             Arc::new(store)
         }else{
+            // Even an injected/reused MCP handle must lose its server list:
+            // disabled connectivity cannot expose stale remote metadata.
+            mcp.initialize_servers(Vec::new())?;
             // No credentials, servers or managed add-on files are read when
             // connectivity is disabled. Existing durable files are untouched.
             Arc::new(extensions::Extensions::inactive(settings.data_dir.clone()))
@@ -77,10 +80,52 @@ pub async fn dispatch_room(engine:&Arc<Engine>,room:&Room){
 #[cfg(test)]
 mod tests{
     use super::*;
-    #[test]
-    fn disabled_host_exposes_no_optional_endpoints(){
-        // Test the routing boundary without environmental mutations or IO.
-        let _empty:Router<Arc<Engine>>=routes(false);
-        assert!(!std::any::type_name::<Host>().is_empty());
+    use crate::{group::Groups,store::Store};
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn disabled_addons_leave_native_http_alive_without_loading_external_secrets(){
+        let root=std::env::temp_dir().join(format!("dominion-addons-off-{}",Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        // A corrupt old optional config must not prevent ordinary native Runs.
+        tokio::fs::write(root.join("extensions.json"),"{not-valid-json").await.unwrap();
+        let mut settings=Settings::from_env().unwrap();
+        settings.addons_enabled=false;
+        settings.token=None;
+        settings.data_dir=root.clone();
+        settings.workspace_dir=root.join("workspace");
+        let injected=Arc::new(mcp::Mcp::new(vec![mcp::Server{
+            name:"test-server".into(),url:"http://127.0.0.1:9/mcp".into(),
+            bearer_token:"do-not-use".into(),
+        }]).unwrap());
+        let host=Host::open(&settings,Arc::clone(&injected)).unwrap();
+        assert_eq!(injected.server_count(),0,"disabled host must drop stale remote endpoints");
+        assert!(host.tool_definitions(&settings).await.is_empty());
+        assert!(host.extensions.skill_list().await.is_empty());
+        assert!(!host.supports_connected("github_write_file"));
+
+        let store=Arc::new(Store::open(root.join("runs")).await.unwrap());
+        let groups=Arc::new(Groups::open(root.join("groups")).await.unwrap());
+        let engine=Engine::new(settings,store,groups).unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let router=crate::api::router(Arc::clone(&engine));
+        let server=tokio::spawn(async move{axum::serve(listener,router).await.unwrap();});
+        let client=reqwest::Client::new();
+        for path in ["/api/health","/api/status"]{
+            let response=client.get(format!("http://{address}{path}"))
+                .send().await.unwrap();
+            assert_eq!(response.status(),reqwest::StatusCode::OK,
+                "core route unexpectedly unavailable: {path}");
+        }
+        for path in ["/api/mcp","/api/channels","/api/oauth/providers","/api/skills"]{
+            let response=client.get(format!("http://{address}{path}"))
+                .send().await.unwrap();
+            assert_eq!(response.status(),reqwest::StatusCode::NOT_IMPLEMENTED,
+                "disabled integration route unexpectedly exposed: {path}");
+        }
+        server.abort();
+        drop(engine);
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }
