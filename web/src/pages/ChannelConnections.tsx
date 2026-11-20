@@ -18,13 +18,14 @@ type Review={binding:Binding;entry:Entry}
 const filters:[string,LocaleKey][]=[['all','conn.group.all'],['messaging','conn.group.messaging'],['community','conn.group.community']]
 const states:Record<string,LocaleKey>={
  outbound_ready:'conn.status.outbound_ready',sync_disabled:'conn.status.sync_disabled',
+ sending:'conn.status.sending',
  disabled:'conn.status.disabled',error:'conn.status.error',
  not_verified:'conn.status.not_verified',needs_review:'conn.status.needs_review'
 }
 function stateLabel(status:string){return states[status]?t(states[status]):status}
 function stateColor(status:string){
  if(status==='outbound_ready')return 'border-emerald-200 bg-emerald-50 text-emerald-800'
- if(status==='needs_review'||status==='not_verified')return 'border-amber-200 bg-amber-50 text-amber-900'
+ if(status==='needs_review'||status==='not_verified'||status==='sending')return 'border-amber-200 bg-amber-50 text-amber-900'
  if(status==='error')return 'border-rose-200 bg-rose-50 text-rose-800'
  return 'border-stone-200 bg-stone-100 text-stone-600'
 }
