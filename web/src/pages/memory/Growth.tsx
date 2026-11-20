@@ -3,7 +3,9 @@ import {useRemote,Notice,Panel,Subheading} from '../../components/UI'
 
 type AgentGrowth={runs?:number;ratedRuns?:number;succeeded?:number;failed?:number;successRate?:number}
 type Agent={id?:string;name?:string;growth?:AgentGrowth}
-type Usage={calls?:number;totalTokens?:number;groups?:Array<{model?:string;purpose?:string;calls?:number;totalTokens?:number}>}
+type TokenStats={calls?:number;totalTokens?:number;promptTokens?:number;completionTokens?:number;
+ cachedPromptTokens?:number;uncachedPromptTokens?:number;cacheUsageReported?:boolean;cacheUnreportedCalls?:number}
+type Usage=TokenStats&{groups?:Array<TokenStats&{model?:string;purpose?:string}>}
 type Repair={id:string;principle?:string;failureMode?:string;repository?:string;evidenceGrade?:string;files?:string[]}
 const number=(value?:number)=>typeof value==='number'?value:0
 const label=(value?:string)=>value||t('growth.none')
@@ -23,7 +25,10 @@ export function GrowthDashboard(){
   <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
    <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">{t('growth.verifiedRuns')}</small><strong className="block text-lg">{rated}</strong></div>
    <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">검증된 복구 기록</small><strong className="block text-lg">{repairs.length}</strong></div>
-   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">{t('growth.modelCalls')}</small><strong className="block text-lg">{calls}</strong><small className="block text-[10px] text-[#9C9388]">{number(usage.value.totalTokens).toLocaleString()} {t('growth.tokens')}</small></div>
+   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">{t('growth.modelCalls')}</small><strong className="block text-lg">{calls}</strong><small className="block text-[10px] text-[#9C9388]">{number(usage.value.totalTokens).toLocaleString()} {t('growth.tokens')}
+   <span className="block">{usage.value.cacheUsageReported===true?
+    t('usage.cached',{count:number(usage.value.cachedPromptTokens).toLocaleString()}):
+    t('usage.cacheUnknown')}</span></small></div>
   </div>
   <Panel className="min-w-0 p-4">
    <Subheading title={t('growth.observedGrowth')}/>
@@ -38,7 +43,13 @@ export function GrowthDashboard(){
    {!usage.value.groups?.length?<p className="text-sm text-[#7C7469]">{t('growth.noCalls')}</p>:
     <div className="grid gap-1">{usage.value.groups.slice(0,10).map((group,index)=>
      <div className="grid grid-cols-[1fr_auto_auto] gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2 text-xs" key={index}>
-      <span className="break-all font-semibold">{label(group.model)}</span><span>{t('growth.calls',{count:number(group.calls)})}</span><span>{number(group.totalTokens).toLocaleString()} {t('growth.tokens')}</span>
+      <span className="break-all font-semibold">{label(group.model)}</span>
+      <span>{t('growth.calls',{count:number(group.calls)})}</span>
+      <span className="text-right">{number(group.totalTokens).toLocaleString()} {t('growth.tokens')}
+       <small className="block text-[10px] text-[#8A8176]">{group.cacheUsageReported===true?
+        t('usage.cached',{count:number(group.cachedPromptTokens).toLocaleString()}):
+        t('usage.cacheUnknown')}</small>
+      </span>
      </div>)}</div>}
   </Panel>
   <Panel className="min-w-0 p-4">
