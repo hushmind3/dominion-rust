@@ -23,6 +23,6 @@ pub(super) async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
         "engine":"rust","runtime":"rust",
         "providers":usize::from(is_configured(&engine))+engine.providers.list().iter().filter(|p|p.enabled).count(),
         "agents":agents,"sessions":sessions,"jobs":stats.active,
-        "executions":stats.total,"mcp":engine.mcp.server_count()
+        "executions":stats.total,"mcp":engine.addons.mcp.server_count()
     }))
 }

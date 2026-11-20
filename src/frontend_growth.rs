@@ -27,7 +27,7 @@ async fn capabilities(State(engine):State<Arc<Engine>>)->Json<Value>{
    "namespace":"builtin","available":true
   }));
  }
- for skill in engine.extensions.skill_list().await{
+ for skill in engine.addons.extensions.skill_list().await{
   if skill.enabled && seen.insert(format!("skill:{}",skill.id)){
    items.push(json!({"id":format!("skill:{}",skill.id),"name":skill.name,
     "description":"User-managed SKILL.md loaded in the Rust service",
