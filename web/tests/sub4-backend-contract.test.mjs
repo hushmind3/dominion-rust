@@ -7,8 +7,8 @@ const source=relative=>readFileSync(new URL(relative,import.meta.url),'utf8')
 
 test('main Rooms frontend uses cancellable HTTP admission and native progression',()=>{
  const ui=source('../src/pages/Rooms.tsx')
- const backend=source('../../src/frontend_rooms.rs')
- const groups=source('../../src/group.rs')
+ const backend=source('../../src/product/frontend_rooms.rs')
+ const groups=source('../../src/product/group.rs')
  assert.match(ui,/\/api\/rooms\/'\+room\.id\+'\/messages\/background/)
  assert.match(backend,/\.route\("\/rooms\/\{id\}\/messages\/background",post\(send_background\)\)/)
  assert.match(backend,/frontend_turn_active\(id\)/)
@@ -16,8 +16,8 @@ test('main Rooms frontend uses cancellable HTTP admission and native progression
 })
 test('main public model browsing needs no credential and shares a backend snapshot',()=>{
  const ui=source('../src/components/DominionCloudAccount.tsx')
- const backend=source('../../src/frontend_providers.rs')
- const directory=source('../../src/frontend_provider_public.rs')
+ const backend=source('../../src/product/frontend_providers.rs')
+ const directory=source('../../src/product/frontend_provider_public.rs')
  assert.match(ui,/\/api\/providers\/catalog\//)
  assert.match(backend,/\/providers\/catalog\/\{id\}\/models/)
  assert.match(backend,/\/providers\/openrouter\/free-models/)
@@ -37,8 +37,8 @@ test('main GitHub connect and disconnect map to native encrypted-vault routes',(
 })
 test('Hugging Face browsing has a real safe Rust read-only metadata adapter',()=>{
  const ui=source('../src/components/ModelExplorer.tsx')
- const routes=source('../../src/frontend_huggingface.rs')
- const runtime=source('../../src/frontend_local_models.rs')
+ const routes=source('../../src/product/frontend_huggingface.rs')
+ const runtime=source('../../src/product/frontend_local_models.rs')
  assert.match(ui,/\/api\/model-library\/catalog\?/)
  assert.match(ui,/\/api\/model-library\/details\?id=/)
  assert.match(routes,/\.route\("\/model-library\/catalog",get\(catalog\)\)/)
@@ -48,10 +48,10 @@ test('Hugging Face browsing has a real safe Rust read-only metadata adapter',()=
 })
 test('main model library controls are backed by persistent native Rust download and OS picker',()=>{
  const ui=source('../src/components/ModelExplorer.tsx')
- const model=source('../../src/frontend_local_models.rs')
- const downloads=source('../../src/frontend_model_downloads.rs')
- const system=source('../../src/frontend_system.rs')
- const picker=source('../../src/frontend_native_picker.rs')
+ const model=source('../../src/product/frontend_local_models.rs')
+ const downloads=source('../../src/product/frontend_model_downloads.rs')
+ const system=source('../../src/product/frontend_system.rs')
+ const picker=source('../../src/product/frontend_native_picker.rs')
  for(const route of ['/model-library/download','/model-library/jobs',
   '/model-library/import','/model-library/installed/{id}']){
   assert.ok(downloads.includes(route),'missing route '+route)
@@ -70,10 +70,10 @@ test('main model library controls are backed by persistent native Rust download 
 })
 test('main Chat learning and context compaction use the same native durable session store',()=>{
  const ui=source('../src/pages/Chat.tsx')
- const router=source('../../src/frontend_api.rs')
- const sessions=source('../../src/frontend_api/sessions.rs')
- const chat=source('../../src/frontend_api/chat.rs')
- const state=source('../../src/frontend_state.rs')
+ const router=source('../../src/product/frontend_api.rs')
+ const sessions=source('../../src/product/frontend_api/sessions.rs')
+ const chat=source('../../src/product/frontend_api/chat.rs')
+ const state=source('../../src/product/frontend_state.rs')
  assert.match(ui,/\/api\/sessions\/'\+current\+'\/compact/)
  assert.match(ui,/\/api\/sessions\/'\+current\+'\/learn/)
  assert.match(router,/\/sessions\/\{id\}\/compact/)
@@ -87,7 +87,7 @@ test('main Chat learning and context compaction use the same native durable sess
 test('native learning panels read verified receipts without retired experiment endpoints',()=>{
  const ui=source('../src/pages/memory/Growth.tsx')
  const records=source('../src/pages/memory/LearningRecords.tsx')
- const adapter=source('../../src/frontend_growth.rs')
+ const adapter=source('../../src/product/frontend_growth.rs')
  for(const route of ['/transfer','/experience','/model-usage','/synergy']){
   assert.ok(adapter.includes('"'+route+'"'),'missing genuine native evidence route '+route)
  }
@@ -123,8 +123,8 @@ test('retired sign-in UI and obsolete OAuth endpoints are absent while live acco
 })
 test('Codex CLI login is official-device-only and separate from model-provider credentials',()=>{
  const ui=source('../src/pages/Models.tsx')
- const routes=source('../../src/frontend_providers.rs')
- const auth=source('../../src/frontend_codex_login.rs')
+ const routes=source('../../src/product/frontend_providers.rs')
+ const auth=source('../../src/product/frontend_codex_login.rs')
  assert.match(routes,/frontend_codex_login::routes/)
  assert.match(routes,/"id":"codex"/)
  assert.match(routes,/"supported":false,"connected":false/)
@@ -140,7 +140,7 @@ test('room context budget control reflects the native bounded character projecti
  assert.match(room,/대화 문맥 목표 \(토큰 근사\)/)
  assert.match(room,/max=\{8000\} value=\{value\.contextBudgetTokens\}/)
  assert.match(room,/Math\.min\(8000,Math\.max\(200,/)
- const backend=source('../../src/frontend_rooms.rs')
+ const backend=source('../../src/product/frontend_rooms.rs')
  assert.match(backend,/input\.context_budget_tokens>8_000/)
  assert.match(backend,/context_budget_tokens\.clamp\(200,8_000\)/)
 })

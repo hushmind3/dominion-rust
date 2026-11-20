@@ -1,6 +1,10 @@
 //! Dominion native Rust SDK and owned execution runtime.
 pub mod addons;
 pub mod product;
+// Compatible public paths point into product/; the native Run kernel does not
+// own React API, room UI, provider pickers or platform configuration.
+pub use product::{frontend_api,frontend_codex_login,frontend_growth,frontend_huggingface,frontend_local_models,frontend_model_downloads,frontend_native_picker,frontend_personas,frontend_provider_public,frontend_providers,frontend_rooms,frontend_system};
+pub(crate) use product::frontend_public_http;
 // Public compatibility names point at the application layer.
 pub use product::{group,knowledge,profile,provider_registry,frontend_state};
 pub use addons::{channels as frontend_channels, connected_tools,
@@ -26,19 +30,6 @@ pub mod program_session;
 pub mod strategy;
 pub mod policy;
 pub mod provider;
-pub mod frontend_api;
-pub mod frontend_rooms;
-pub mod frontend_providers;
-pub mod frontend_codex_login;
-pub mod frontend_provider_public;
-pub(crate) mod frontend_public_http;
-pub mod frontend_growth;
-pub mod frontend_personas;
-pub mod frontend_system;
-pub mod frontend_local_models;
-pub mod frontend_model_downloads;
-pub mod frontend_native_picker;
-pub mod frontend_huggingface;
 pub mod sandbox;
 pub mod sdk;
 pub mod skills;

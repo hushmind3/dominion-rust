@@ -192,3 +192,14 @@ skill discovery, memory catalog and mixed external tool catalog are in
 `src/sdk/product.rs`. These are separate `impl Dominion` blocks on
 the same native instance, with the same single Store and execution journal.
 No endpoint, tool authority, or persistence schema is renamed.
+
+## Product adapter source-location boundary (2026-11-20)
+
+All first-party `frontend_*.rs` modules, their nested session and room test
+modules, and the product's group/store/catalog classes now live in
+`src/product/`. Rust's public `crate::frontend_api`,
+`crate::frontend_rooms`, `crate::group` and other compatibility paths
+are re-exports from that package; existing API routes and React UI remain
+unchanged. No detached renderer or second native executor exists.
+The platform remains one binary by default; this is a **source ownership
+boundary, not a separately distributed runtime or lower binary size claim**.

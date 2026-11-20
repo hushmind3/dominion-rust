@@ -7,6 +7,19 @@ pub mod knowledge;
 pub mod profile;
 pub mod provider_registry;
 pub mod frontend_state;
+pub mod frontend_api;
+pub mod frontend_codex_login;
+pub mod frontend_growth;
+pub mod frontend_huggingface;
+pub mod frontend_local_models;
+pub mod frontend_model_downloads;
+pub mod frontend_native_picker;
+pub mod frontend_personas;
+pub mod frontend_provider_public;
+pub mod frontend_providers;
+pub mod frontend_rooms;
+pub mod frontend_system;
+pub(crate) mod frontend_public_http;
 
 use crate::{addons,config::Settings,domain::Run,group::Groups,knowledge::Knowledge,
     profile::OwnerProfileStore,frontend_state::FrontendStore,
@@ -36,6 +49,15 @@ pub struct ProductHost {
     focused_memory:Mutex<HashMap<Uuid,FocusedMemory>>,
 }
 impl ProductHost {
+    #[cfg(test)]
+    pub(crate) async fn recall_cache_query(&self,id:Uuid)->Option<String>{
+        self.focused_memory.lock().await.get(&id).map(|entry|entry.query.clone())
+    }
+    #[cfg(test)]
+    pub(crate) async fn recall_cache_len(&self)->usize{
+        self.focused_memory.lock().await.len()
+    }
+
     /// Product-owned scoped recall is released when a native Run terminates.
     /// The execution kernel does not own user-memory indexes or cache state.
     pub(crate) async fn release_run_context(&self,id:Uuid){
