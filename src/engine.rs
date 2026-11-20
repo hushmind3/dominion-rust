@@ -522,7 +522,7 @@ impl Engine {
             let (catalog,local_profile_saved)=local_task_catalog::project(&run,catalog);
             let schema_chars_saved=policy_saved.saturating_add(deferred_schema_chars)
                 .saturating_add(local_profile_saved);
-            let projection=crate::context::compact_strict(&run.messages,self.settings.context_max_chars)?;
+            let projection=crate::context::compact_execution(&run.messages,self.settings.context_max_chars)?;
             let mut outbound=projection.messages.clone();
             // The source is a durable tool/verifier receipt, not model or
             // external content. The guidance is a bounded, optional reference

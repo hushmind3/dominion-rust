@@ -180,6 +180,72 @@ Re-read exact files and tool receipts before relying on old observations.")});
  })
 }
 
+/// 2026 evidence-indexed working context. Old tool bodies are not removed from
+/// the durable Run: the model sees a stable, bounded preview and can load the
+/// exact receipt by ID/offset using read_tool_receipt. The two most recent tool
+/// receipts remain exact, along with original owner instructions/corrections.
+/// This prevents an already-successful 16KB read from being repaid in every
+/// subsequent model round just because the hard context window is still free.
+pub fn compact_execution(messages:&[Value],max_chars:usize)->Result<Projection,String>{
+    let original_chars=messages.iter().map(size).sum::<usize>();
+    let receipts=messages.iter().filter(|m|role(m)=="tool")
+        .filter_map(|m|m.get("tool_call_id").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    if receipts.len()<3{return compact_strict(messages,max_chars);}
+    let recent=&receipts[receipts.len()-2..];
+    let mut projected=messages.to_vec();
+    let mut reclaimed=0usize;
+    for (index,message) in messages.iter().enumerate().skip(2){
+        if role(message)=="tool"{
+            let Some(id)=message.get("tool_call_id").and_then(Value::as_str)else{continue;};
+            if recent.contains(&id){continue;}
+            let Some(body)=message.get("content").and_then(Value::as_str)else{continue;};
+            let length=body.chars().count();
+            if length<=1200{continue;}
+            let head=body.chars().take(620).collect::<String>();
+            let tail=body.chars().skip(length.saturating_sub(180)).collect::<String>();
+            projected[index]["content"]=json!(format!(
+                "{head}\n[OLDER RECEIPT: {id}; {length} characters in durable Run; \
+use read_tool_receipt with call_id={id}, offset and limit to inspect exact evidence]\n{tail}"));
+            reclaimed+=1;
+        }else if role(message)=="assistant"{
+            let tool_calls=message.get("tool_calls").and_then(Value::as_array);
+            if tool_calls.is_some_and(|calls|calls.iter().any(|call|
+                call.get("id").and_then(Value::as_str)
+                    .is_some_and(|id|!recent.contains(&id)))){
+                projected[index]=clipped(message);
+            }
+        }
+    }
+    if reclaimed==0{return compact_strict(messages,max_chars);}
+    // Soft target controls repeated prompt work, not execution eligibility.
+    // If exact user constraints exceed it, the configured hard bound takes over.
+    let target=(max_chars.saturating_mul(2)/5).clamp(12000,36000).min(max_chars);
+    let mut view=compact_strict(&projected,target)
+        .or_else(|_|compact_strict(&projected,max_chars))?;
+    view.original_chars=original_chars;
+    view.projected_chars=view.messages.iter().map(size).sum();
+    Ok(view)
+}
+
+/// Bounded, exact, run-local lookup into archived tool evidence. Never executes
+/// the tool again, touches another Run, or trusts a model-supplied file path.
+pub fn receipt_slice(messages:&[Value],call_id:&str,offset:usize,limit:usize)
+    ->Result<Value,String>{
+    if call_id.is_empty()||call_id.len()>256{return Err("invalid receipt call ID".into());}
+    let content=messages.iter().find(|m|role(m)=="tool"
+        &&m.get("tool_call_id").and_then(Value::as_str)==Some(call_id))
+        .and_then(|m|m.get("content")).and_then(Value::as_str)
+        .ok_or("tool receipt not present in this Run")?;
+    let total=content.chars().count();
+    if offset>total{return Err("receipt offset beyond available characters".into());}
+    let take=limit.clamp(1,6000);
+    let slice=content.chars().skip(offset).take(take).collect::<String>();
+    let next=offset.saturating_add(slice.chars().count());
+    Ok(json!({"call_id":call_id,"offset":offset,"total_chars":total,
+        "next_offset":next,"complete":next>=total,"content":slice}))
+}
+
 /// Optional material is turn-scoped, not a new system instruction. Append it
 /// AFTER the already-sent durable transcript so model prompt caches retain
 /// their longest unchanged prefix. Inserting at index two invalidated every
@@ -378,6 +444,48 @@ mod tests {
         assert!(!insert_optional(&mut messages,json!({"role":"user",
             "content":"x".repeat(10_000)}),10000));
         assert_eq!(messages,snapshot,"rejected hints must not mutate the model view");
+    }
+
+    #[test]
+    fn execution_view_shrinks_old_receipts_before_the_hard_context_limit(){
+        let mut msgs=vec![json!({"role":"system","content":"stable"}),
+            json!({"role":"user","content":"Build artifact; preserve exact constraints"})];
+        for i in 0..5 {
+            msgs.push(json!({"role":"assistant","tool_calls":[{
+                "id":format!("t{i}"),"type":"function",
+                "function":{"name":"read_file","arguments":"{}"}}]}));
+            msgs.push(json!({"role":"tool","tool_call_id":format!("t{i}"),
+                "content":format!("SOURCE {i}: {} :END{i}", "x".repeat(7000))}));
+        }
+        let full=msgs.clone();
+        let original=msgs.iter().map(size).sum::<usize>();
+        assert!(original<80000);
+        assert_eq!(compact_strict(&msgs,80000).unwrap().projected_chars,original);
+        let view=compact_execution(&msgs,80000).unwrap();
+        assert_eq!(msgs,full,"the durable execution history must remain exact");
+        assert!(view.projected_chars*2<original,
+            "old tool receipts must not be retransmitted in full while under the hard cap");
+        let tool=|id:&str|view.messages.iter().find(|m|m["tool_call_id"]==id).unwrap();
+        assert!(tool("t0")["content"].as_str().unwrap().contains("read_tool_receipt"));
+        assert_eq!(tool("t3")["content"],full[9]["content"]);
+        assert_eq!(tool("t4")["content"],full[11]["content"]);
+        for (i,m) in view.messages.iter().enumerate() {
+            if let Some(id)=m.get("tool_call_id").and_then(Value::as_str){
+                assert!(i>0&&view.messages[i-1]["tool_calls"].to_string().contains(id),
+                    "never detach a receipt from its tool call");
+            }
+        }
+    }
+    #[test]
+    fn exact_receipt_retrieval_is_paginated_and_never_crosses_run_boundaries(){
+        let msgs=vec![json!({"role":"tool","tool_call_id":"a","content":"가나다라마"})];
+        let page=receipt_slice(&msgs,"a",1,2).unwrap();
+        assert_eq!(page["content"],"나다");
+        assert_eq!(page["next_offset"],3);
+        assert_eq!(page["total_chars"],5);
+        assert_eq!(page["complete"],false);
+        assert!(receipt_slice(&msgs,"b",0,2).is_err());
+        assert!(receipt_slice(&msgs,"a",8,2).is_err());
     }
     #[test]
     fn unchanged_when_under_limit(){
