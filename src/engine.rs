@@ -1,4 +1,6 @@
-use crate::{runtime_services::RuntimeServices,algorithms::AgentAlgorithm,program_session,hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall, ToolEffectOutcome}, provider::{ModelClient, Reply}, ports::RunStorePort, tools, policy, journal, tool_schema, tool_batch};
+use crate::{runtime_services::RuntimeServices,algorithms::AgentAlgorithm,program_session,hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall, ToolEffectOutcome}, provider::ModelClient, ports::RunStorePort, tools, policy, journal};
+#[cfg(test)]
+use crate::provider::Reply;
 use serde_json::{json, Value};
 use std::{collections::{HashMap,HashSet}, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
@@ -40,14 +42,8 @@ impl std::ops::Deref for Engine {
     fn deref(&self)->&Self::Target{&self.product}
 }
 impl Engine {
-    /// Compose a pure Run executor from an injected storage port and product
-    /// adapter. No filesystem, JSON database, migration or DB open occurs here.
-    pub(crate) fn from_ports(settings:Settings,store:Arc<crate::ports::RunStorePort>,
-        product:crate::product::ProductHost,algorithm:Arc<dyn AgentAlgorithm>)
-        ->Result<Arc<Self>,String>{
-        Self::from_ports_with_loop(settings,store,product,algorithm,
-            Arc::new(dominion_agent_algo::ReActLoop))
-    }
+    /// Compose a pure Run executor from injected storage and a product adapter.
+    /// No filesystem or database opening occurs at the kernel boundary.
     pub(crate) fn from_ports_with_loop(settings:Settings,store:Arc<crate::ports::RunStorePort>,
         product:crate::product::ProductHost,algorithm:Arc<dyn AgentAlgorithm>,
         loop_driver:Arc<dyn dominion_agent_core::AgentLoop>)->Result<Arc<Self>,String>{

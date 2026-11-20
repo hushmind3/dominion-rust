@@ -11,11 +11,6 @@ pub(super) async fn save_owner_profile(State(engine):State<Arc<Engine>>,
     let record=engine.owner_profile.save(value).await.map_err(bad)?;
     Ok(Json(json!({"name":record.name,"avatar":record.avatar,"updatedAt":timestamp(record.updated_at_ms)})))
 }
-pub(super) async fn model_runtime()->Json<Value>{
-    Json(json!({"status":"idle","engine":null,"model":null,"managedBy":"external"}))
-}
-pub(super) async fn model_installed()->Json<Value>{Json(json!([]))}
-pub(super) async fn channels()->Json<Value>{Json(json!([]))}
 pub(super) async fn agents(State(engine):State<Arc<Engine>>)->Json<Vec<UiAgent>>{
     Json(engine.frontend.agents().await)
 }

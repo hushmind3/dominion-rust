@@ -5,7 +5,7 @@
 use dominion::{config::Settings,group::{FrontendRoom,NewRoom,Participant},
     sdk::Dominion};
 use serde::Serialize;
-use serde_json::{json,Value};
+use serde_json::Value;
 use std::{env,path::PathBuf,time::Instant};
 use uuid::Uuid;
 

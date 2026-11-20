@@ -1,12 +1,12 @@
 //! Mandatory native Run loop: *not* a replaceable strategy.
 //! Strategies choose plans, prompts and tools; the harness alone advances
 //! durable Runs and submits approved effects through the kernel.
-use crate::{engine::Engine,config::Settings,domain::{Run,RunStatus,ToolCall},
+use crate::{engine::Engine,domain::{Run,RunStatus,ToolCall},
     program_session,policy,journal,tool_schema,tool_batch,tools};
 use dominion_agent_core::{LoopStep,TurnSnapshot};
 use crate::provider::Reply;
 use serde_json::{json,Value};
-use std::{sync::Arc,collections::HashSet};
+use std::sync::Arc;
 use tokio::sync::watch;
 use uuid::Uuid;
 

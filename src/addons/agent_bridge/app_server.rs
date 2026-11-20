@@ -77,12 +77,6 @@ pub(super) fn valid_thread_id(id:&str)->bool{
     !id.is_empty()&&id.len()<=128&&id.bytes().all(|b|
         b.is_ascii_alphanumeric()||matches!(b,b'-'|b'_'))
 }
-pub(super) async fn consult<R,W>(stdout:R,stdin:W,cwd:&Path,prompt:&str)
-    ->Result<String,String>
-where R:AsyncRead+Unpin,W:AsyncWrite+Unpin{
-    consult_with_session(stdout,stdin,cwd,prompt,None,false).await
-        .map(|answer|answer.answer)
-}
 pub(super) async fn consult_with_session<R,W>(stdout:R,mut stdin:W,
     cwd:&Path,prompt:&str,previous:Option<&str>,retain:bool)
     ->Result<AdvisoryAnswer,String>
@@ -197,9 +191,9 @@ mod tests{
             server_write.write_all(b"{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread-test\",\"item\":{\"type\":\"agentMessage\",\"text\":\"Advisory only\"}}}\n").await.unwrap();
             server_write.write_all(b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-test\",\"turn\":{\"id\":\"turn-test\",\"status\":\"completed\"}}}\n").await.unwrap();
         });
-        let answer=consult(client_read,client_write,Path::new("/tmp/sub4-scratch"),
-            "Review exactly this diff").await.unwrap();
-        assert_eq!(answer,"Advisory only");
+        let answer=consult_with_session(client_read,client_write,Path::new("/tmp/sub4-scratch"),
+            "Review exactly this diff",None,false).await.unwrap();
+        assert_eq!(answer.answer,"Advisory only");
         server.await.unwrap();
     }
     #[tokio::test]

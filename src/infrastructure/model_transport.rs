@@ -743,15 +743,6 @@ fn configure_openai_cache(body:&mut Value,settings:&ModelSettings,
         }
     }
 }
-fn strip_internal_cache_markers(body:&mut Value){
-    if let Some(list)=body["messages"].as_array_mut(){
-        for message in list{
-            if let Some(object)=message.as_object_mut(){
-                object.remove("dominion_cache_anchor");
-            }
-        }
-    }
-}
 fn anthropic_native_cache(base_url:&str)->bool{
     reqwest::Url::parse(base_url).ok().is_some_and(|url|
         url.scheme()=="https"&&url.host_str()==Some("api.anthropic.com")
@@ -1038,7 +1029,9 @@ mod tests {
             json!({"role":"user","content":"persona"})
         ];
         let mut openai=json!({"model":"mock","messages":original});
-        strip_internal_cache_markers(&mut openai);
+        let mut settings=Settings::from_env().unwrap().main;
+        settings.base_url="https://thirdparty.example/v1".into();
+        configure_openai_cache(&mut openai,&settings,None,"messages");
         assert!(openai["messages"][1].get("dominion_cache_anchor").is_none());
         assert!(ollama_messages(&original).unwrap().iter()
             .all(|entry|entry.get("dominion_cache_anchor").is_none()));
