@@ -36,11 +36,31 @@ pub(super) fn no_tools_required(query:&str)->bool{
         "latest","current","search","browse","file","repository",
         "deploy","run","execute","install","commit","continue"]
         .iter().any(|word|cleaned.contains(word)){return false}
-    ["번역해","영어로 번역","한국어로 번역","맞춤법 고쳐",
+    if ["번역해","영어로 번역","한국어로 번역","맞춤법 고쳐",
      "문장 다듬어","문장을 다듬어","표현 다듬어",
      "translate this","translate to","fix this sentence",
      "rewrite this sentence"].iter()
-        .any(|prefix|cleaned.starts_with(prefix))
+        .any(|prefix|cleaned.starts_with(prefix)){return true}
+    // Common timeless, self-contained conceptual questions are ordinary
+    // chat, not an autonomous repository/tool job. This whitelist is
+    // deliberately narrow: dynamic questions, ambiguous follow-ups and
+    // requests to inspect external artifacts always remain tool capable.
+    const KNOWLEDGE:&[&str]=&[
+        "란 무엇","이란 무엇","은 무엇","는 무엇","무슨 뜻","뜻이 뭐",
+        "뜻은 뭐","원리가 뭐","어떤 원리","원리 설명","개념 설명",
+        "차이점 설명","차이는 뭐","왜 그런","왜 그렇게",
+        "what is ","what are ","what does ","explain the concept",
+        "how does ","why does ","why is ","difference between ",
+    ];
+    if !KNOWLEDGE.iter().any(|pattern|cleaned.contains(pattern)){
+        return false;
+    }
+    // Code paths and user-specific files are never generalized into
+    // timeless chat even if phrased as a definition question.
+    if [".rs",".tsx",".ts",".js",".py",".md",".json",".toml",
+        "src/","web/","crates/","\\","~/","./"].iter()
+        .any(|extension|cleaned.contains(extension)){return false}
+    true
 }
 
 /// The user explicitly requested older information. Relevance selection is
@@ -146,7 +166,13 @@ pub(super) fn compile(profile:&str,
             "USER-SUPPLIED AGENT PROFILE (not higher-priority than system policy):\n{}\n\nRESPONSE LANGUAGE PREFERENCE:\n{}",
             profile.trim(),instruction),
         "dominion_cache_anchor":true});
-    let budget=max_chars.clamp(1800,14_000);
+    // A model with less context than the reserved system/tool capacity
+    // must fail before making a paid provider request, not silently inflate
+    // an exhausted budget to 1,800 characters.
+    if max_chars<1800{
+        return Err(bad("chat context budget exhausted by current request and native system/tools"));
+    }
+    let budget=max_chars.min(14_000);
     if chars(&profile)>budget.saturating_sub(600){
         return Err(bad("chat profile exceeds the available model context; shorten agent instructions"));
     }
@@ -231,6 +257,26 @@ mod tests{
         assert!(later.recent_chars<6_500);
         assert_eq!(later.messages.iter().filter(|m|
             m["dominion_cache_anchor"]==true).count(),2);
+    }
+    #[test]
+    fn model_context_reservation_cannot_silently_expand_a_tiny_window(){
+        let e=compile("small",None,&[], "x",false,1100);
+        assert!(e.is_err(),"insufficient context must fail before a paid API call");
+    }
+    #[test]
+    fn common_timeless_questions_use_one_tool_free_native_model_call(){
+        for q in ["KV 캐시란 무엇인가요?","이 용어는 무슨 뜻이죠?",
+            "Why is the sky blue?","What is a transformer architecture?",
+            "Explain the concept of attention"]{
+            assert!(no_tools_required(q),"{q}");
+        }
+        for q in ["2026년 현재 KV 캐시란 무엇인가요?",
+            "github 코드를 읽어서 KV 캐시란 무엇인지 설명해",
+            "What is inside src/engine.rs?",
+            "What is today's price?","설정을 수정한 다음 원리가 뭐야?",
+            "이어해서 설명해","왜 홈페이지가 다운됐는지 확인해"]{
+            assert!(!no_tools_required(q),"{q}");
+        }
     }
     #[test]
     fn long_profile_fails_before_a_paid_provider_call(){
