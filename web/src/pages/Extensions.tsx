@@ -301,13 +301,9 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
     [skillCategory, setSkillCategory] = useState("all");
   const templates = skillTemplates.map((item) =>
     loc === "en"
-      ? {
-          ...item,
-          name: item.nameEn,
-          category: item.categoryEn,
-          instructions: item.instructionsEn,
-        }
-      : item,
+      ? {...item,canonicalName:item.name,name:item.nameEn,
+          category:item.categoryEn,instructions:item.instructionsEn}
+      : {...item,canonicalName:item.name},
   );
   const skillCategories = [
     "all",
@@ -322,6 +318,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
   );
   const [edit, setEdit] = useState<any | null>(null),
     [mcpBusy,setMcpBusy] = useState(false),
+    [skillBusy,setSkillBusy] = useState(false),
     [discovery,setDiscovery] = useState<"idle"|"loading"|"done"|"failed">("idle"),
     [skillEdit, setSkillEdit] = useState<Partial<Skill> | null>(null),
     [tools, setTools] = useState<any[]>([]);
@@ -356,17 +353,22 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
     } finally {setMcpBusy(false)}
   };
   const saveSkill = async () => {
-    if (!skillEdit?.name) return;
+    if (!skillEdit||skillBusy)return;
+    const name=String(skillEdit.name||"").trim()
+    const instructions=String(skillEdit.instructions||"").trim()
+    if (!name||!instructions){setError(t('ext.skillFormError'));return}
+    setSkillBusy(true);setError("");setMessage("");
     try {
-      await post("/api/skills", skillEdit);
+      await post("/api/skills", {...skillEdit,name,instructions});
       setSkillEdit(null);
-      skills.reload();
+      await skills.reload();
+      setMessage(t('ext.skillSaved'));
     } catch (e) {
       setError((e as Error).message);
-    }
+    } finally {setSkillBusy(false)}
   };
   const addSkillTemplate = async (template: any) => {
-    if (skills.value.some((x) => x.name === template.name)) return;
+    if (skills.value.some(x=>x.name===template.name||x.name===template.canonicalName||x.name===template.nameEn)) return;
     try {
       await post("/api/skills", { ...template, enabled: true });
       await skills.reload();
@@ -718,10 +720,10 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
               </label>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
-              <Action variant="secondary" onClick={() => setSkillEdit(null)}>
+              <Action variant="secondary" disabled={skillBusy} onClick={() => setSkillEdit(null)}>
                 {t('ext.cancel')}
               </Action>
-              <Action onClick={saveSkill}>
+              <Action disabled={skillBusy} onClick={()=>void saveSkill()}>
                 <Check size={16} /> {t('ext.saveSkill')}
               </Action>
             </div>
