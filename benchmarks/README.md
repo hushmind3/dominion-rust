@@ -36,3 +36,30 @@ The runner detects modifications to protected acceptance test files (the
 tests directory by default), restores the trusted fixture before verification
 and rejects the attempt if those files were tampered with. Missing metering
 is reported as null rather than assumed to be zero.
+
+## Opt-in live 100-owner-turn semantic Room recall (Sub4)
+
+The compiler-only Room context tests do not prove actual LLM semantic recall. To
+run a **real 100 owner turns + final probe** against the configured provider,
+with two alternating room participants and exact early-fact/later-correction
+grading, explicitly opt in:
+
+    cargo run --locked --bin dominion_room_recall_eval -- \
+      --confirm-live-model --budget-krw 5000 \
+      --context-budget-tokens 4000 \
+      --output benchmark-results/sub4-room-recall.json
+
+Configure the regular DOMINION_BASE_URL, DOMINION_MODEL and DOMINION_API_KEY (or a
+loopback local model server). Configure actual input and output KRW-per-million
+tariffs as well; if pricing is truly unknown, explicitly add --allow-unpriced.
+An unpriced 0-KRW receipt does NOT establish that inference was free. The
+Room's native post-inference budget gate cannot prevent a final provider
+request from exceeding the declared KRW limit; the report retains observed
+billed usage, unmetered/caching flags and any partial progress.
+
+The evaluator itself makes no additional paid judge request. It uses 100
+completed actual owner/assistant turns, injects a random permanent audit ID
+early and a random target correction at turn 89, then strictly compares a
+final JSON answer to the two original source facts. The report is written
+even on an observed Room/model failure after startup. No result is implied
+until this opt-in binary runs against a real configured model.
