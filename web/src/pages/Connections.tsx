@@ -46,7 +46,7 @@ export function ConnectionsPage(){
   {section==='accounts'&&<ConnectedAccounts/>}
   {section==='capabilities'&&<CapabilitiesPage embedded navigate={page=>setSection(page==='extensions'?'market':'channels')}/>}
   {(section==='market'||section==='installed'||section==='skills')&&
-   <ExtensionsPage section={section} embedded/>
-  </Suspense>}
+   <ExtensionsPage section={section} embedded/>}
+  </Suspense>
  </div>
 }

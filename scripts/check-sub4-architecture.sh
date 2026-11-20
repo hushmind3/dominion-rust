@@ -40,13 +40,13 @@ required_count src/addons/github_cli_login.rs 'route.*oauth/github/cli/login' 0
 required_count web/src/components/DominionCloudAccount.tsx 'disabled=\{!socialLogin\.' 0
 required_count web/src/pages/Models.tsx 'startCliLogin|importCli\(' 0
 # Optional integrations must never merge individually into the core API.
-required_count src/frontend_api.rs 'merge\\(crate::addons::routes\\(addons_enabled\\)\\)' 1
-required_count src/frontend_api.rs 'merge\\(crate::frontend_channels|merge\\(crate::frontend_extensions|merge\\(crate::frontend_oauth' 0
+required_count src/frontend_api.rs 'merge\(crate::addons::routes\(addons_enabled\)\)' 1
+required_count src/frontend_api.rs 'merge\(crate::frontend_channels|merge\(crate::frontend_extensions|merge\(crate::frontend_oauth' 0
 required_count src/engine.rs 'pub addons: Arc<crate::addons::Host>' 1
 required_count src/frontend_rooms.rs 'crate::addons::dispatch_room' 3
-required_count web/src/pages/Connections.tsx 'lazy\\(\\(\\)=>import\\(' 4
-for legacy in src/mcp.rs src/mcp/tests.rs src/frontend_channels.rs src/frontend_extensions.rs \\
- src/frontend_oauth.rs src/frontend_skill_import.rs src/connected_tools.rs \\
+required_count web/src/pages/Connections.tsx 'lazy\(\(\)=>import\(' 4
+for legacy in src/mcp.rs src/mcp/tests.rs src/frontend_channels.rs src/frontend_extensions.rs \
+ src/frontend_oauth.rs src/frontend_skill_import.rs src/connected_tools.rs \
  src/github_work.rs src/google_workspace.rs src/github_cli_login.rs; do
  if [[ -e "$legacy" ]]; then
   echo "ERROR: optional integration source leaked into core root: $legacy" >&2
