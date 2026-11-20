@@ -135,7 +135,6 @@ async fn import_public(engine:&Arc<Engine>,requested:&str)->Result<Value,String>
 }
 #[derive(Deserialize)]
 struct ImportRepo{repo:String}
-#[derive(Deserialize)]
 pub fn routes()->Router<Arc<Engine>>{
  Router::new().route("/skills/import-repo",post(import_repo))
 }
