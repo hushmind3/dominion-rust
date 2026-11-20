@@ -4,19 +4,21 @@
 
 Dominion Sub4 is a **Rust-native, local-first AI agent execution harness** with the current main-branch React/Vite interface. The Rust SDK owns model/tool rounds, durable run receipts, policy checks, user approvals, recovery and bounded context; the browser is an adapter rather than an independent executor.
 
-> **Branch scope:** `dominion-sub4` is an independent implementation, not a merge of the main Rust backend. The frontend source is synchronized from main commit `93dcee8c5d385528d886662abd694abf339c8ee8` (2026-11-19). The Rooms send endpoint is switched to a Sub4 background endpoint to avoid long HTTP requests during 9-speaker fanout. New main UI actions without a native backend adapter return an explicit error; they are not represented as working integrations.
+> **Branch scope:** `dominion-sub4` is an independent implementation, not a merge of the main Rust backend. The frontend source is synchronized from main commit `93dcee8c5d385528d886662abd694abf339c8ee8` (2026-11-19). The Rooms send endpoint is switched to a Sub4 background endpoint to avoid long HTTP requests during 9-speaker fanout. The redundant vendor discovery tab has also been consolidated into the existing provider exploration/connection screen; other main UI navigation remains. New main UI actions without a native backend adapter return an explicit error; they are not represented as working integrations.
 
 ## Features
 
 - **One native execution kernel:** `src/engine.rs`, `src/domain.rs`, `src/store.rs`, `src/journal.rs`. Agent steps, delegated work, policy and approval decisions share durable records.
 - **Provider choice:** `src/provider.rs`, `src/provider_registry.rs`. OpenAI-compatible API, Anthropic, Ollama and configured models. Provider credentials are not inherited when the target endpoint changes.
-- **Group rooms:** `src/group.rs` and `src/frontend_rooms.rs`. Nine-person owner turns use bounded provenance-aware context, persisted speaker receipts, cancellation-safe turn reservation, background execution, progress snapshots and same-client-message-ID retry.
+- **Group rooms:** `src/group.rs` and `src/frontend_rooms.rs`. Nine-person owner turns use bounded provenance-aware context, persisted speaker receipts, cancellation-safe turn reservation, background execution, progress snapshots and same-client-message-ID retry. Both HTTP transports share one message-admission contract; stable agent/knowledge projections are not rebuilt for every speaker.
 - **Tools and MCP:** `src/tools.rs`, `src/mcp.rs`, `src/tool_discovery.rs`; explicit scope and approval for side effects. Provider replies claiming a terminal `stop` while containing executable tool calls are rejected before the native Run can dispatch them; no speculative retry is performed after a possibly billed response.
 - **Persistent context and memory:** `src/context.rs`, `src/knowledge.rs`; user corrections and durable evidence survive restarts.
 - **SDKs:** `src/sdk.rs` and `sdk/typescript/`; typed native or HTTP entry points rather than duplicated task schedulers.
 - **Main user interface:** `web/` is synced to the current main React navigation and pages, including model exploration, accounts, memory, rooms and chat. Hugging Face public GGUF/MLX search, revision-pinned downloads, pause/resume/cancel, local file registration, installed-model removal and local OS pickers are bridged into the Rust API. Imported GGUF models run via the loopback Ollama adapter inside the same Rust Run orchestration; a native MLX execution driver, automatic model-engine installers and other main-backend-only integrations still require separate work.
 
 The main Chat's manual compact command persists a bounded excerpt of older messages without deleting the original transcript. The manual Learn command saves explicit owner messages as provenance-labeled global memory. These are native projections, not hidden model summarization or a second agent scheduler.
+
+[Repository duplication audit and preserved contracts](docs/SUB4_DEDUP_AUDIT_2026-11-20.md)
 
 ## Develop and verify
 

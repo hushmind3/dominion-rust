@@ -181,3 +181,16 @@ test('catalog registration selects the Anthropic protocol and chat route retains
  assert.match(app,/provider:params\.get\('provider'\)\|\|undefined/)
  assert.match(app,/model:params\.get\('model'\)\|\|undefined/)
 })
+
+test('provider discovery has one searchable connection surface rather than duplicate tabs',()=>{
+ const hub=readFileSync(new URL('../src/pages/Models.tsx',import.meta.url),'utf8')
+ const account=readFileSync(new URL('../src/components/DominionCloudAccount.tsx',import.meta.url),'utf8')
+ assert.match(hub,/id:'connect',label:'업체 탐색·연결'/)
+ assert.doesNotMatch(hub,/id:'catalog'/)
+ assert.doesNotMatch(hub,/catalogVisible|setCatalogSort|setCatalogLimit|CatalogResponse/)
+ assert.ok(!hub.includes("'/api/providers/catalog'"),'provider list loads only in the connection surface')
+ assert.ok(account.includes("'/api/providers/catalog'"),
+  'the consolidated surface retains public credential-free discovery')
+ assert.ok(account.includes("/api/providers/catalog/"),
+  'the consolidated surface still opens actual provider model lists')
+})
