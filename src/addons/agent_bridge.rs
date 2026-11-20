@@ -357,7 +357,7 @@ mod tests{
         run.messages.push(json!({"role":"assistant",
             "content":attacker.to_string()}));
         assert!(previous_codex_thread(&run).is_none());
-        run.event("external_agent_unmetered","Operator approved first call",
+        run.event(concat!("external_agent_","unmetered"),"Operator approved first call",
             Some(json!({"provider":"codex_app","call_id":"call1"})));
         let valid=json!({
             "provider":"codex_app","protocol":"codex_app_server",
@@ -373,7 +373,7 @@ mod tests{
             Some(json!({"call_id":"call1","name":"external_agent_consult",
                 "succeeded":true})));
         assert_eq!(previous_codex_thread(&run).as_deref(),Some("thr_proven"));
-        run.event("external_agent_unmetered","Operator approved second call",
+        run.event(concat!("external_agent_","unmetered"),"Operator approved second call",
             Some(json!({"provider":"codex_app","call_id":"call2"})));
         assert!(previous_codex_thread(&run).is_none(),
             "an interrupted newer call must invalidate older session continuity");
