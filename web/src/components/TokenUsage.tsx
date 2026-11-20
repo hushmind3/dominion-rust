@@ -14,7 +14,9 @@ export function TokenUsage({usage,className}:{usage?:Usage;className?:string}){
  const input=known?t('usage.newInput',{count:count(prompt-cache)}):t('usage.input',{count:count(prompt)})
  const cached=known?t('usage.cached',{count:count(cache)}):t('usage.cacheUnknown')
  const output=t('usage.output',{count:count(usage.completionTokens)})
- const detail=`${input} · ${cached} · ${output}`
+ const calls=typeof usage.modelCalls==='number'&&usage.modelCalls>0
+  ?t('usage.calls',{count:count(usage.modelCalls)})+' · ':''
+ const detail=`${calls}${input} · ${cached} · ${output}`
  return <span className={className} title={detail}>
   {t(usage.estimated?'usage.tokensEstimated':'usage.tokens',{count:count(usage.totalTokens)})}
   <span> · {detail}</span>

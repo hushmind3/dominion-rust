@@ -828,6 +828,7 @@ const en: Record<LocaleKey, string> = {
   'chat.reasoningNote': 'Only reasoning supplied by the model is shown',
   'chat.selectProvider': 'Model provider',
   'usage.input': 'input {count}',
+  'usage.calls': 'cumulative across {count} model calls',
   'usage.newInput': 'new input {count}',
   'usage.cached': 'cached {count}',
   'usage.cacheUnknown': 'cache unreported',

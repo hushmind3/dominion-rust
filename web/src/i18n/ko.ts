@@ -827,6 +827,7 @@ const ko = {
   'chat.reasoningNote': '모델이 제공한 추론 정보만 표시됩니다',
   'chat.selectProvider': '모델 제공자',
   'usage.input': '입력 {count}',
+  'usage.calls': '모델 {count}회 호출 누적',
   'usage.newInput': '신규 입력 {count}',
   'usage.cached': '캐시 {count}',
   'usage.cacheUnknown': '캐시 미보고',

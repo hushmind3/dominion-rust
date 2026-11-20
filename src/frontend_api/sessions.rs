@@ -33,6 +33,7 @@ pub(super) async fn sync_session(engine:&Arc<Engine>,id:&str)->Result<(),String>
             "costKrw":run.cost_krw,
             "usage":{
                 "promptTokens":run.input_tokens,"cachedPromptTokens":run.cached_input_tokens,
+                "modelCalls":run.events.iter().filter(|event|event.kind=="model").count(),
                 "completionTokens":run.output_tokens,
                 "totalTokens":run.input_tokens+run.output_tokens,
                 "model":actual_model,
