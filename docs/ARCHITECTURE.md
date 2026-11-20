@@ -431,3 +431,24 @@ provider affinity and metered Reply. Alternate operator-provided
 implementations may use local or remote inference without rewriting
 the agent scheduler. Existing `Engine::model_for_run` stays available
 for source-compatible SDK/HTTP clients, separate from worker execution.
+
+## 2026-11-20 — Canonical core / harness / strategy ownership
+
+Source of truth for the native sub4 execution path:
+- **Core/kernel:** `src/engine.rs`, `src/journal.rs`, `src/policy.rs`,
+  `crates/dominion-agent-core` own durable transition authority, strict tool
+  admission, budgets, cancellation, approvals and recovery.
+- **Mandatory harness:** `src/harness/runner.rs` is the sole implementation
+  of `Engine::drive` and `Engine::drive_model_only`. All model and external
+  tool I/O passes through injected `RuntimeServices` while the kernel owns
+  execution authorization.
+- **Optional/reasoning strategies:** `src/algorithms` and
+  `crates/dominion-agent-algo` contain pure prompts, context projections,
+  turn selection and guidance; they DO NOT own or instantiate a runner.
+- **Coordination:** `src/product/coordination.rs` schedules room speaker
+  work through the existing group engine. An independent multi-agent chat
+  channel is not to be confused with a separate privileged tool harness.
+
+Moving the async body out of `src/algorithms/runner.rs` changes physical
+ownership, not the runtime semantics or existing SDK/HTTP contracts. This
+is a modular-monolith layout, NOT a new binary, WASM module or microservice.

@@ -14,14 +14,19 @@ required_count() {
 required_count src/algorithms/context.rs '^[[:space:]]*pub fn compact_strict\(' 1
 required_count src/algorithms/context.rs '^[[:space:]]*pub fn compact\(' 0
 # The single executable ReAct loop is outside the engine source.
-required_count src/algorithms/runner.rs 'LoopStep::ModelTurn' 1
+if [[ -e src/algorithms/runner.rs ]]; then
+  echo "ERROR: a mandatory runner cannot live in optional strategies" >&2
+  exit 1
+fi
+required_count src/harness/mod.rs '^mod runner;' 1
+required_count src/harness/runner.rs 'LoopStep::ModelTurn' 1
 required_count src/engine.rs 'LoopStep::|TurnSnapshot' 0
 required_count src/engine.rs 'pub[(]crate[)] loop_driver:Arc<dyn' 1
 required_count crates/dominion-agent-core/src/lib.rs 'pub trait AgentLoop' 1
 required_count crates/dominion-agent-algo/src/lib.rs 'impl AgentLoop for ReActLoop' 1
 # Native Run, its single real tool dispatch, and durable journal retain control.
 required_count src/engine.rs '^[[:space:]]*async fn drive\(' 0
-required_count src/algorithms/runner.rs '^[[:space:]]*pub[(]crate[)] async fn drive\(' 1
+required_count src/harness/runner.rs '^[[:space:]]*pub[(]crate[)] async fn drive\(' 1
 required_count src/engine.rs '^[[:space:]]*pub[(]crate[)] async fn perform_tool\(' 1
 required_count src/journal.rs '^[[:space:]]*pub fn begin\(' 1
 # The kernel owns business-state transitions, not the DB or filesystem
@@ -109,7 +114,7 @@ required_count src/algorithms/mod.rs 'pub trait AgentAlgorithm' 1
 required_count src/algorithms/mod.rs 'fn fused_messages' 2
 required_count src/algorithms/mod.rs 'fn initialize_fused' 0
 required_count src/engine.rs 'Self::admit_algorithm_catalog' 0
-required_count src/algorithms/runner.rs 'Self::admit_algorithm_catalog' 1
+required_count src/harness/runner.rs 'Self::admit_algorithm_catalog' 1
 required_count src/engine.rs 'fn admit_algorithm_catalog' 1
 required_count src/engine.rs 'const SYSTEM|local_task_catalog::|tool_discovery::|compact_execution\\(' 0
 required_count src/product/bootstrap.rs 'pub fn new_with_algorithm' 2
@@ -122,11 +127,11 @@ required_count src/addons/execution.rs 'journal::begin|journal::finish|pub async
 required_count src/engine.rs 'product: Arc<crate::product::ProductHost>' 1
 required_count src/engine.rs 'pub[(]crate[)] services: Arc<dyn RuntimeServices>' 1
 required_count src/engine.rs 'self[.](knowledge|addons|providers)[.]' 0
-required_count src/algorithms/runner.rs 'self[.](knowledge|addons|providers)[.]' 0
+required_count src/harness/runner.rs 'self[.](knowledge|addons|providers)[.]' 0
 required_count src/runtime_services.rs 'pub trait RuntimeServices' 1
 required_count src/runtime_services.rs 'fn complete' 1
 required_count src/product/runtime_services.rs 'fn complete' 1
-required_count src/algorithms/runner.rs 'selected[.]complete|selected_model[.]complete|model_for_run' 0
+required_count src/harness/runner.rs 'selected[.]complete|selected_model[.]complete|model_for_run' 0
 required_count src/product/runtime_services.rs 'impl RuntimeServices for ProductHost' 1
 required_count src/engine.rs 'pub groups:|pub addons:|pub knowledge:|pub frontend:|pub providers:|pub owner_profile:' 0
 required_count src/engine.rs 'frontend_local_models::|provider_registry::|frontend_state::|Knowledge::open' 0

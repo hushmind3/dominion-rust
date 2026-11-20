@@ -11,7 +11,6 @@ pub mod repair_guidance;
 pub mod loop_guard;
 pub mod local_task_catalog;
 pub mod verification;
-pub(crate) mod runner;
 
 pub struct ToolPresentation {
     pub tools:Vec<Value>,

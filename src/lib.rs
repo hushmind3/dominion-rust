@@ -20,6 +20,7 @@ pub use addons::{channels as frontend_channels, connected_tools,
 
 pub mod domain;
 pub mod engine;
+mod harness; // one execution loop; strategies never execute effects
 pub mod journal;
 
 pub mod hooks;
