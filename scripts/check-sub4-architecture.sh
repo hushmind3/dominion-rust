@@ -79,7 +79,7 @@ if [[ -e src/product.rs ]]; then
 fi
 for candidate in src/*.rs; do
  case "${candidate##*/}" in
- acceptance.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|main.rs|policy.rs|sdk.rs|ports.rs|tool_batch.rs|tool_schema.rs) ;;
+ acceptance.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|main.rs|policy.rs|sdk.rs|ports.rs|runtime_services.rs|tool_batch.rs|tool_schema.rs) ;;
  *) echo "ERROR: unexpected root module $candidate (classify core vs product/addons)" >&2; exit 1 ;;
  esac
 done
