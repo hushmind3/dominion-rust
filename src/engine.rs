@@ -83,6 +83,22 @@ impl Engine {
         });
         Ok(engine)
     }
+    /// A pure algorithm can only omit existing, operator-authorized schemas.
+    /// The runtime—not the strategy—owns the admission boundary.
+    fn admit_algorithm_catalog(authorized:&[Value],proposed:&[Value])->Result<(),String>{
+        let mut seen=HashSet::<String>::new();
+        if proposed.iter().any(|tool|{
+            let Some(name)=tool.pointer("/function/name").and_then(Value::as_str)
+                else{return true;};
+            !authorized.contains(tool)||!seen.insert(name.into())
+        }){
+            return Err("algorithm attempted to advertise an unauthorized or duplicate tool schema".into());
+        }
+        Ok(())
+    }
+    /// Expose the pinned algorithm identity for diagnostics without exposing
+    /// strategy internals, model credentials or mutable runtime state.
+    pub fn algorithm_id(&self)->&str{self.algorithm.id()}
     /// Attach a synchronous, fail-closed policy/receipt hook to this runtime.
     /// The native SDK and HTTP share the same engine and hook chain.
     pub async fn register_tool_hook(&self, hook:Arc<dyn ToolHook>){self.hooks.write().await.add(hook);}
@@ -393,7 +409,9 @@ impl Engine {
                 // call decides both its plan and first actions.
                 self.store.mutate(id, |current| {
                     if current.status!=RunStatus::Running || current.plan.is_some(){return Ok(());}
-                    self.algorithm.initialize_fused(current);
+                    let prepared=self.algorithm.fused_messages(current);
+                    current.messages=prepared;
+                    current.plan=Some(String::new());
                     current.event("planning_fused",
                         "Initial planning folded into the tool-capable model turn (zero additional model calls)",None);
                     Ok(())
@@ -452,14 +470,7 @@ impl Engine {
                 .cloned().collect();
             let presentation=self.algorithm.present_tools(
                 &run,allowed_native,allowed_external,&self.settings.denied_tools);
-            let mut seen=HashSet::<String>::new();
-            if presentation.tools.iter().any(|tool|{
-                let Some(name)=tool.pointer("/function/name").and_then(Value::as_str)
-                    else{return true;};
-                !authorized.contains(tool)||!seen.insert(name.into())
-            }){
-                return Err("algorithm attempted to advertise an unauthorized or duplicate tool schema".into());
-            }
+            Self::admit_algorithm_catalog(&authorized,&presentation.tools)?;
             let catalog=presentation.tools;
             let schema_chars_saved=policy_saved.saturating_add(presentation.saved_chars);
             let projection=self.algorithm.project_context(&run,self.settings.context_max_chars)?;

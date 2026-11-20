@@ -99,6 +99,10 @@ if [[ -e src/engine/local_task_catalog.rs || ! -e src/algorithms/local_task_cata
 fi
 required_count src/engine.rs 'algorithm:Arc<dyn AgentAlgorithm>' 2
 required_count src/algorithms/mod.rs 'pub trait AgentAlgorithm' 1
+required_count src/algorithms/mod.rs 'fn fused_messages' 2
+required_count src/algorithms/mod.rs 'fn initialize_fused' 0
+required_count src/engine.rs 'Self::admit_algorithm_catalog' 1
+required_count src/engine.rs 'fn admit_algorithm_catalog' 1
 required_count src/engine.rs 'const SYSTEM|local_task_catalog::|tool_discovery::|compact_execution\\(' 0
 required_count src/product/bootstrap.rs 'pub fn new_with_algorithm' 1
 # The Run kernel must not know a remote transport or duplicate progress loop.

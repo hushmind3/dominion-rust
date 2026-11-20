@@ -323,3 +323,16 @@ a filesystem or DB handle.
 
 This is runtime/algorithm dependency injection in the existing Rust binary,
 not yet a standalone distribution crate or generic dynamic plugin loader.
+
+### Strategy purity and fail-closed authorization
+
+`AgentAlgorithm::fused_messages` receives an **immutable Run** and returns
+only outbound model messages. The runtime itself commits plan markers, run
+status, journal/approvals and the durable `algorithm_bound` event. A strategy
+cannot mutate pending approvals or bypass the event ordering through its API.
+
+`Engine::admit_algorithm_catalog` rejects a proposed model-facing schema
+unless it is byte-for-byte equal (as JSON `Value`) to a previously
+operator-authorized catalog entry. Duplicate names are rejected even when
+the schema is identical. The final answer's audit condition is also fixed
+in the runtime rather than allowing a pluggable strategy to redefine PASS.

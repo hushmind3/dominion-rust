@@ -24,7 +24,7 @@ pub trait AgentAlgorithm:Send+Sync {
     fn separate_planning(&self,settings:&Settings,_run:&Run)->bool {
         settings.separate_plan_model_call
     }
-    fn initialize_fused(&self,run:&mut Run);
+    fn fused_messages(&self,run:&Run)->Vec<Value>;
     fn model_only_messages(&self,run:&Run)->Vec<Value>;
     fn planning_request(&self,run:&Run,max_chars:usize)->Result<Vec<Value>,String>;
     fn messages_after_plan(&self,run:&Run,plan:&str)->Vec<Value>;
@@ -55,9 +55,6 @@ pub trait AgentAlgorithm:Send+Sync {
     fn verifier_messages(&self,run:&Run,workspace:&str,paths:&str,git:&str,
         candidate:&str,max_chars:usize)->Result<Vec<Value>,String>{
         verification::verifier_messages(run,workspace,paths,git,candidate,max_chars)
-    }
-    fn strict_verdict(&self,answer:&str)->bool{
-        verification::strict_pass(answer)
     }
 }
 /// Default 2026 bounded ReAct/planning algorithm. Prompt is operator-owned
@@ -91,11 +88,13 @@ impl DefaultAlgorithm{
 impl AgentAlgorithm for DefaultAlgorithm{
     fn id(&self)->&str{&self.id}
     fn system_prompt(&self)->&str{&self.prompt}
-    fn initialize_fused(&self,run:&mut Run){
-        run.plan=Some(String::new());
-        run.messages.insert(0,self.system_message());
+    fn fused_messages(&self,run:&Run)->Vec<Value>{
+        // Pure projection: strategy never receives &mut Run and cannot
+        // manipulate approvals, pending intents or authoritative budgets.
+        let mut messages=run.messages.clone();
+        messages.insert(0,self.system_message());
         if run.chat_context.is_empty(){
-            run.messages.insert(1,json!({"role":"user","content":format!(
+            messages.insert(1,json!({"role":"user","content":format!(
                 "Request:\n{}\nPlan briefly within your first execution response and start with concrete tools when appropriate. No separate planning turn is required.",
                 run.instruction)}));
         }else{
@@ -103,8 +102,9 @@ impl AgentAlgorithm for DefaultAlgorithm{
             prior.push(json!({"role":"user","content":format!(
                 "New user instruction: {}\nPlan briefly and use concrete tools only when needed.",
                 run.instruction)}));
-            run.messages.splice(1..1,prior);
+            messages.splice(1..1,prior);
         }
+        messages
     }
     fn model_only_messages(&self,run:&Run)->Vec<Value>{
         let mut messages=vec![json!({"role":"system","content":
@@ -204,17 +204,20 @@ mod tests {
     #[test]fn strategy_selection_never_changes_the_authoritative_user_request(){
         let algorithm=DefaultAlgorithm::default();
         let mut r=run();
-        algorithm.initialize_fused(&mut r);
+        let prepared=algorithm.fused_messages(&r);
+        assert!(r.messages.is_empty(),"algorithm must not mutate Run state");
+        r.messages=prepared;
         assert_eq!(r.instruction,"Fix task");
         assert_eq!(r.messages[0]["role"],"system");
         assert_eq!(r.messages[1]["role"],"user");
-        assert_eq!(r.plan.as_deref(),Some(""));
+        assert!(r.plan.is_none(),"only the runtime can commit plan state");
     }
     #[test]fn prompt_is_replaceable_without_rebuilding_runtime(){
         let prompt=DefaultAlgorithm::with_prompt("External owner-configured prompt".into()).unwrap();
         assert_eq!(prompt.system_prompt(),"External owner-configured prompt");
-        let mut r=run();prompt.initialize_fused(&mut r);
-        assert_eq!(r.messages[0]["content"],"External owner-configured prompt");
+        let r=run();
+        let messages=prompt.fused_messages(&r);
+        assert_eq!(messages[0]["content"],"External owner-configured prompt");
         assert!(DefaultAlgorithm::with_prompt(String::new()).is_err());
     }
 }

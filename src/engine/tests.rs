@@ -563,3 +563,57 @@ mod artifact_completion;
         drop(engine);
         let _=tokio::fs::remove_dir_all(root).await;
     }
+
+
+/// The algorithm may prune an operator-authorized catalog, but it cannot
+/// fabricate permission, mutate schemas or advertise ambiguous duplicates.
+#[test]
+fn injected_algorithm_tool_catalog_is_only_a_subset_of_authorized_schemas(){
+    let read=json!({"type":"function","function":{
+        "name":"read_file","parameters":{"type":"object",
+            "properties":{"path":{"type":"string"}},"required":["path"]}}});
+    let execute=json!({"type":"function","function":{
+        "name":"shell","parameters":{"type":"object",
+            "properties":{"command":{"type":"string"}},"required":["command"]}}});
+    let allow=vec![read.clone()];
+    assert!(Engine::admit_algorithm_catalog(&allow,&[]).is_ok());
+    assert!(Engine::admit_algorithm_catalog(&allow,&allow).is_ok());
+    assert!(Engine::admit_algorithm_catalog(&allow,&[execute]).is_err(),
+        "a strategy cannot add a tool banned by runtime policy");
+    assert!(Engine::admit_algorithm_catalog(&allow,&[read.clone(),read.clone()]).is_err(),
+        "duplicate tool names cannot evade strict admission");
+    let mut forged=read;
+    forged["function"]["parameters"]["required"]=json!([]);
+    assert!(Engine::admit_algorithm_catalog(&allow,&[forged]).is_err(),
+        "a strategy cannot weaken the original JSON argument schema");
+}
+
+#[tokio::test]
+async fn algorithm_identity_is_pinned_across_run_resumption(){
+    let root=std::env::temp_dir().join(format!("dominion-algorithm-pin-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.addons_enabled=false;
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+    let algorithm:Arc<dyn crate::algorithms::AgentAlgorithm>=Arc::new(
+        crate::algorithms::DefaultAlgorithm::with_prompt(
+            "Cautious operator-selected reasoning strategy".into()).unwrap());
+    let expected=algorithm.id().to_owned();
+    let backend:Arc<dyn crate::ports::RunRepository>=store.clone();
+    let mcp=Arc::new(crate::mcp::Mcp::new(Vec::new()).unwrap());
+    let engine=Engine::new_with_algorithm(settings,backend,groups,mcp,algorithm).unwrap();
+    assert_eq!(engine.algorithm_id(),expected);
+    let mut run=Run::new(CreateRun{
+        instruction:"Inspect one file".into(),budget_krw:None,max_steps:Some(2)
+    },2).unwrap();
+    run.event("algorithm_bound","other-algorithm-version",None);
+    let id=run.id;
+    store.put(run).await.unwrap();
+    let error=engine.launch(id).await.unwrap_err();
+    assert!(error.contains("algorithm changed"),"mismatched strategy: {error}");
+    assert_eq!(store.get(id).await.unwrap().status,RunStatus::Queued);
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
