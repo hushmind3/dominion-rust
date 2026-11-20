@@ -67,9 +67,24 @@ impl Dominion {
             self.engine.model_for_selection(&options.provider_id,&options.model)?;
             run.provider_id=options.provider_id;
             run.model_name=options.model;
-            if !run.provider_id.is_empty()&&run.provider_id!="dominion-native"{
+            let unknown=if run.provider_id.is_empty()||
+                run.provider_id=="dominion-native" {
+                let selected=&self.engine.settings.main;
+                let local_library=crate::frontend_local_models::native_override(
+                    &self.engine.settings,&run.model_name).is_some();
+                let local_origin=reqwest::Url::parse(&selected.base_url).ok()
+                    .and_then(|url|url.host_str().map(|host|
+                        matches!(host,"localhost"|"127.0.0.1"|"::1")))
+                    .unwrap_or(false);
+                !local_library&&!local_origin&&(selected.input_krw_per_million==0.0
+                    ||selected.output_krw_per_million==0.0)
+            }else{
+                !self.engine.providers.get(&run.provider_id)
+                    .is_some_and(|entry|entry.local)
+            };
+            if unknown{
                 run.event("pricing_unknown",
-                    "Provider tariff has not been verified; zero recorded KRW does not mean free usage",None);
+                    "Supplier token tariffs are not configured; zero recorded KRW is not free inference",None);
             }
         }
         run.strategy_learning=options.strategy_learning;
