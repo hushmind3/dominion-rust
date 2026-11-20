@@ -28,6 +28,10 @@ pub(super) fn no_tools_required(query:&str)->bool{
     // browser or MCP execution. Never route a live/repository action here.
     if cleaned.chars().count()>600{return false}
     if ["검색","찾아","최신","최근","지금","오늘","뉴스","2026","2027",
+        "today","tonight","tomorrow","yesterday","latest","recent","this week",
+        "current","real-time","realtime","live","weather","price","pricing",
+        "cost","quote","stock","rates","currency","exchange","near me",
+        "날씨","가격","시세","주가","환율","요금","얼마","실시간","근처",
         "파일","코드","레포","리포","브랜치","커밋","깃허브","github",
         "프로젝트","배포","실행","도구","명령","터미널","웹","사이트",
         "브라우저","url","http","api","mcp","문서 열","조회","수정",
