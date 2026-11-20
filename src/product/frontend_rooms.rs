@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{json,Value};
 use std::{collections::HashSet,sync::Arc};
 use uuid::Uuid;
-mod room_native;
+pub(crate) mod room_native;
 
 pub(crate) type Fault=(StatusCode,Json<Value>);
 fn bad(message:impl Into<String>)->Fault{

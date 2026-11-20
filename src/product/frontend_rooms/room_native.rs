@@ -114,7 +114,7 @@ pub(super) async fn reconcile_ready(engine:&Arc<Engine>,id:Uuid)->Result<(),Stri
 }
 /// Execute once; on retry only observe the original Run. At most one
 /// billable model execution is launched for this owner/speaker identity.
-pub(super) async fn execute(engine:&Arc<Engine>,id:Uuid,speaker:&str,
+pub(crate) async fn execute(engine:&Arc<Engine>,id:Uuid,speaker:&str,
     provider:&str,model:&str)->Result<Room,String>{
     let room=engine.groups.get(id).await.ok_or("room not found")?;
     if room.status!=RoomStatus::Open{return Err("room is closed".into());}
