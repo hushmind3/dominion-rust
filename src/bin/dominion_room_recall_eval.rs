@@ -70,7 +70,11 @@ fn grade(answer:&str,anchor:&str,current:&str)->Verdict{
 #[serde(rename_all="camelCase")]
 struct Report{
     schema_version:u32,benchmark:String,live_model_calls:bool,
-    model:String,room_id:String,owner_turns_requested:usize,
+    provider_receipts:usize,model:String,room_id:String,
+    /// Randomized ground truth that allows independent offline rescoring
+    /// without trusting this evaluator's own boolean verdict.
+    expected_early_fact:String,expected_current_target:String,
+    obsolete_target:String,owner_turns_requested:usize,
     completed_owner_turns:usize,final_probe_completed:bool,
     source_messages:usize,accepted_agent_responses:usize,
     early_fact_correct:bool,latest_correction_correct:bool,
@@ -169,8 +173,15 @@ async fn evaluate(opts:Options)->Result<Report,String>{
     let output=Report{
         schema_version:EVALUATOR_VERSION,
         benchmark:"sub4_real_room_semantic_recall".into(),
-        live_model_calls:true,model:settings.main.name,
-        room_id:room.id.to_string(),owner_turns_requested:TURNS,
+        live_model_calls:!snapshot.usage_receipts.is_empty(),
+        provider_receipts:snapshot.usage_receipts.len(),
+        model:snapshot.usage_receipts.last()
+            .map(|r|r.model.clone()).unwrap_or(settings.main.name),
+        room_id:room.id.to_string(),
+        expected_early_fact:anchor,
+        expected_current_target:current_target,
+        obsolete_target:old_target,
+        owner_turns_requested:TURNS,
         completed_owner_turns:completed,final_probe_completed,
         source_messages:snapshot.messages.len(),accepted_agent_responses,
         early_fact_correct:verdict.early_fact,

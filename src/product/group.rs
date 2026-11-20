@@ -706,7 +706,9 @@ impl Groups {
         let projected=project_room_context(room,participant,cap);
         let mut messages=Self::model_messages(room,participant,&projected);
         if messages.len()<2{return Err("native Room context is incomplete".into());}
-        let shared=Self::shared_prefix(room);
+        let shared=Self::shared_prefix(room).replace(
+            "No tool actions are available in a room contribution.",
+            "Only read-only inspection tools are available through the native Harness.");
         let persona=Self::persona_prompt(participant);
         messages.remove(0); // Native Harness already supplies its own system.
         messages.pop(); // Bind operator-selected participant as developer.

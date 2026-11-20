@@ -659,3 +659,14 @@ invalidates older thread reuse; it never falls back to an earlier known ID.
 Resumed `item/completed` events with a different explicit turnId are ignored
 when selecting the final answer. These checks do not infer remote work
 completion from missing receipts.
+
+### Source-verifiable Room benchmark ground truth and native tool prompt
+
+The live semantic evaluator report includes the random expected early fact,
+new corrected target and obsolete target alongside the final model answer,
+observed provider receipt count, and measured selected model identity. This
+allows offline independent rescoring of the recorded result. If no provider
+usage receipt was observed, the report does not claim `liveModelCalls=true`.
+Tool-enabled Room context presents read-only inspection as a native Harness
+capability while the legacy tool-free common prefix is unchanged for cache
+compatibility.
