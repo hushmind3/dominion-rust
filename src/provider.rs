@@ -679,13 +679,12 @@ fn configure_openai_cache(body:&mut Value,settings:&ModelSettings,
     if settings.base_url=="https://api.openai.com/v1"{
         if let Some(key)=key{body["prompt_cache_key"]=json!(key);}
         if modern {
-            // Only 30m is currently valid for GPT-5.6+; legacy 12h
-            // environment values are not forwarded to this API.
-            if anchors>0 {
-                body["prompt_cache_options"]=json!({"mode":"explicit","ttl":"30m"});
-            } else if settings.cache_ttl.as_deref()==Some("30m"){
-                body["prompt_cache_options"]=json!({"ttl":"30m"});
-            }
+            // Avoid the GPT-5.6+ default implicit cache WRITE at a changing
+            // user/tool suffix. A continuation with no new explicit marker
+            // may reuse an older server-side breakpoint, but never pay
+            // to write a new, usually one-off trailing prompt.
+            let _=anchors; // annotations were already converted above
+            body["prompt_cache_options"]=json!({"mode":"explicit","ttl":"30m"});
         }
     }
 }
@@ -924,6 +923,11 @@ mod tests {
         assert_eq!(request["messages"][0]["content"][0]["type"],"text");
         assert_eq!(request["messages"][1]["content"][0]["prompt_cache_breakpoint"]["mode"],"explicit");
         assert_eq!(request["messages"][2]["content"],"new owner question");
+        let mut delta=json!({"input":[{"role":"user","content":"changed continuation"}]});
+        configure_openai_cache(&mut delta,&settings,Some("chat-session"),"input");
+        assert_eq!(delta["prompt_cache_options"]["mode"],"explicit");
+        assert_eq!(delta["input"][0]["content"],"changed continuation");
+        assert!(delta["input"][0].get("prompt_cache_breakpoint").is_none());
         assert!(!request.to_string().contains("dominion_cache_anchor"));
         assert!(!request.to_string().contains("12h"));
     }

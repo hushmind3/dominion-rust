@@ -214,3 +214,25 @@ test('invalid provider cache receipt never settles as a measured discount',async
   assert.equal(row.charged,row.reserved)
  }finally{globalThis.fetch=old}
 })
+
+test('single-use GPT-5.6+ request opts out of implicit cache writes',async()=>{
+ const DB=database(),env=configured(DB),old=globalThis.fetch
+ env.PAID_MODELS_JSON=JSON.stringify([{
+  id:'dominion/no-anchor',provider:'openai',upstream_model:'gpt-6',
+  input_micro_krw:2,output_micro_krw:3
+ }])
+ let received
+ globalThis.fetch=async(_url,init)=>{
+  received=JSON.parse(init.body)
+  return new Response(JSON.stringify({choices:[{message:{role:'assistant',content:'ok'}}],
+   usage:{prompt_tokens:5,completion_tokens:2}}),{status:200})
+ }
+ try{
+  const r=await worker.fetch(endpoint({model:'dominion/no-anchor',
+   messages:[{role:'user',content:'one-off'}],max_tokens:8}),env)
+  assert.equal(r.status,200)
+  assert.equal(received.prompt_cache_options.mode,'explicit')
+  assert.equal(received.messages[0].content,'one-off')
+  assert.ok(!JSON.stringify(received).includes('prompt_cache_breakpoint'))
+ }finally{globalThis.fetch=old}
+})

@@ -254,7 +254,7 @@ impl Engine {
         if run.status!=RunStatus::Running||!run.model_only{return Ok(());}
         let selected=self.model_for_run(&run)?;
         let mut messages=vec![
-            json!({"role":"system","content":"Respond to the user's chat request accurately and directly. Do not claim to have executed tools or accessed files. No tools are available during this turn."}),
+            json!({"role":"system","content":"Respond to the user's chat request accurately and directly. Do not claim to have executed tools or accessed files. No tools are available during this turn.","dominion_cache_anchor":true}),
         ];
         messages.extend(run.chat_context.iter().cloned());
         messages.push(json!({"role":"user","content":run.instruction}));
@@ -455,7 +455,7 @@ impl Engine {
                 self.store.mutate(id, |current| {
                     if current.status!=RunStatus::Running || current.plan.is_some(){return Ok(());}
                     current.plan=Some(String::new());
-                    current.messages.insert(0,json!({"role":"system","content":SYSTEM}));
+                    current.messages.insert(0,json!({"role":"system","content":SYSTEM,"dominion_cache_anchor":true}));
                     if current.chat_context.is_empty(){
                         current.messages.insert(1,json!({"role":"user","content":format!(
                             "Request:\n{}\nPlan briefly within your first execution response and start with concrete tools when appropriate. No separate planning turn is required.",
@@ -510,7 +510,7 @@ impl Engine {
                     run.plan = Some(reply.text.clone());
                     if !run.chat_context.is_empty(){
                         run.plan=Some(reply.text.clone());
-                        let mut next=vec![json!({"role":"system","content":SYSTEM})];
+                        let mut next=vec![json!({"role":"system","content":SYSTEM,"dominion_cache_anchor":true})];
                         next.extend(run.chat_context.iter().cloned());
                         next.push(json!({"role":"user","content":format!(
                             "New user instruction: {}\nInitial plan: {}\nProceed with tools and adapt to evidence.",
@@ -520,7 +520,7 @@ impl Engine {
                         return Ok(());
                     }
                     run.messages = vec![
-                        json!({"role":"system","content":SYSTEM}),
+                        json!({"role":"system","content":SYSTEM,"dominion_cache_anchor":true}),
                         json!({"role":"user","content":format!("Request:\n{}\n\nInitial plan:\n{}\n\nProceed with tools and adapt the plan as evidence arrives.",run.instruction,reply.text)}),
                     ];
                     run.event("plan","Initial plan created",Some(json!({"text":reply.text})));

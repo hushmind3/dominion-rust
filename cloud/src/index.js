@@ -489,6 +489,9 @@ async function paidSupplierBody(body, selected, user, endpoint, modelName, maxTo
     ...(body.tools ? {tools:body.tools}:{}),
     ...(body.tool_choice ? {tool_choice:body.tool_choice}:{})};
   if(endpoint!=='https://api.openai.com/v1'||!modernOpenAI(modelName))return supplier;
+  // Explicit-only mode avoids cache-write billing on every changing
+  // latest question, even for requests with no reusable block.
+  supplier.prompt_cache_options={mode:'explicit',ttl:'30m'};
   // The customer's opaque key is never forwarded across tenants. The
   // upstream key is derived from the authenticated account ID and model.
   const identity=(await hash(user.id)).slice(0,32);
