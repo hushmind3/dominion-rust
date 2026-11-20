@@ -1,7 +1,7 @@
 //! Original Chat model-picker -> verified local Ollama control plane.
 //! Only loopback Ollama endpoints are allowed. The selected model is routed
 //! through the native Rust ModelClient; UI selection cannot silently fall back.
-use crate::{config::{ModelSettings,Settings},domain::RunStatus,engine::Engine};
+use crate::{config::{ModelSettings,Settings},engine::Engine};
 use axum::{extract::State,http::StatusCode,routing::{get,post},Json,Router};
 use serde::Deserialize;
 use serde_json::{json,Value};

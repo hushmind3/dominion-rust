@@ -8,8 +8,8 @@ use crate::{
     sdk::Dominion,
 };
 use axum::{
-    extract::{Path,State,Query},http::StatusCode,
-    response::{IntoResponse,Response,sse::{Event,KeepAlive,Sse}},
+    extract::{Path,State},http::StatusCode,
+    response::sse::{Event,KeepAlive,Sse},
     routing::{get,post},Json,Router,
 };
 use futures_core::Stream;

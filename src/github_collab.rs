@@ -1,6 +1,6 @@
 //! Connected GitHub repository collaboration. All writes pass through engine approval and durable intent.
 use crate::{config::Settings,domain::ToolCall,mcp::McpCallOutcome};
-use reqwest::{Client,StatusCode,Url};
+use reqwest::{Client,Url};
 use serde_json::{json,Value};
 use std::time::Duration;
 const API:&str="https://api.github.com";

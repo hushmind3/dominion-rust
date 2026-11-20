@@ -1,7 +1,7 @@
 //! Connected Google Drive, Docs and Sheets. No arbitrary host, token in model
 //! payload, automatic mutations, or unverified external write retries.
 use crate::{config::Settings,domain::ToolCall,mcp::McpCallOutcome};
-use reqwest::{Client,RequestBuilder,StatusCode,Url};
+use reqwest::{Client,RequestBuilder,Url};
 use serde_json::{json,Value};
 use std::time::Duration;
 const DRIVE:&str="https://www.googleapis.com";

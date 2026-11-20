@@ -4,7 +4,7 @@
 use crate::{engine::Engine,mcp::{Mcp,Server}};
 use axum::{
     extract::{Path,State},
-    http::{header,StatusCode},response::IntoResponse,routing::{get,post},Json,Router
+    http::{header,StatusCode},response::IntoResponse,routing::get,Json,Router
 };
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
