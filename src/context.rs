@@ -80,6 +80,23 @@ fn exchanges(messages:&[Value])->Vec<Vec<Value>> {
     }
     output
 }
+/// A frontend chat attaches a cache boundary to one immutable early message.
+/// When tool receipts force hard compaction, dropping the source messages
+/// before that boundary would change the cached prefix between tool turns.
+/// Preserve the complete prefix through the final cache annotation, but only
+/// if it fits in a bounded slice of the request capacity. Other SDK Runs
+/// preserve their existing first-two-message compaction contract.
+fn stable_prefix_end(messages:&[Value],max_chars:usize)->usize{
+    let end=messages.iter().enumerate().take(20)
+        .filter(|(_,item)|item["dominion_cache_anchor"]==true)
+        .map(|(i,_)|i+1).max().unwrap_or(2).max(2);
+    if end<=2{return 2}
+    let used=messages.iter().take(end).map(size).sum::<usize>();
+    // Keep ample room for the current task and latest receipts; an unusual
+    // enormous cache annotation is not a justification to discard active work.
+    if used>max_chars/2{return 2}
+    end
+}
 /// Direct user changes are part of the durable task contract, never ordinary
 /// dialogue to summarize. Keep every direct user change verbatim in
 /// the model projection, or pause before calling a paid provider if the
@@ -104,9 +121,10 @@ pub fn compact_strict(messages:&[Value],max_chars:usize)->Result<Projection,Stri
   return Ok(Projection{messages:messages.to_vec(),original_chars,
    projected_chars:original_chars,omitted_messages:0});
  }
- let prefix=messages[..2].to_vec();
+ let stable_end=stable_prefix_end(messages,max_chars);
+ let prefix=messages[..stable_end].to_vec();
  let mut result=prefix;
- let changes=messages[2..].iter()
+ let changes=messages[stable_end..].iter()
   .filter(|message|is_user_change(message))
   .filter_map(|message|message.get("content").and_then(Value::as_str))
   .collect::<Vec<_>>();
@@ -148,9 +166,9 @@ These requirements survive context compaction and must not be silently discarded
  }
  // Group function calls with corresponding results before removing any
  // history. The durable transcript remains completely unmodified.
- let history=messages[2..].iter().enumerate()
+ let history=messages[stable_end..].iter().enumerate()
   .filter(|(index,message)|!is_user_change(message)
-    && feedback_index!=Some(index+2))
+    && feedback_index!=Some(index+stable_end))
   .map(|(_,message)|message.clone()).collect::<Vec<_>>();
  let groups=exchanges(&history);
  let mut selected=Vec::<(usize,Vec<Value>)>::new();
@@ -388,6 +406,42 @@ mod tests {
                     ||compressed.messages[idx-2]["tool_calls"].to_string().contains(id));
             }
         }
+    }
+    #[test]
+    fn hard_compaction_keeps_marked_stable_chat_head_without_paying_it_twice(){
+        let mut messages=vec![
+            json!({"role":"system","content":"stable native kernel",
+                "dominion_cache_anchor":true}),
+            json!({"role":"user","content":"profile",
+                "dominion_cache_anchor":true}),
+            json!({"role":"user","content":"old owner context"}),
+            json!({"role":"assistant","content":"first reply"}),
+            json!({"role":"user","content":"unchanged owner evidence",
+                "dominion_cache_anchor":true}),
+            json!({"role":"user","content":"New user instruction: inspect repository"})
+        ];
+        for n in 0..25{
+            messages.push(json!({"role":"assistant","content":format!("long {n} {}", "x".repeat(1400))}));
+        }
+        let projected=compact_strict(&messages,5200).unwrap();
+        assert_eq!(&projected.messages[..5],&messages[..5]);
+        assert_eq!(projected.messages.iter()
+            .filter(|item|item["dominion_cache_anchor"]==true).count(),3);
+        assert_eq!(projected.messages[4]["content"],"unchanged owner evidence");
+        assert!(projected.messages.iter().any(|item|item["content"].as_str()
+            .is_some_and(|body|body.contains("inspect repository"))));
+        assert!(projected.projected_chars<=5200);
+    }
+    #[test]
+    fn oversized_annotated_prefix_releases_annotation_instead_of_silently_ignoring_owner(){
+        let messages=vec![
+            json!({"role":"system","content":"rules"}),
+            json!({"role":"user","content":"user directives"}),
+            json!({"role":"assistant","content":"x".repeat(3600),
+                "dominion_cache_anchor":true}),
+            json!({"role":"user","content":"New user instruction: do not write files"})
+        ];
+        assert_eq!(stable_prefix_end(&messages,5000),2);
     }
     #[test]
     fn compaction_uses_available_context_budget_beyond_sixteen_small_exchanges(){
