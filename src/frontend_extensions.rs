@@ -3,7 +3,7 @@
 //! commands or pretend that an unsupported stdio server was installed.
 use crate::{engine::Engine,mcp::{Mcp,Server}};
 use axum::{
-    extract::{Path,State,Query},
+    extract::{Path,State},
     http::{header,StatusCode},response::IntoResponse,routing::{get,post},Json,Router
 };
 use serde::{Deserialize,Serialize};
@@ -15,7 +15,6 @@ use uuid::Uuid;
 type Fault=(StatusCode,Json<Value>);
 fn bad(message:impl Into<String>)->Fault{(StatusCode::BAD_REQUEST,Json(json!({"error":message.into()})))}
 fn missing(message:&str)->Fault{(StatusCode::NOT_FOUND,Json(json!({"error":message})))}
-fn unsupported(message:&str)->Fault{(StatusCode::NOT_IMPLEMENTED,Json(json!({"error":message})))}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ManagedMcp {
@@ -157,14 +156,11 @@ impl Extensions{
 pub fn routes()->Router<Arc<Engine>>{
     Router::new()
         .route("/mcp",get(mcp_list).post(mcp_save))
-        .route("/mcp/presets",get(mcp_presets))
-        .route("/mcp/catalog",get(mcp_catalog))
         .route("/mcp/discover",get(mcp_discover))
         .route("/mcp/{id}",axum::routing::delete(mcp_delete))
         .route("/skills",get(skill_list).post(skill_save))
         .route("/skills/{id}",axum::routing::delete(skill_delete))
         .route("/skills/{id}/export",get(skill_export))
-        .route("/skill-catalog",get(skill_catalog))
         // GitHub imports are handled by the pinned-source native importer.
 }
 async fn mcp_list(State(engine):State<Arc<Engine>>)->Json<Value>{
@@ -172,13 +168,6 @@ async fn mcp_list(State(engine):State<Arc<Engine>>)->Json<Value>{
         "id":v.id,"name":v.name,"transport":"http",
         "url":v.url,"enabled":v.enabled
     })).collect::<Vec<_>>()))
-}
-async fn mcp_presets()->Json<Value>{Json(json!([]))}
-#[derive(Deserialize)]struct CatalogQuery{#[serde(default)]q:String}
-async fn mcp_catalog(Query(q):Query<CatalogQuery>)->Json<Value>{
-    let _=q.q;
-    // No external directory trust has been delegated to the server.
-    Json(json!([]))
 }
 async fn mcp_discover(State(engine):State<Arc<Engine>>)->Json<Value>{
     let definitions=engine.mcp.definitions().await;
@@ -197,16 +186,11 @@ struct McpDraft{
     #[serde(default)]url:String,
     #[serde(default)]enabled:Option<bool>,
     #[serde(default)]bearer_token:Option<String>,
-    #[serde(default)]command:Option<String>,
-    #[serde(default)]args:Vec<String>
 }
 async fn mcp_save(State(engine):State<Arc<Engine>>,Json(input):Json<McpDraft>)
     ->Result<Json<Value>,Fault>{
     if input.transport!=""&&input.transport!="http"{
-        return Err(unsupported("Stdio MCP registration requires an isolated child-process transport; no arbitrary npx/shell installers are executed."));
-    }
-    if input.command.as_deref().is_some_and(|s|!s.is_empty()) || !input.args.is_empty(){
-        return Err(unsupported("Stdio/command MCP execution is not enabled by this native HTTP transport."));
+        return Err(bad("MCP transport must be http"));
     }
     if input.name.trim().is_empty()||input.name.len()>120||
         input.url.len()>1024||input.bearer_token.as_deref().is_some_and(|s|s.len()>8192){
@@ -285,10 +269,4 @@ async fn skill_export(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     Ok(([(header::CONTENT_TYPE,"text/markdown; charset=utf-8"),
         (header::CONTENT_DISPOSITION,"attachment; filename=SKILL.md"),
         (header::CACHE_CONTROL,"no-store")],body))
-}
-async fn skill_catalog()->Json<Value>{
-    Json(json!({"items":[],"total":0,"updatedAt":"","status":"not_indexed"}))
-}
-async fn skill_import_unavailable()->Result<Json<Value>,Fault>{
-    Err(unsupported("External skill import requires verified source and digest pinning. No network code or scripts are automatically installed."))
 }

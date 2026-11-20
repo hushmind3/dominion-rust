@@ -52,10 +52,8 @@ import {
 type Mcp = {
   id: string;
   name: string;
-  transport: "http" | "stdio";
+  transport: "http";
   url?: string;
-  command?: string;
-  args?: string[];
   enabled: boolean;
 };
 type Skill = {
@@ -66,24 +64,7 @@ type Skill = {
   status?: string;
   source?: string;
 };
-type RegistryItem = {
-  name: string;
-  description: string;
-  url?: string;
-  packageName?: string;
-  transport?: string;
-};
 const featured = [
-  {
-    name: "Playwright Browser",
-    description: "웹 페이지 탐색, 클릭, 입력 및 스크린샷",
-    descriptionEn: "Browse web pages, click, type and capture screenshots",
-    icon: Globe2,
-    transport: "stdio",
-    command: "npx",
-    args: ["-y", "@playwright/mcp@latest"],
-    url: "https://playwright.dev/mcp/installation",
-  },
   {
     name: "Hugging Face",
     description: "모델·데이터셋을 검색하는 원격 MCP",
@@ -336,39 +317,18 @@ function StatusLine({
     </span>
   );
 }
-export type ExtensionTab='market'|'installed'|'plugins'|'skills'
+export type ExtensionTab='market'|'installed'|'skills'
 export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;embedded?:boolean}={}) {
   const loc = useLocale();
   const mcp = useRemote<Mcp[]>("/api/mcp", []),
-    skills = useRemote<Skill[]>("/api/skills", []),
-    presets = useRemote<any[]>("/api/mcp/presets", []);
-  const catalogSkills = useRemote<{
-    items: any[];
-    total: number;
-    updatedAt: string;
-  }>("/api/skill-catalog", { items: [], total: 0, updatedAt: "" }, false);
+    skills = useRemote<Skill[]>("/api/skills", []);
   const [repo, setRepo] = useState(""),
-    [repoBusy, setRepoBusy] = useState(false),
-    [pluginRemote, setPluginRemote] = useState<any[]>([]);
-  const [localTab, setTab] = useState<ExtensionTab>(
-      "market",
-    ),
-    [query, setQuery] = useState(""),
-    [catalog, setCatalog] = useState<RegistryItem[]>([]),
-    [searching, setSearching] = useState(false),
-    [installing, setInstalling] = useState(""),
-    [error, setError] = useState(""),
-    [message, setMessage] = useState("");
+    [repoBusy, setRepoBusy] = useState(false);
+  const [localTab,setTab]=useState<ExtensionTab>("market"),
+    [error,setError]=useState(""),[message,setMessage]=useState("");
   const tab=section??localTab;
   const [skillQuery, setSkillQuery] = useState(""),
     [skillCategory, setSkillCategory] = useState("all");
-  const [pluginQuery, setPluginQuery] = useState(""),
-    [pluginCategory, setPluginCategory] = useState("all");
-  const [catalogQuery, setCatalogQuery] = useState(""),
-    [catalogSource, setCatalogSource] = useState("all"),
-    [catalogCategory, setCatalogCategory] = useState("all"),
-    [catalogLimit, setCatalogLimit] = useState(30),
-    [importing, setImporting] = useState("");
   const templates = skillTemplates.map((item) =>
     loc === "en"
       ? {
@@ -390,139 +350,22 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
         .toLowerCase()
         .includes(skillQuery.toLowerCase()),
   );
-  const pluginCategories = [
-    "all",
-    ...new Set(presets.value.map((p: any) => p.category)),
-  ];
-  const filteredPresets = presets.value.filter(
-    (p: any) =>
-      (pluginCategory === "all" || p.category === pluginCategory) &&
-      (p.name + p.description + p.category)
-        .toLowerCase()
-        .includes(pluginQuery.toLowerCase()),
-  );
-  const catalogItems = catalogSkills.value.items || [];
-  const catalogSources = [
-    "all",
-    ...new Set(catalogItems.map((item: any) => item.source)),
-  ];
-  const catalogCategories = [
-    "all",
-    ...new Set(catalogItems.map((item: any) => item.category)),
-  ];
-  const filteredCatalog = catalogItems.filter(
-    (item: any) =>
-      (catalogSource === "all" || item.source === catalogSource) &&
-      (catalogCategory === "all" || item.category === catalogCategory) &&
-      (
-        item.name +
-        item.description +
-        item.category +
-        item.source +
-        (item.tags || []).join(" ")
-      )
-        .toLowerCase()
-        .includes(catalogQuery.toLowerCase()),
-  );
-  const visibleCatalog = filteredCatalog.slice(0, catalogLimit);
   const [edit, setEdit] = useState<any | null>(null),
-    [argText, setArgText] = useState(""),
     [skillEdit, setSkillEdit] = useState<Partial<Skill> | null>(null),
     [tools, setTools] = useState<any[]>([]);
   const install = async (entry: any) => {
-    if (
-      !confirm(
-        t('ext.confirmRegister'),
-      )
-    )
-      return;
-    setError("");
-    setMessage("");
+    if (!confirm(t('ext.confirmRegister'))) return;
+    setError("");setMessage("");
     try {
-      const payload = {
-        name: entry.name,
-        transport: entry.transport || "stdio",
-        url: entry.endpoint || entry.url || "",
-        command: entry.command || "npx",
-        args:
-          entry.args || (entry.packageName ? ["-y", entry.packageName] : []),
-      };
-      await post("/api/mcp", payload);
-      mcp.reload();
-      setMessage(
-        t('ext.registeredHint'),
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-  const installPreset = async (preset: any) => {
-    if (installing) return;
-    setInstalling(preset.id);
-    setError("");
-    setMessage(
-      t('ext.installHint', { name: preset.name }),
-    );
-    try {
-      const saved = await post<any>("/api/mcp", {
-        name: preset.name,
-        transport: "stdio",
-        command: "npx",
-        args: ["-y", preset.package, ...(preset.args || [])],
-        enabled: true,
-      });
-      await mcp.reload();
-      for (let attempt = 0; attempt < 30; attempt++) {
-        const found = await get<any[]>("/api/mcp/discover");
-        setTools(found);
-        const own = found.filter((t) => t.mcpId === saved.id && !t.error);
-        if (own.length) {
-          setMessage(
-            t('ext.connectedToolsMsg', { name: preset.name, count: own.length }),
-          );
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-      setMessage(t('ext.registeredCheckMsg', { name: preset.name }));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setInstalling("");
-    }
-  };
-  const loadCatalog = async (term = "") => {
-    setSearching(true);
-    setError("");
-    try {
-      setCatalog(
-        await get(
-          "/api/mcp/catalog" + (term ? "?q=" + encodeURIComponent(term) : ""),
-        ),
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSearching(false);
-    }
-  };
-  const search = async () => {
-    if (query.trim() && query.trim().length < 3) {
-      setError(t('ext.searchMin'));
-      return;
-    }
-    await loadCatalog(query.trim());
+      await post("/api/mcp", {name:entry.name,transport:"http",
+        url:entry.endpoint || entry.url || "",enabled:true});
+      await mcp.reload();setMessage(t('ext.registeredHint'));
+    } catch (cause) {setError((cause as Error).message)}
   };
   const saveMcp = async () => {
     if (!edit) return;
     try {
-      await post("/api/mcp", {
-        ...edit,
-        args: argText
-          .split("\n")
-          .map((x) => x.trim())
-          .filter(Boolean),
-      });
+      await post("/api/mcp", edit);
       setEdit(null);
       mcp.reload();
     } catch (e) {
@@ -549,21 +392,6 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
       setError((e as Error).message);
     }
   };
-  const importCatalogSkill = async (item: any) => {
-    if (importing) return;
-    setImporting(item.id);
-    setError("");
-    setMessage("");
-    try {
-      await post("/api/skill-catalog/import", { id: item.id });
-      await skills.reload();
-      setMessage(t('ext.skillImported', { source: item.source, name: item.name }));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setImporting("");
-    }
-  };
   const importRepo = async () => {
     if (!repo.trim()) return;
     setRepoBusy(true);
@@ -581,27 +409,6 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
       setRepoBusy(false);
     }
   };
-  useEffect(() => {
-    const q = pluginQuery.trim();
-    if (q.length < 2) {
-      setPluginRemote([]);
-      return;
-    }
-    let alive = true;
-    const timer = setTimeout(() => {
-      get<any[]>("/api/mcp/catalog?q=" + encodeURIComponent(q))
-        .then((rows) => {
-          if (alive) setPluginRemote(rows || []);
-        })
-        .catch(() => {
-          if (alive) setPluginRemote([]);
-        });
-    }, 350);
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-    };
-  }, [pluginQuery]);
   const discover = async (silent = false) => {
     try {
       setTools(await get("/api/mcp/discover"));
@@ -613,9 +420,6 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
   useEffect(() => {
     void discover(true);
   }, [tab]);
-  useEffect(() => {
-    void loadCatalog();
-  }, []);
   return (
     <div className={embedded?"min-w-0":"mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8"}>
       <Headline
@@ -626,14 +430,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
           <Action
             variant="secondary"
             onClick={() => {
-              setEdit({
-                name: "",
-                transport: "stdio",
-                command: "npx",
-                url: "",
-                enabled: true,
-              });
-              setArgText("");
+              setEdit({name:"",transport:"http",url:"",enabled:true});
             }}
           >
             <Plus size={17} /> {t('ext.addMcp')}
@@ -663,12 +460,6 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
           <Blocks size={17} /> MCP
         </Button>
         <Button
-          variant={tab === "plugins" ? "primary" : "ghost"}
-          onClick={() => setTab("plugins")}
-        >
-          <PackagePlus size={17} /> {t('ext.tab.plugins')}
-        </Button>
-        <Button
           variant={tab === "installed" ? "primary" : "ghost"}
           onClick={() => setTab("installed")}
         >
@@ -693,398 +484,6 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
       )}
       {tab === "market" && (
         <>
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <Subheading
-              title={t('ext.registry')}
-              extra={
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-[#8A8176]">
-                    {t('ext.realtime', { count: catalog.length })}
-                  </span>
-                  <Button
-                    variant="secondary"
-                    onClick={() => void loadCatalog(query.trim())}
-                    disabled={searching}
-                  >
-                    <RefreshCw size={14} /> {t('ext.refresh')}
-                  </Button>
-                </div>
-              }
-            />
-          </div>
-          <Panel className="min-w-0 p-5">
-            <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] px-3 py-2">
-              <Search size={18} />
-              <TextInput
-                value={query}
-                placeholder={t('ext.searchPlaceholder')}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && search()}
-              />
-              <Action onClick={search} disabled={searching}>
-                {searching ? t('ext.searching') : t('ext.search')}
-              </Action>
-            </div>
-            <div className="rounded-xl bg-[#FAF7F1] p-3 text-xs leading-5 text-[#7C7469]">
-              {t('ext.registryNote')}
-            </div>
-            <div className="registry-results">
-              {catalog.map((x) => (
-                <div
-                  className="flex min-w-0 items-start gap-3 rounded-xl border border-[#E7E0D5] bg-white p-4 hover:border-[#E6C9B8]"
-                  key={x.name}
-                >
-                  <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-[#F7E8E1] text-[#C96442]">
-                    <Server size={19} />
-                  </span>
-                  <div>
-                    <strong>{x.name}</strong>
-                    <p>{x.description || "MCP server"}</p>
-                    <small>{x.packageName || x.url || t('ext.noInstallInfo')}</small>
-                  </div>
-                  {(x.packageName || x.url) &&
-                    (mcp.value.some((r: any) => r.name === x.name) ? (
-                      <Button
-                        variant="secondary"
-                        className="shrink-0 whitespace-nowrap"
-                        onClick={async () => {
-                          const rec = mcp.value.find((r: any) => r.name === x.name);
-                          if (!rec) return;
-                          await del("/api/mcp/" + rec.id);
-                          await mcp.reload();
-                        }}
-                      >
-                        {t('ext.cancel')}
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="secondary"
-                        onClick={() =>
-                          install({
-                            name: x.name,
-                            transport: x.packageName ? "stdio" : "http",
-                            command: "npx",
-                            args: x.packageName ? ["-y", x.packageName] : [],
-                            endpoint: x.url,
-                          })
-                        }
-                      >
-                        {t('ext.install')}
-                      </Button>
-                    ))}
-                </div>
-              ))}
-              {!catalog.length && (
-                <Empty
-                  icon={Compass}
-                  title={t('ext.emptySearch')}
-                  description={t('ext.emptySearchDesc')}
-                />
-              )}
-            </div>
-          </Panel>
-        </>
-      )}
-      {tab === "plugins" && (
-        <>
-          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h3 className="m-0 text-[15px] font-bold text-[#24211D]">
-                {t('ext.pluginSkillsTitle')}
-              </h3>
-              <p className="mt-1 text-[11px] text-[#8A8176]">
-                {t('ext.pluginSkillsDesc')}{" "}
-                {t('ext.foundCount', { count: catalogSkills.value.total })} ·{" "}
-                {catalogSkills.value.updatedAt
-                  ? new Date(catalogSkills.value.updatedAt).toLocaleTimeString(loc === 'en' ? 'en-US' : 'ko-KR')
-                  : t('ext.reading')}
-              </p>
-            </div>
-            <Button
-              variant="secondary"
-              onClick={() => void catalogSkills.reload()}
-            >
-              <RefreshCw size={14} /> {t('ext.refresh')}
-            </Button>
-          </div>
-          <div className="mb-3 flex flex-wrap items-center gap-1.5">
-            {catalogSources.map((source) => (
-              <Button
-                key={source}
-                variant={catalogSource === source ? "primary" : "ghost"}
-                onClick={() => setCatalogSource(source)}
-                className="!px-3 !py-1.5 !text-[12px]"
-              >
-                {source === "all" ? t('ext.allSources') : source}
-              </Button>
-            ))}
-          </div>
-          <div className="mb-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px]">
-            <div className="flex items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] px-3 py-2">
-              <Search size={17} className="text-[#A79C8E]" />
-              <TextInput
-                value={catalogQuery}
-                onChange={(e) => setCatalogQuery(e.target.value)}
-                placeholder={t('ext.pluginSearch')}
-              />
-            </div>
-            <SelectInput
-              value={catalogCategory}
-              onChange={(e) => setCatalogCategory(e.target.value)}
-            >
-              <option value="all">{t('ext.allCategories')}</option>
-              {catalogCategories
-                .filter((category) => category !== "all")
-                .map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-            </SelectInput>
-          </div>
-          <div className="mb-3 max-h-[440px] overflow-y-auto rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9]">
-            {visibleCatalog.map((item) => {
-              const installed = skills.value.some(
-                (skill) => skill.name === item.name,
-              );
-              return (
-                <div
-                  key={item.id}
-                  className="flex flex-wrap items-center justify-between gap-3 border-b border-[#EFE9DF] px-4 py-3 last:border-0"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <strong className="text-[12px] text-[#3A342D]">
-                        {item.name}
-                      </strong>
-                      <span className="rounded bg-[#F3EEE5] px-1.5 py-0.5 text-[10px] font-semibold text-[#7C7469]">
-                        {item.source}
-                      </span>
-                      <span className="text-[10px] text-[#A79C8E]">
-                        {item.category}
-                      </span>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-[#7C7469]">
-                      {item.description}
-                    </p>
-                    {!item.available && (
-                      <small className="mt-1 block text-[10px] text-amber-700">
-                        {t('ext.requiresBinary', { list: (item.requires || []).join(', ') })}
-                      </small>
-                    )}
-                  </div>
-                  <div className="shrink-0">
-                    {installed ? (
-                      <Button
-                        variant="secondary"
-                        className="shrink-0 whitespace-nowrap"
-                        onClick={async () => {
-                          const target = skills.value.find(
-                            (x) => x.name === item.name,
-                          );
-                          if (!target) return;
-                          try {
-                            await del("/api/skills/" + target.id);
-                            await skills.reload();
-                            setMessage(t('ext.cancelled', { name: item.name }));
-                          } catch (e) {
-                            setError((e as Error).message);
-                          }
-                        }}
-                      >
-                        {t('ext.cancel')}
-                      </Button>
-                    ) : !item.available ? (
-                      <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">
-                        {t('ext.requiredTool')}
-                      </span>
-                    ) : (
-                      <Button
-                        variant="secondary"
-                        disabled={importing === item.id}
-                        onClick={() => void importCatalogSkill(item)}
-                      >
-                        {importing === item.id ? t('ext.installing') : t('ext.install')}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {!visibleCatalog.length && (
-              <Empty
-                icon={BookOpenText}
-                title={t('ext.catalogEmpty')}
-                description={t('ext.catalogHint')}
-              />
-            )}
-          </div>
-          <div className="mb-6 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#8A8176]">
-            <span>
-              {t('ext.showing', { visible: visibleCatalog.length, total: filteredCatalog.length })}
-            </span>
-            {visibleCatalog.length < filteredCatalog.length && (
-              <Button
-                variant="secondary"
-                onClick={() => setCatalogLimit((limit) => limit + 30)}
-              >
-                {t('ext.more')}
-              </Button>
-            )}
-          </div>
-          <div className="mb-4">
-            <Subheading
-              title={t('ext.pluginResults')}
-              extra={
-                <span className="text-[11px] text-[#8A8176]">
-                  {t('ext.count', { count: pluginRemote.length })}
-                </span>
-              }
-            />
-            {pluginRemote.length ? (
-              <div className="mt-2 grid gap-2">
-                {pluginRemote.map((x: any) => (
-                  <div
-                    key={x.name}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#E7E0D5] bg-white p-3"
-                  >
-                    <div className="min-w-0">
-                      <strong className="block truncate text-[12px] text-[#3A342D]">
-                        {x.name}
-                      </strong>
-                      <small className="text-[10px] text-[#8A8176]">
-                        {(x.description || "").slice(0, 90)}
-                      </small>
-                    </div>
-                    {mcp.value.some((r: any) => r.name === x.name) ? (
-                      <Button
-                        variant="secondary"
-                        className="shrink-0 whitespace-nowrap"
-                        onClick={async () => {
-                          const rec = mcp.value.find((r: any) => r.name === x.name);
-                          if (!rec) return;
-                          await del("/api/mcp/" + rec.id);
-                          await mcp.reload();
-                        }}
-                      >
-                        {t('ext.cancel')}
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="secondary"
-                        onClick={() =>
-                          void install({
-                            name: x.name,
-                            transport: x.packageName ? "stdio" : "http",
-                            command: "npx",
-                            args: x.packageName ? ["-y", x.packageName] : [],
-                            endpoint: x.url,
-                          })
-                        }
-                      >
-                        {t('ext.install')}
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-2 text-[11px] text-[#8A8176]">
-                {t('ext.remoteHint')}
-              </p>
-            )}
-          </div>
-          <div className="mb-4 flex flex-wrap items-center gap-1.5">
-            {pluginCategories.map((category) => (
-              <Button
-                key={category}
-                variant={pluginCategory === category ? "primary" : "ghost"}
-                onClick={() => setPluginCategory(category)}
-                className="!px-3 !py-1.5 !text-[12px]"
-              >
-                {category === "all" ? t('ext.all') : category}
-              </Button>
-            ))}
-          </div>
-          <div className="mb-5 flex items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] px-3 py-2">
-            <Search size={17} className="text-[#A79C8E]" />
-            <TextInput
-              value={pluginQuery}
-              onChange={(e) => setPluginQuery(e.target.value)}
-              placeholder={t('ext.pluginSearchExample')}
-            />
-          </div>
-          <Subheading
-            title={t('ext.recommendedPlugins')}
-            extra={
-              <span className="text-[11px] text-[#8A8176]">
-                {t('ext.count', { count: filteredPresets.length })}
-              </span>
-            }
-          />
-          <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {filteredPresets.map((preset) => {
-              const record = mcp.value.find((x) => x.name === preset.name);
-              const connected = tools.filter(
-                (t) => t.mcpId === record?.id && !t.error,
-              ).length;
-              return (
-                <Panel
-                  key={preset.id}
-                  className="flex min-w-0 flex-col gap-3 p-5"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]">
-                      <PackagePlus size={21} />
-                    </div>
-                    <StateTag online={Boolean(record)}>
-                      {record
-                        ? connected
-                          ? t('ext.connectedTools', { count: connected })
-                          : t('ext.registeredCheck')
-                        : t('ext.notInstalled')}
-                    </StateTag>
-                  </div>
-                  <h3>{preset.name}</h3>
-                  <p>{preset.description}</p>
-                  <small className="text-[10px] font-semibold uppercase tracking-wider text-[#9C9388]">
-                    {preset.category}
-                  </small>
-                  <div className="mt-auto flex items-center justify-between gap-2 border-t border-[#EFE9DF] pt-3">
-                    <code className="truncate text-[10px] text-[#9C9388]">
-                      {preset.package}
-                    </code>
-                    {record ? (
-                      <Button
-                        variant="secondary"
-                        className="shrink-0 whitespace-nowrap"
-                        onClick={async () => {
-                          try {
-                            await del("/api/mcp/" + record.id);
-                            await mcp.reload();
-                            setMessage(t('ext.cancelled', { name: preset.name }));
-                          } catch (e) {
-                            setError((e as Error).message);
-                          }
-                        }}
-                      >
-                        {t('ext.cancel')}
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="secondary"
-                        className="shrink-0 whitespace-nowrap"
-                        disabled={installing === preset.id}
-                        onClick={() => void installPreset(preset)}
-                      >
-                        {installing === preset.id ? t('ext.installing') : t('ext.install')}
-                      </Button>
-                    )}
-                  </div>
-                </Panel>
-              );
-            })}
-          </div>
           <Subheading
             title={t('ext.recommendedTools')}
             extra={
@@ -1165,9 +564,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                 <div>
                   <strong>{x.name}</strong>
                   <p>
-                    {x.transport === "stdio"
-                      ? x.command + " " + (x.args || []).join(" ")
-                      : x.url}
+                    {x.url}
                   </p>
                 </div>
                 <StateTag
@@ -1189,7 +586,6 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                   title={t('ext.settings')}
                   onClick={() => {
                     setEdit(x);
-                    setArgText((x.args || []).join("\n"));
                   }}
                 >
                   <Settings2 size={17} />
@@ -1267,58 +663,12 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                   onChange={(e) => setEdit({ ...edit, name: e.target.value })}
                 />
               </FormField>
-              <FormField label={t('ext.transport')}>
-                <SelectInput
-                  value={edit.transport}
-                  onChange={(e) =>
-                    setEdit({ ...edit, transport: e.target.value })
-                  }
-                >
-                  <option value="stdio">{t('ext.stdio')}</option>
-                  <option value="http">{t('ext.http')}</option>
-                </SelectInput>
+              <FormField label={t('ext.url')}>
+                <TextInput value={edit.url || ""} onChange={(e)=>setEdit({...edit,url:e.target.value})}/>
               </FormField>
-              {edit.transport === "http" ? (
-                <>
-                  <FormField label={t('ext.url')}>
-                    <TextInput
-                      value={edit.url || ""}
-                      onChange={(e) =>
-                        setEdit({ ...edit, url: e.target.value })
-                      }
-                    />
-                  </FormField>
-                  <FormField label={t('ext.bearer')}>
-                    <TextInput
-                      type="password"
-                      value={edit.token || ""}
-                      onChange={(e) =>
-                        setEdit({ ...edit, token: e.target.value })
-                      }
-                      placeholder={t('ext.optional')}
-                    />
-                  </FormField>
-                </>
-              ) : (
-                <>
-                  <FormField label={t('ext.executable')}>
-                    <TextInput
-                      value={edit.command || ""}
-                      onChange={(e) =>
-                        setEdit({ ...edit, command: e.target.value })
-                      }
-                    />
-                  </FormField>
-                  <FormField label={t('ext.args')}>
-                    <TextArea
-                      rows={4}
-                      className="min-h-28"
-                      value={argText}
-                      onChange={(e) => setArgText(e.target.value)}
-                    />
-                  </FormField>
-                </>
-              )}
+              <FormField label={t('ext.bear')}>
+                <TextInput type="password" value={edit.token || ""} onChange={(e)=>setEdit({...edit,token:e.target.value})} placeholder={t('ext.optional')}/>
+              </FormField>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
               <Action variant="secondary" onClick={() => setEdit(null)}>
