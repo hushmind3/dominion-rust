@@ -46,6 +46,16 @@ required_count src/engine.rs 'frontend_local_models::|provider_registry::|fronte
 required_count src/product.rs 'pub struct ProductHost' 1
 required_count src/product.rs 'pub fn model_for_selection' 1
 required_count src/product.rs 'async fn focused_notes' 1
+# First-party product state and room logic are not kernel-root modules.
+for moved in group knowledge profile provider_registry frontend_state; do
+ if [[ -f "src/$moved.rs" || ! -f "src/product/$moved.rs" ]]; then
+  echo "ERROR: product service must live under src/product/$moved.rs" >&2
+  exit 1
+ fi
+done
+# Product-facing SDK methods are not part of the Run-control SDK.
+required_count src/sdk.rs 'pub async fn (chat_sessions|create_group|remember|tool_catalog)\(' 0
+required_count src/sdk/product.rs 'pub async fn (chat_sessions|create_group|remember|tool_catalog)\(' 4
 # Optional integrations must never merge individually into the core API.
 required_count src/frontend_api.rs 'merge\(crate::addons::routes\(addons_enabled\)\)' 1
 required_count src/frontend_api.rs 'merge\(crate::frontend_channels|merge\(crate::frontend_extensions|merge\(crate::frontend_oauth' 0

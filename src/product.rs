@@ -1,7 +1,13 @@
 //! Product-level services for the Dominion application. These are adapters
 //! around the native Run engine, not the execution kernel or a second scheduler.
-//! A model-only agent can execute without any direct dependency on the GUI,
-//! group/room system, profile editor, durable memory catalog, or MCP registry.
+//! The Run scheduler remains native; the surrounding presentation, room,
+//! profile, catalog and stored-memory facilities are product services.
+pub mod group;
+pub mod knowledge;
+pub mod profile;
+pub mod provider_registry;
+pub mod frontend_state;
+
 use crate::{addons,config::Settings,domain::Run,group::Groups,knowledge::Knowledge,
     profile::OwnerProfileStore,frontend_state::FrontendStore,
     provider::ModelClient,provider_registry::Registry,mcp};

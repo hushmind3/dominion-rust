@@ -183,3 +183,12 @@ application adapter; new product state must not be added directly to Engine.
 
 No second scheduler, tool effect journal, approvals, independent agent
 execution runtime, or new UI navigation were introduced by this change.
+
+## Product-facing SDK surface extracted (2026-11-20)
+
+`src/sdk.rs` now exposes the submission/control/recovery SDK methods.
+Presentation session APIs, owner profile editing, room operations,
+skill discovery, memory catalog and mixed external tool catalog are in
+`src/sdk/product.rs`. These are separate `impl Dominion` blocks on
+the same native instance, with the same single Store and execution journal.
+No endpoint, tool authority, or persistence schema is renamed.

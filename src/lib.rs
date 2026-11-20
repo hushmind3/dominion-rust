@@ -1,6 +1,8 @@
 //! Dominion native Rust SDK and owned execution runtime.
 pub mod addons;
 pub mod product;
+// Public compatibility names point at the application layer.
+pub use product::{group,knowledge,profile,provider_registry,frontend_state};
 pub use addons::{channels as frontend_channels, connected_tools,
     extensions as frontend_extensions, github_cli_login, github_work,
     google_workspace, mcp, oauth as frontend_oauth,
@@ -11,8 +13,6 @@ pub mod config;
 pub mod context;
 pub mod domain;
 pub mod engine;
-pub mod group;
-pub mod knowledge;
 pub mod github_collab;
 pub mod journal;
 pub mod loop_guard;
@@ -26,11 +26,8 @@ pub mod program_session;
 pub mod strategy;
 pub mod policy;
 pub mod provider;
-pub mod profile;
-pub mod frontend_state;
 pub mod frontend_api;
 pub mod frontend_rooms;
-pub mod provider_registry;
 pub mod frontend_providers;
 pub mod frontend_codex_login;
 pub mod frontend_provider_public;
