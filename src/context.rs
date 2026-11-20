@@ -246,6 +246,85 @@ pub fn receipt_slice(messages:&[Value],call_id:&str,offset:usize,limit:usize)
         "next_offset":next,"complete":next>=total,"content":slice}))
 }
 
+/// Search exact, durable tool receipts in THIS Run without replaying effects.
+/// This is an ephemeral evidence projection, never a second index of record.
+/// The result gives character offsets for read_tool_receipt and reports when
+/// the bounded scan could not inspect the entire Run.
+pub fn receipt_search(messages:&[Value],query:&str,limit:usize)->Result<Value,String>{
+    const MAX_SCAN_BYTES:usize=16*1024*1024;
+    let query=query.trim();
+    if !(2..=128).contains(&query.chars().count()){
+        return Err("receipt search query must contain 2..128 characters".into());
+    }
+    let terms=query.split_whitespace()
+        .filter(|word|word.chars().count()>=2).take(8)
+        .map(str::to_ascii_lowercase).collect::<Vec<_>>();
+    if terms.is_empty(){return Err("receipt search needs a term of at least 2 characters".into());}
+    let phrase=query.to_ascii_lowercase();
+    let mut names=HashMap::<&str,&str>::new();
+    for message in messages {
+        if role(message)!="assistant"{continue;}
+        if let Some(calls)=message.get("tool_calls").and_then(Value::as_array){
+            for call in calls {
+                if let (Some(id),Some(name))=(
+                    call.get("id").and_then(Value::as_str),
+                    call.pointer("/function/name").and_then(Value::as_str)){
+                    names.entry(id).or_insert(name);
+                }
+            }
+        }
+    }
+    let mut scanned_bytes=0usize;
+    let mut scanned_receipts=0usize;
+    let mut scan_truncated=false;
+    let mut found=Vec::<(usize,usize,Value)>::new();
+    for (recent_index,message) in messages.iter().rev().enumerate(){
+        if role(message)!="tool"{continue;}
+        let Some(id)=message.get("tool_call_id").and_then(Value::as_str)else{continue;};
+        let name=names.get(id).copied().unwrap_or("unknown");
+        // A lookup's own output must not become a recursively ranked source.
+        if matches!(name,"read_tool_receipt"|"search_tool_receipts"){continue;}
+        let Some(content)=message.get("content").and_then(Value::as_str)else{continue;};
+        if scanned_bytes.saturating_add(content.len())>MAX_SCAN_BYTES{
+            scan_truncated=true;
+            break;
+        }
+        scanned_bytes+=content.len();
+        scanned_receipts+=1;
+        let haystack=content.to_ascii_lowercase();
+        let exact=haystack.find(&phrase);
+        let mut first=exact;
+        let mut matched_terms=0usize;
+        for term in &terms {
+            if let Some(position)=haystack.find(term){
+                matched_terms+=1;
+                first=Some(first.map_or(position,|current|current.min(position)));
+            }
+        }
+        let Some(byte_offset)=first else{continue;};
+        // ASCII-only case folding keeps byte offsets valid for UTF-8 Korean
+        // and Chinese receipt bodies without changing stored evidence.
+        let match_offset=content[..byte_offset].chars().count();
+        let offset=match_offset.saturating_sub(120);
+        let snippet=content.chars().skip(offset).take(480).collect::<String>();
+        let score=matched_terms*8+if exact.is_some(){40}else{0};
+        found.push((score,recent_index,json!({
+            "call_id":id,"tool":name,"offset":offset,
+            "match_offset":match_offset,"total_chars":content.chars().count(),
+            "matched_terms":matched_terms,"snippet":snippet
+        })));
+    }
+    found.sort_by(|a,b|b.0.cmp(&a.0).then_with(||a.1.cmp(&b.1)));
+    let total_matches=found.len();
+    let results=found.into_iter().take(limit.clamp(1,8))
+        .map(|(_,_,value)|value).collect::<Vec<_>>();
+    Ok(json!({
+        "scope":"current_run","query":query,"total_matches":total_matches,
+        "scanned_receipts":scanned_receipts,"scan_truncated":scan_truncated,
+        "results":results
+    }))
+}
+
 /// Optional material is turn-scoped, not a new system instruction. Append it
 /// AFTER the already-sent durable transcript so model prompt caches retain
 /// their longest unchanged prefix. Inserting at index two invalidated every
@@ -487,6 +566,35 @@ mod tests {
         assert!(receipt_slice(&msgs,"b",0,2).is_err());
         assert!(receipt_slice(&msgs,"a",8,2).is_err());
     }
+    #[test]
+    fn receipt_search_finds_exact_evidence_hidden_by_context_compaction(){
+        let original_body=format!("{}중요한 배포 증거: 검증 완료{}",
+            "unrelated source ".repeat(400)," end".repeat(200));
+        let messages=vec![
+            json!({"role":"system","content":"stable"}),
+            json!({"role":"user","content":"Verify deployment"}),
+            json!({"role":"assistant","tool_calls":[{"id":"source-1",
+                "type":"function","function":{"name":"read_file","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"source-1","content":original_body}),
+            json!({"role":"assistant","tool_calls":[{"id":"recall-1",
+                "type":"function","function":{"name":"read_tool_receipt","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"recall-1",
+                "content":"중요한 배포 증거: prior lookup should not rank"})
+        ];
+        let durable=messages.clone();
+        let found=receipt_search(&messages,"중요한 배포 증거",4).unwrap();
+        assert_eq!(found["scope"],"current_run");
+        assert_eq!(found["total_matches"],1,"do not re-index previous lookups");
+        assert_eq!(found["results"][0]["call_id"],"source-1");
+        assert_eq!(found["scan_truncated"],false);
+        let match_offset=found["results"][0]["match_offset"].as_u64().unwrap() as usize;
+        let exact=receipt_slice(&messages,"source-1",match_offset,20).unwrap();
+        assert!(exact["content"].as_str().unwrap().starts_with("중요한 배포 증거"));
+        assert_eq!(messages,durable,"search must never rewrite the durable Run");
+        assert_eq!(receipt_search(&messages,"unfindable",4).unwrap()["total_matches"],0);
+        assert!(receipt_search(&messages," ",4).is_err());
+    }
+
     #[test]
     fn unchanged_when_under_limit(){
         let msgs=vec![json!({"role":"system","content":"s"}),json!({"role":"user","content":"u"})];

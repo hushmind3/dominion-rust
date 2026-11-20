@@ -515,8 +515,9 @@ impl Engine {
             let recall_needed=receipts.len()>2 && receipts[..receipts.len()-2].iter()
                 .any(|m|m["content"].as_str().is_some_and(|v|v.chars().count()>1200));
             if !recall_needed {
-                available_tools.retain(|tool|tool.pointer("/function/name")
-                    .and_then(Value::as_str)!=Some("read_tool_receipt"));
+                available_tools.retain(|tool|!matches!(
+                    tool.pointer("/function/name").and_then(Value::as_str),
+                    Some("read_tool_receipt"|"search_tool_receipts")));
             }
             let mut external=self.mcp.definitions().await;
             external.extend(crate::connected_tools::definitions(&self.settings));
@@ -937,6 +938,13 @@ impl Engine {
                 let current=self.store.get(id).await.ok_or("run not found")?;
                 crate::context::receipt_slice(&current.messages,receipt_id,offset,limit)
                     .map(|receipt|receipt.to_string())
+            } else if call.name == "search_tool_receipts" {
+                let query=call.arguments.get("query").and_then(Value::as_str)
+                    .ok_or("receipt search query required")?;
+                let limit=call.arguments.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
+                let current=self.store.get(id).await.ok_or("run not found")?;
+                crate::context::receipt_search(&current.messages,query,limit)
+                    .map(|matches|matches.to_string())
             } else if call.name == "memory_search" {
                 let query=call.arguments.get("query").and_then(Value::as_str).ok_or("memory search query required")?;
                 if query.len()>512{return Err("memory search query too long".into());}
