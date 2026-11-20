@@ -238,7 +238,7 @@ async fn repository_team_requires_review_and_digest_approval_before_reviewer_see
         .await.unwrap();
     let evidence=crate::acceptance::inspect(&engine.settings,&writer).await.unwrap();
     assert!(evidence.inspected&&evidence.satisfied,"test must use an actual Git witness");
-    writer.event("artifact_evidence_checked",evidence.summary,Some(evidence.json()));
+    writer.event("artifact_evidence_checked",evidence.summary.clone(),Some(evidence.json()));
     store.put(writer).await.unwrap();
     sdk.advance_task_team(root.id).await.unwrap();
     let view=sdk.task_team(root.id).await.unwrap();
