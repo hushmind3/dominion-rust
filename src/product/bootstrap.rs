@@ -1,6 +1,6 @@
 //! Application composition root: actual file storage and external adapters
 //! are chosen here, not by the natural-language instruction executor.
-use crate::{config::Settings,engine::Engine,group::Groups,mcp::Mcp,
+use crate::{algorithms::{AgentAlgorithm,DefaultAlgorithm},config::Settings,engine::Engine,group::Groups,mcp::Mcp,
     ports::{RunRepository,RunStorePort},store::Store};
 use std::sync::Arc;
 
@@ -28,7 +28,34 @@ impl Engine{
     /// durable storage location cannot be selected by a model or Run.
     pub fn new_with_repository(settings:Settings,backend:Arc<dyn RunRepository>,
         groups:Arc<Groups>,mcp:Arc<Mcp>)->Result<Arc<Self>,String>{
-        let product=super::ProductHost::open(&settings,groups,mcp)?;
-        Engine::from_ports(settings,Arc::new(RunStorePort::new(backend)),product)
+        Self::new_with_algorithm(settings,backend,groups,mcp,owner_algorithm()?)
     }
+    /// Swap planning/context/tool-presentation logic without modifying or
+    /// rebuilding the Run kernel. Only the host can supply an algorithm.
+    pub fn new_with_algorithm(settings:Settings,backend:Arc<dyn RunRepository>,
+        groups:Arc<Groups>,mcp:Arc<Mcp>,algorithm:Arc<dyn AgentAlgorithm>)
+        ->Result<Arc<Self>,String>{
+        let product=super::ProductHost::open(&settings,groups,mcp)?;
+        Engine::from_ports(settings,Arc::new(RunStorePort::new(backend)),
+            product,algorithm)
+    }
+}
+/// Operator-owned optional prompt profile. No Run can read arbitrary files
+/// or change its algorithm; a new start pins the strategy identity.
+fn owner_algorithm()->Result<Arc<dyn AgentAlgorithm>,String>{
+    let path=match std::env::var("DOMINION_AGENT_PROMPT_FILE"){
+        Ok(v) if !v.trim().is_empty()=>v,
+        Ok(_)|Err(std::env::VarError::NotPresent)=>{
+            return Ok(Arc::new(DefaultAlgorithm::default()));
+        },
+        Err(e)=>return Err(format!("invalid algorithm prompt setting: {e}")),
+    };
+    let metadata=std::fs::metadata(&path)
+        .map_err(|e|format!("cannot read configured agent prompt {path}: {e}"))?;
+    if !metadata.is_file()||metadata.len()>64*1024{
+        return Err("agent prompt file must be a regular UTF-8 file <=64 KiB".into());
+    }
+    let text=std::fs::read_to_string(&path)
+        .map_err(|e|format!("configured agent prompt is unreadable: {e}"))?;
+    Ok(Arc::new(DefaultAlgorithm::with_prompt(text)?))
 }

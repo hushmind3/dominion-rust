@@ -1,4 +1,6 @@
 //! Dominion native Rust SDK and owned execution runtime.
+pub mod algorithms;
+pub use algorithms::{context,tool_discovery,repair_guidance,loop_guard,verification};
 pub mod addons;
 pub use addons::{github_collab,skills};
 pub mod product;
@@ -15,14 +17,14 @@ pub use addons::{channels as frontend_channels, connected_tools,
     google_workspace, mcp, oauth as frontend_oauth,
     skill_import as frontend_skill_import};
 
-pub mod context;
+
 pub mod domain;
 pub mod engine;
 pub mod journal;
-pub mod loop_guard;
+
 pub mod hooks;
 pub mod tool_schema;
-pub mod tool_discovery;
+
 pub mod tool_batch;
 
 
@@ -39,9 +41,9 @@ pub mod ports;
 // Public compatibility alias, actual DB implementation is outside the core.
 pub use infrastructure::persistence as store;
 
-pub mod verification;
+
 pub mod acceptance;
-pub mod repair_guidance;
+
 
 pub use sdk::Dominion;
 pub use config::{ModelSettings,Settings};

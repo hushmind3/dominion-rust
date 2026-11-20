@@ -292,3 +292,34 @@ tool outcome journaling, context compaction and verification**. Moving source
 implementation does not by itself make tools independently uninstallable or
 create separate binaries. The optional `run_program` schema and existing
 approval semantics are unchanged.
+
+## 2026-11-20 — Swappable reasoning/behavior algorithm, fixed Run runtime
+
+`src/algorithms/mod.rs` introduces the object-safe **`AgentAlgorithm`**
+strategy port. The kernel's `Engine` no longer owns its base system prompt,
+fused/dedicated plan text, context projection, repair hints, local tool profile,
+tool-discovery choice or independent auditor prompt. The concrete default
+algorithm and its `context`, `tool_discovery`, `repair_guidance`,
+`verification`, `loop_guard` and `local_task_catalog` source modules
+are under `src/algorithms/`. They retain their original behavior by default.
+
+The operator injects `Arc<dyn AgentAlgorithm>` via
+`Engine::new_with_algorithm(settings,repository,groups,mcp,algorithm)`.
+The normal `Engine::new` and `Dominion::open` constructors continue to
+inject the default version. `DOMINION_AGENT_PROMPT_FILE` optionally selects
+an operator-owned UTF-8 Markdown prompt (up to 16000 characters) at process
+boot; its deterministic identity is checked against a persisted
+`algorithm_bound` Run event on subsequent launches to prevent a resumed
+Run from silently switching intelligence while its actions remain queued.
+
+**Security direction**: `AgentAlgorithm::present_tools` receives only
+already-authorized native/external schemas. The kernel rejects all invented,
+rewritten or duplicate schemas and *still* enforces original `tool_schema`,
+operator deny-lists, read-only child scope, approval hooks, durable
+`journal::begin/finish` and reconciliation before any side effect.
+No algorithm implementation can directly grant tool permissions or create
+a second side-effect dispatcher. Neither the strategy nor its prompt owns
+a filesystem or DB handle.
+
+This is runtime/algorithm dependency injection in the existing Rust binary,
+not yet a standalone distribution crate or generic dynamic plugin loader.

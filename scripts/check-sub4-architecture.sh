@@ -11,8 +11,8 @@ required_count() {
   fi
 }
 # Only the strict provider-view projection is a supported production surface.
-required_count src/context.rs '^[[:space:]]*pub fn compact_strict\(' 1
-required_count src/context.rs '^[[:space:]]*pub fn compact\(' 0
+required_count src/algorithms/context.rs '^[[:space:]]*pub fn compact_strict\(' 1
+required_count src/algorithms/context.rs '^[[:space:]]*pub fn compact\(' 0
 # Native Run, its single real tool dispatch, and durable journal retain control.
 required_count src/engine.rs '^[[:space:]]*async fn drive\(' 1
 required_count src/engine.rs '^[[:space:]]*async fn perform_tool\(' 1
@@ -72,7 +72,7 @@ if [[ -e src/product.rs ]]; then
 fi
 for candidate in src/*.rs; do
  case "${candidate##*/}" in
- acceptance.rs|context.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|loop_guard.rs|main.rs|policy.rs|repair_guidance.rs|sdk.rs|ports.rs|tool_batch.rs|tool_discovery.rs|tool_schema.rs|verification.rs) ;;
+ acceptance.rs|domain.rs|engine.rs|hooks.rs|journal.rs|lib.rs|main.rs|policy.rs|sdk.rs|ports.rs|tool_batch.rs|tool_schema.rs) ;;
  *) echo "ERROR: unexpected root module $candidate (classify core vs product/addons)" >&2; exit 1 ;;
  esac
 done
@@ -86,6 +86,21 @@ for moved in src/provider.rs src/tools.rs src/workspace.rs src/sandbox.rs \
 done
 required_count src/infrastructure/local_tools.rs 'pub async fn execute' 1
 required_count src/addons/read_program.rs 'pub async fn execute_with_hooks' 1
+# Reasoning, planning, memory projection and behavior selection are pluggable.
+for moved in context tool_discovery repair_guidance loop_guard verification; do
+ if [[ -e "src/$moved.rs" || ! -f "src/algorithms/$moved.rs" ]]; then
+  echo "ERROR: algorithm must live under src/algorithms/: $moved" >&2
+  exit 1
+ fi
+done
+if [[ -e src/engine/local_task_catalog.rs || ! -e src/algorithms/local_task_catalog.rs ]]; then
+ echo "ERROR: tool-presentation heuristic belongs to algorithms, not Engine" >&2
+ exit 1
+fi
+required_count src/engine.rs 'algorithm:Arc<dyn AgentAlgorithm>' 1
+required_count src/algorithms/mod.rs 'pub trait AgentAlgorithm' 1
+required_count src/engine.rs 'const SYSTEM|local_task_catalog::|tool_discovery::|compact_execution\\(' 0
+required_count src/product/bootstrap.rs 'pub fn new_with_algorithm' 1
 # The Run kernel must not know a remote transport or duplicate progress loop.
 required_count src/engine.rs 'McpProgress|McpCallOutcome|call_with_progress|starts_with\("mcp__"\)' 0
 required_count src/addons/execution.rs '^pub async fn invoke\(' 1
