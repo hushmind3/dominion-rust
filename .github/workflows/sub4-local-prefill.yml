@@ -10,7 +10,7 @@ concurrency:
   group: sub4-local-prefill-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-local-prefill:
+  local-prefill:
     name: 2026 Qwen3.5 GGUF on real llama.cpp CPU cache probe
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
