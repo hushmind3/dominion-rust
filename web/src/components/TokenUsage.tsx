@@ -13,7 +13,7 @@ if(!usage.totalTokens&&!unmetered)return null
  const cache=usage.cachedPromptTokens
  // Unknown cache usage is not a zero hit. Derive new input from the same
  // provider totals rather than treating a missing legacy field as zero.
- const known=!usage.estimated&&!unmetered&&typeof prompt==='number'&&typeof cache==='number'&&cache>=0&&cache<=prompt
+ const known=!usage.estimated&&!unmetered&&usage.cacheUsageReported===true&&typeof prompt==='number'&&typeof cache==='number'&&cache>=0&&cache<=prompt
  const input=known?t('usage.newInput',{count:count(prompt-cache)}):t('usage.input',{count:count(prompt)})
  const cached=known?t('usage.cached',{count:count(cache)}):t('usage.cacheUnknown')
  const output=t('usage.output',{count:count(usage.completionTokens)})
