@@ -197,6 +197,7 @@ const en: Record<LocaleKey, string> = {
   'conn.channels.filter': "Channel category",
   'conn.channels.noBinding': "No connections configured. Add one below.",
   'conn.status.not_verified': "Needs verification",
+  'conn.status.sending': "Sending",
   'conn.status.needs_review': "Delivery review needed",
   'conn.form.nameRequired': "Enter a connection name (1–120 characters).",
   'conn.form.roomRequired': "Select an existing room.",
