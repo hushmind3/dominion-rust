@@ -672,6 +672,8 @@ const ko = {
   'ext.credentialHint': "기존 토큰은 표시하지 않습니다. 변경할 때만 입력하세요.",
   'ext.enabled': "MCP 서버 사용",
   'ext.disabled': "사용 중지",
+  'ext.skillFormError': "스킬 이름과 실행 지침을 입력하세요.",
+  'ext.skillSaved': "스킬을 저장했습니다.",
   'ext.addMcp': 'MCP 직접 추가',
   'ext.tab.servers': 'MCP 서버',
   'ext.tab.tools': '연결된 도구',
