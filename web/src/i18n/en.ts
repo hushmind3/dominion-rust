@@ -219,6 +219,8 @@ const en: Record<LocaleKey, string> = {
   'conn.review.notDeliveredDone': "Marked not delivered. The message can be sent on the next dispatch.",
   'conn.tab.channels': 'Messengers · Channels',
   'conn.tab.accounts': 'Connected accounts',
+  'conn.quick.disconnected': "Account disconnected.",
+  'conn.quick.githubCliCancel': "Cancel authorization",
   'conn.quick.githubCliTitle': 'GitHub browser sign-in',
   'conn.quick.githubCliCode': 'Enter this one-time code on GitHub',
   'conn.quick.githubCliOpen': 'Open GitHub verification',
