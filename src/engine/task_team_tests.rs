@@ -191,3 +191,93 @@ async fn missing_owner_required_receipt_fails_team_and_never_launches_dependant(
     drop(sdk);drop(engine);drop(store);
     tokio::fs::remove_dir_all(path).await.unwrap();
 }
+
+#[tokio::test]
+async fn repository_team_requires_review_and_digest_approval_before_reviewer_sees_code(){
+    use crate::domain::{Run,CreateRun};
+    let (engine,store,path)=mock_engine().await;
+    let sdk=Dominion::from_engine(Arc::clone(&engine));
+    let source=engine.settings.workspace_dir.join("projects").join("team-demo");
+    tokio::fs::create_dir_all(&source).await.unwrap();
+    async fn git(dir:&std::path::Path,args:&[&str]){
+        let output=tokio::process::Command::new("git").args(args)
+            .current_dir(dir).output().await.unwrap();
+        assert!(output.status.success(),"git command failed: {}",
+            String::from_utf8_lossy(&output.stderr));
+    }
+    git(&source,&["init","-q"]).await;
+    tokio::fs::write(source.join("main.rs"),"fn main() {}\n").await.unwrap();
+    git(&source,&["add","main.rs"]).await;
+    git(&source,&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid",
+        "commit","-qm","base"]).await;
+
+    let root=sdk.create_task_team_from_repository("Patch then review".into(),vec![
+        spec("writer",&[],TeamRole::Writer),
+        spec("review",&["writer"],TeamRole::Reviewer),
+    ],60.0,RunOptions::default(),"projects/team-demo").await.unwrap();
+    let graph=root.team.as_ref().unwrap();
+    let writer_id=graph.tasks[0].run_id;
+    let reviewer_id=graph.tasks[1].run_id;
+    let original=root.base_commit.as_ref().unwrap().clone();
+    crate::workspace::attach_at(&engine.settings,writer_id,
+        "projects/team-demo",Some(&original)).await.unwrap();
+
+    // Simulate a genuinely completed native Writer and its independent
+    // artifact gate: no artificial user approval, test bypass or fake patch.
+    let mut writer=Run::new(CreateRun{instruction:"Edit main.rs".into(),
+        budget_krw:Some(30.0),max_steps:Some(3)},3).unwrap();
+    writer.id=writer_id;
+    writer.parent_run_id=Some(root.id);
+    writer.status=RunStatus::Completed;
+    writer.repository=Some("projects/team-demo".into());
+    writer.base_commit=Some(original.clone());
+    writer.delegation_profile="implementation".into();
+    writer.answer=Some("Changed main.rs".into());
+    writer.event("artifact_evidence_checked","Real Git diff inspected",
+        Some(json!({"inspected":true,"satisfied":true})));
+    tokio::fs::write(engine.settings.workspace_dir
+        .join(writer_id.to_string()).join("main.rs"),"fn main() { println!(\"ok\"); }\\n")
+        .await.unwrap();
+    store.put(writer).await.unwrap();
+    sdk.advance_task_team(root.id).await.unwrap();
+    let view=sdk.task_team(root.id).await.unwrap();
+    assert_eq!(view.tasks[0].status,TeamTaskState::ApprovalRequired);
+    assert_eq!(view.tasks[1].status,TeamTaskState::Pending);
+    assert!(store.get(reviewer_id).await.is_none());
+
+    let preview=sdk.preview_task_team_patch(root.id,"writer").await.unwrap();
+    assert!(preview.can_apply);
+    assert_eq!(preview.changed_paths,vec!["main.rs"]);
+    assert!(sdk.approve_task_team_patch(root.id,"writer","incorrect").await.is_err());
+    assert!(store.get(reviewer_id).await.is_none(),
+        "a wrong preview digest must never unlock Reviewer");
+    assert_eq!(tokio::fs::read_to_string(source.join("main.rs"))
+        .await.unwrap(),"fn main() {}\n");
+    sdk.approve_task_team_patch(root.id,"writer",&preview.sha256).await.unwrap();
+    assert_eq!(tokio::fs::read_to_string(engine.settings.workspace_dir
+        .join(root.id.to_string()).join("main.rs")).await.unwrap(),
+        "fn main() { println!(\"ok\"); }\\n");
+    assert_eq!(tokio::fs::read_to_string(source.join("main.rs"))
+        .await.unwrap(),"fn main() {}\n");
+
+    let reviewer=store.get(reviewer_id).await.unwrap();
+    assert_eq!(reviewer.parent_run_id,Some(root.id));
+    assert!(reviewer.read_only);
+    assert!(reviewer.repository.is_some());
+    assert_eq!(tokio::fs::read_to_string(engine.settings.workspace_dir
+        .join(reviewer_id.to_string()).join("main.rs")).await.unwrap(),
+        "fn main() { println!(\"ok\"); }\\n");
+    assert!(sdk.approve_task_team_patch(root.id,"writer",&preview.sha256).await.is_err(),
+        "the same approved patch must never be applied twice");
+    let saved=sdk.get(root.id).await.unwrap();
+    assert!(saved.in_flight.is_none());
+    assert_eq!(saved.events.iter().filter(|e|e.kind=="team_patch_integrated").count(),1);
+    assert_eq!(saved.events.iter().filter(|e|e.kind=="team_patch_apply_intent").count(),1);
+    drop(sdk);drop(engine);drop(store);
+    let worktrees=[root.id,writer_id,reviewer_id];
+    for id in worktrees {
+        git(&source,&["worktree","remove","--force",
+            &path.join("workspace").join(id.to_string()).to_string_lossy()]).await;
+    }
+    tokio::fs::remove_dir_all(path).await.unwrap();
+}

@@ -98,6 +98,29 @@ impl Dominion {
         budget_krw:f64,options:RunOptions)->Result<Run,String>{
         self.engine.create_task_team(instruction,tasks,budget_krw,options).await
     }
+    /// Start a version-pinned Team over an existing Git checkout. Every
+    /// Worker receives a detached snapshot of the owner-approved Team state.
+    pub async fn create_task_team_from_repository(&self,instruction:String,
+        tasks:Vec<TaskSpec>,budget_krw:f64,options:RunOptions,
+        repository:&str)->Result<Run,String>{
+        self.engine.create_task_team_from_repository(
+            instruction,tasks,budget_krw,options,repository).await
+    }
+    /// Review exact changed paths, SHA-256 and Git conflicts before approval.
+    pub async fn preview_task_team_patch(&self,root:Uuid,task_id:&str)
+        ->Result<crate::workspace::TeamPatchPreview,String>{
+        self.engine.preview_task_team_patch(root,task_id).await
+    }
+    /// Explicit owner approval: a model cannot invoke this API as a tool.
+    pub async fn approve_task_team_patch(&self,root:Uuid,task_id:&str,
+        approved_sha256:&str)->Result<TeamView,String>{
+        self.engine.approve_task_team_patch(root,task_id,approved_sha256).await
+    }
+    /// Resolve a crash only when Git proves the approved patch is present.
+    pub async fn reconcile_task_team_patch(&self,root:Uuid,task_id:&str,
+        approved_sha256:&str)->Result<TeamView,String>{
+        self.engine.reconcile_task_team_patch(root,task_id,approved_sha256).await
+    }
     /// Advance only dependency-ready tasks through the existing native Harness.
     /// Never retries uncertain or approval-paused worker effects implicitly.
     pub async fn advance_task_team(&self,root:Uuid)->Result<TeamView,String>{

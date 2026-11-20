@@ -224,6 +224,38 @@ pub async fn merge_team_patch_verified(settings:&Settings,parent:Uuid,child:Uuid
         approved_sha256,child,parent,preview.changed_paths.len()))
 }
 
+
+/// Non-mutating reconciliation witness. A successful reverse Git check
+/// proves the exact approved delta is already present in the parent
+/// coordinator worktree, without replaying the apply operation.
+pub async fn team_patch_is_applied(settings:&Settings,parent:Uuid,child:Uuid,
+    parent_base:&str,child_base:&str,approved_sha256:&str)->Result<bool,String>{
+    let (target,source)=verified_team_worktrees(settings,parent,child,
+        parent_base,child_base).await?;
+    let (diff,_)=changes_with_intent(&source).await?;
+    if diff.trim().is_empty() ||
+        format!("{:x}",Sha256::digest(diff.as_bytes()))!=approved_sha256{
+        return Err("approved patch bytes changed before reconciliation".into());
+    }
+    let mut cmd=Command::new("git");
+    cmd.args(["apply","--reverse","--check","--binary","--"])
+        .current_dir(target).env_clear().env("HOME",settings.workspace_dir.as_os_str());
+    #[cfg(windows)]
+    cmd.env("PATH",std::env::var_os("PATH").unwrap_or_default())
+        .env("SystemRoot",std::env::var_os("SystemRoot").unwrap_or_default());
+    #[cfg(not(windows))]
+    cmd.env("PATH","/usr/local/bin:/usr/bin:/bin");
+    let mut child=cmd.stdin(Stdio::piped()).stdout(Stdio::null())
+        .stderr(Stdio::null()).kill_on_drop(true).spawn()
+        .map_err(|e|format!("Git reconciliation probe failed: {e}"))?;
+    let status=timeout(Duration::from_secs(30),async{
+        let mut stdin=child.stdin.take().ok_or("Git reverse-check stdin missing")?;
+        stdin.write_all(diff.as_bytes()).await.map_err(|e|e.to_string())?;
+        drop(stdin);
+        child.wait().await.map_err(|e|e.to_string())
+    }).await.map_err(|_|"Git reverse-check timed out".to_string())??;
+    Ok(status.success())
+}
 async fn git_patch(dir:&Path,args:&[&str])->Result<String,String>{
     let result=timeout(Duration::from_secs(30),Command::new("git")
         .args(args).current_dir(dir).kill_on_drop(true).output())
@@ -341,6 +373,8 @@ mod tests{
             .await.unwrap(),"base\n");
         merge_team_patch_verified(&settings,parent,first,&first_sha,&first_sha,
             &preview.sha256).await.unwrap();
+        assert!(team_patch_is_applied(&settings,parent,first,&first_sha,&first_sha,
+            &preview.sha256).await.unwrap());
         assert_eq!(fs::read_to_string(root.join(parent.to_string()).join("app.txt"))
             .await.unwrap(),"first\n");
         assert_eq!(fs::read_to_string(source.join("app.txt")).await.unwrap(),"base\n");
