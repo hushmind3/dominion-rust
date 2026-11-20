@@ -169,13 +169,24 @@ async fn mcp_list(State(engine):State<Arc<Engine>>)->Json<Value>{
         "url":v.url,"enabled":v.enabled
     })).collect::<Vec<_>>()))
 }
+fn managed_mcp_owner<'a>(name:&str,registered:&'a [(String,String)])->Option<&'a str>{
+    registered.iter().find(|(prefix,_)|name.starts_with(prefix))
+        .map(|(_,id)|id.as_str())
+}
 async fn mcp_discover(State(engine):State<Arc<Engine>>)->Json<Value>{
+    // The model uses mcp__<server_key>__<tool>, while the UI stores a UUID.
+    // Join the real native tool catalog with the owner's active MCP registry.
+    let registered=engine.extensions.mcp_list().await.into_iter()
+        .filter(|server|server.enabled)
+        .map(|server|(format!("mcp__{}__",server_key(&server.id)),server.id))
+        .collect::<Vec<_>>();
     let definitions=engine.mcp.definitions().await;
     Json(json!(definitions.iter().filter_map(|d|{
         let name=d.pointer("/function/name").and_then(Value::as_str)?;
         let description=d.pointer("/function/description")
             .and_then(Value::as_str).unwrap_or("");
-        Some(json!({"name":name,"description":description}))
+        Some(json!({"name":name,"description":description,
+            "mcpId":managed_mcp_owner(name,&registered)}))
     }).collect::<Vec<_>>()))
 }
 #[derive(Deserialize)]
@@ -269,4 +280,19 @@ async fn skill_export(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     Ok(([(header::CONTENT_TYPE,"text/markdown; charset=utf-8"),
         (header::CONTENT_DISPOSITION,"attachment; filename=SKILL.md"),
         (header::CACHE_CONTROL,"no-store")],body))
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    #[test]
+    fn native_mcp_alias_resolves_to_persisted_managed_id() {
+        let uuid="2b35e369-1c79-498f-b850-439af3cdb024";
+        let registered=vec![(format!("mcp__{}__",server_key(uuid)),uuid.into())];
+        assert_eq!(managed_mcp_owner(
+            "mcp__mcp_2b35e3691c79498fb850439af3cdb024__list_tools",
+            &registered),Some(uuid));
+        assert_eq!(managed_mcp_owner("mcp__unregistered__list_tools",&registered),None);
+        assert_eq!(managed_mcp_owner("mcp__mcp_2b35e3691c79498fb850439af3cdb025__list_tools",&registered),None);
+    }
 }

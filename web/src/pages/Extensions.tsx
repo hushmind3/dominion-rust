@@ -70,9 +70,6 @@ const featured = [
     description: "모델·데이터셋을 검색하는 원격 MCP",
     descriptionEn: "Remote MCP for searching models and datasets",
     icon: BrainIcon,
-    transport: "http",
-    command: "",
-    args: [],
     endpoint: "https://huggingface.co/mcp",
     url: "https://huggingface.co",
   },
@@ -496,9 +493,6 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
             {featured.map((x) => {
               const Icon = x.icon;
               const record = mcp.value.find((y) => y.name === x.name);
-              const connected = tools.filter(
-                (t) => t.mcpId === record?.id && !t.error,
-              ).length;
               return (
                 <Panel key={x.name} className="flex min-w-0 flex-col gap-3 p-5">
                   <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]">
@@ -666,8 +660,8 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
               <FormField label={t('ext.url')}>
                 <TextInput value={edit.url || ""} onChange={(e)=>setEdit({...edit,url:e.target.value})}/>
               </FormField>
-              <FormField label={t('ext.bear')}>
-                <TextInput type="password" value={edit.token || ""} onChange={(e)=>setEdit({...edit,token:e.target.value})} placeholder={t('ext.optional')}/>
+              <FormField label={t('ext.bearer')}>
+                <TextInput type="password" value={edit.bearerToken || ""} onChange={(e)=>setEdit({...edit,bearerToken:e.target.value})} placeholder={t('ext.optional')}/>
               </FormField>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
