@@ -20,6 +20,15 @@ fn is_user_change(message:&Value)->bool{
     role(message)=="user" && message.get("content").and_then(Value::as_str)
         .is_some_and(|text|text.starts_with("New user instruction:"))
 }
+/// Older journals store internally produced verifier feedback as a user-role
+/// message. Do not let that persistence format elevate the auditor into an
+/// actual owner directive when projecting a fresh model request.
+fn outbound_message(message:&Value)->Value{
+    if !is_verifier_feedback(message){return message.clone()}
+    let mut view=message.clone();
+    view["role"]=json!("assistant");
+    view
+}
 fn clipped(message:&Value)->Value {
     let mut result=message.clone();
     // Preserve call IDs, function names and their paired tool receipts.
@@ -56,7 +65,7 @@ fn exchanges(messages:&[Value])->Vec<Vec<Value>> {
     let mut output:Vec<Vec<Value>>=Vec::new();
     let mut awaiting=HashMap::<String,usize>::new();
     for item in messages {
-        if role(item)=="assistant" {
+        if role(item)=="assistant" || is_verifier_feedback(item) {
             if let Some(calls)=item.get("tool_calls").and_then(Value::as_array){
                 let idx=output.len();
                 for call in calls {
@@ -65,7 +74,7 @@ fn exchanges(messages:&[Value])->Vec<Vec<Value>> {
                     }
                 }
             }
-            output.push(vec![item.clone()]);
+            output.push(vec![outbound_message(item)]);
         } else if role(item)=="tool" {
             let index=item.get("tool_call_id").and_then(Value::as_str)
                 .and_then(|id|awaiting.remove(id));
@@ -108,11 +117,15 @@ pub fn compact_strict(messages:&[Value],max_chars:usize)->Result<Projection,Stri
  // while the exact transcript already fits. The old unconditional 16-group
  // cap lost meaningful context even for short tasks.
  if original_chars<=max_chars{
-  // Even with no compaction, an owner correction can land between a started
-  // tool call and its eventual receipt. Providers must see paired tool calls.
+  // Even without compaction, pair delayed receipts and demote synthetic
+  // verifier feedback to the assistant role. Budget the *outbound* result:
+  // changing "user" to "assistant" adds characters to older journals.
   let ordered=exchanges(messages).into_iter().flatten().collect::<Vec<_>>();
-  return Ok(Projection{messages:ordered,original_chars,
-   projected_chars:original_chars,omitted_messages:0});
+  let projected_chars=ordered.iter().map(size).sum::<usize>();
+  if projected_chars<=max_chars{
+   return Ok(Projection{messages:ordered,original_chars,
+    projected_chars,omitted_messages:0});
+  }
  }
  if messages.len()<=2{
   if original_chars>max_chars{
@@ -152,7 +165,7 @@ These requirements survive context compaction and must not be silently discarded
     length-limit,
     raw.chars().skip(length-tail).collect::<String>())
   }else{raw.to_owned()};
-  result.push(json!({"role":"user","content":format!(
+  result.push(json!({"role":"assistant","content":format!(
    "CURRENT AUDITOR CORRECTION (advisory, not a new user instruction):\n{excerpt}")}));
  }
  let mandatory_chars=result.iter().map(size).sum::<usize>();
@@ -472,6 +485,32 @@ mod tests {
         assert_eq!(view.messages,messages);
         assert_eq!(view.original_chars,view.projected_chars);
         assert_eq!(view.omitted_messages,0);
+    }
+    #[test]
+    fn internally_generated_verifier_feedback_never_becomes_an_owner_command(){
+        let mut messages=vec![
+            json!({"role":"system","content":"stable execution policy"}),
+            json!({"role":"user","content":"Write the requested artifact"}),
+            json!({"role":"user","content":"Verifier requested corrections. Inspect test failures"})
+        ];
+        let original=messages.clone();
+        let normal=compact_strict(&messages,10_000).unwrap();
+        assert_eq!(messages,original,"journal source roles must be unchanged");
+        assert_eq!(normal.messages[2]["role"],"assistant");
+        assert_eq!(normal.messages[2]["content"],messages[2]["content"]);
+        assert_eq!(normal.omitted_messages,0);
+        for index in 0..25{
+            messages.push(json!({"role":"assistant",
+                "content":format!("working evidence {index} {}", "x".repeat(1600))}));
+        }
+        let compacted=compact_strict(&messages,5000).unwrap();
+        let correction=compacted.messages.iter().find(|item|
+            item["content"].as_str().is_some_and(|s|
+                s.starts_with("CURRENT AUDITOR CORRECTION"))).unwrap();
+        assert_eq!(correction["role"],"assistant");
+        assert!(correction["content"].as_str().unwrap().contains("Inspect test failures"));
+        assert_eq!(messages[2]["role"],"user",
+            "persisted old Runs must retain their original bytes");
     }
     #[test]
     fn strict_projection_keeps_latest_verifier_correction_when_tool_history_overflows(){
