@@ -69,6 +69,33 @@ export interface GroupRoom {
   status: 'open' | 'finished'; rounds: number; max_rounds: number;
   cost_krw: number; budget_krw: number; created_at_ms: number; updated_at_ms: number;
 }
+/** Trusted Team authoring never permits model-authored dependency graphs. */
+export type TeamRole='investigator'|'writer'|'reviewer';
+export type TaskAcceptanceCheck=
+  |{kind:'successful_tool';name:string}
+  |{kind:'auditor_passed'};
+export interface TaskSpec {
+  id:string;instruction:string;depends_on?:string[];
+  workspace:string;role:TeamRole;budget_krw:number;max_steps:number;
+  acceptance_checks?:TaskAcceptanceCheck[];
+}
+export interface TaskTeamCreate {
+  instruction:string;tasks:TaskSpec[];budgetKrw:number;
+  repository?:string;providerId?:string;model?:string;strategyLearning?:boolean;
+}
+export type TeamTaskStatus='pending'|'ready'|'active'|'approval_required'|'blocked'|'completed'|'failed'|'cancelled';
+export interface TeamTaskView {
+  id:string;run_id:string;role:TeamRole;depends_on:string[];
+  workspace:string;status:TeamTaskStatus;unmet_acceptance?:string[];
+}
+export interface TeamView {
+  root_run_id:string;tasks:TeamTaskView[];completed:number;all_complete:boolean;failed:boolean;
+}
+export interface TeamPatchPreview {
+  sourceRunId:string;sha256:string;changedPaths:string[];
+  patchBytes:number;diff:string;canApply:boolean;conflict:string|null;
+}
+
 export interface CreateGroup {
   topic: string; participants: Participant[]; max_rounds?: number; budget_krw?: number;
 }
@@ -201,6 +228,27 @@ export class Dominion {
     skill: (id: string,name: string) => this.request<{name:string;content:string}>('GET','/runs/'+encodeURIComponent(id)+'/skills/'+encodeURIComponent(name)),
     files: (id: string) => this.request<{files:string[]}>('GET','/runs/'+encodeURIComponent(id)+'/files'),
     file: (id: string, path: string) => this.request<{path:string;content:string}>('GET','/runs/'+encodeURIComponent(id)+'/files/'+path.split('/').map(encodeURIComponent).join('/')),
+  };
+
+  /** Trusted owner-only Team approval/patch workflow on the SAME native Run.
+   * Never call approve until the user has inspected the exact diff/hash. */
+  readonly taskTeams={
+    create:(input:TaskTeamCreate)=>
+      this.request<Run>('POST','/task-teams',{
+        instruction:input.instruction,tasks:input.tasks,
+        budgetKrw:input.budgetKrw,repository:input.repository,
+        providerId:input.providerId,model:input.model,
+        strategyLearning:input.strategyLearning
+      }),
+    get:(id:string)=>this.request<TeamView>('GET','/task-teams/'+encodeURIComponent(id)),
+    advance:(id:string)=>this.request<TeamView>('POST','/task-teams/'+encodeURIComponent(id)+'/advance',{}),
+    cancel:(id:string)=>this.request<Run>('POST','/task-teams/'+encodeURIComponent(id)+'/cancel',{}),
+    review:(id:string,task:string)=>this.request<TeamPatchPreview>('GET',
+      '/task-teams/'+encodeURIComponent(id)+'/patches/'+encodeURIComponent(task)),
+    approve:(id:string,task:string,sha256:string)=>this.request<TeamView>('POST',
+      '/task-teams/'+encodeURIComponent(id)+'/patches/'+encodeURIComponent(task)+'/approval',{sha256}),
+    reconcile:(id:string,task:string,sha256:string)=>this.request<TeamView>('POST',
+      '/task-teams/'+encodeURIComponent(id)+'/patches/'+encodeURIComponent(task)+'/reconcile',{sha256}),
   };
 
   /** Persistent, project-scoped non-weight notes. */

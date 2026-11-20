@@ -90,6 +90,13 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/runs/{id}/directive",post(directive))
         .route("/runs/{id}/reconcile",post(reconcile))
         .route("/runs/{id}/subagents",get(list_subagents).post(create_subagent))
+        .route("/task-teams",post(create_task_team))
+        .route("/task-teams/{id}",get(task_team))
+        .route("/task-teams/{id}/advance",post(advance_task_team))
+        .route("/task-teams/{id}/cancel",post(cancel_task_team))
+        .route("/task-teams/{id}/patches/{task}",get(review_task_team_patch))
+        .route("/task-teams/{id}/patches/{task}/approval",post(approve_task_team_patch))
+        .route("/task-teams/{id}/patches/{task}/reconcile",post(reconcile_task_team_patch))
         .route("/runs/{id}/events",get(events))
         .route("/runs/{id}/repair-observations",get(repair_observations))
         .route("/runs/{id}/skills",get(list_skills))
@@ -315,11 +322,76 @@ async fn group_say(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(inp
     engine.groups.say(id,input.content).await.map(Json).map_err(bad)
 }
 async fn group_next(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Result<Json<crate::group::Room>,ApiError> {
-    // Native v1 and frontend Rooms must use the SAME stable per-room routing
-    // identity. A process-global OpenCode Go fallback would merge unrelated
-    // rooms into one provider cache session.
-    let selected=engine.model.with_session_affinity(&format!("dominion-room-{id}"));
-    engine.groups.next(&selected,id).await.map(Json).map_err(bad)
+    // Native v1 and React both delegate to the same source-linked
+    // per-speaker Run; no direct provider bypass or separate approval loop.
+    crate::sdk::Dominion::from_engine(engine).group_turn(id).await.map(Json).map_err(bad)
+}
+
+
+/// Native Task Team HTTP contract. These handlers are trusted owner endpoints
+/// behind the same bearer/token middleware as all other native Run mutations.
+/// The model cannot call them as a tool or supply patch adoption approval.
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+struct TaskTeamCreate {
+    instruction:String,
+    tasks:Vec<crate::domain::team::TaskSpec>,
+    budget_krw:f64,
+    repository:Option<String>,
+    #[serde(default)]provider_id:String,
+    #[serde(default)]model:String,
+    #[serde(default)]strategy_learning:bool,
+}
+async fn create_task_team(State(engine):State<Arc<Engine>>,
+    Json(req):Json<TaskTeamCreate>)->Result<(StatusCode,Json<Run>),ApiError>{
+    let options=crate::sdk::RunOptions{
+        provider_id:req.provider_id,
+        model:req.model,strategy_learning:req.strategy_learning,
+        model_only:false
+    };
+    let run=if let Some(repository)=req.repository{
+        engine.create_task_team_from_repository(req.instruction,req.tasks,
+            req.budget_krw,options,&repository).await
+    }else{
+        engine.create_task_team(req.instruction,req.tasks,req.budget_krw,options).await
+    }.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(run)))
+}
+async fn task_team(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
+    ->Result<Json<crate::domain::team::TeamView>,ApiError>{
+    engine.task_team(id).await.map(Json).map_err(bad)
+}
+async fn advance_task_team(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
+    ->Result<Json<crate::domain::team::TeamView>,ApiError>{
+    engine.advance_task_team(id).await.map(Json).map_err(bad)
+}
+async fn cancel_task_team(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
+    ->Result<Json<Run>,ApiError>{
+    engine.cancel_task_team(id).await.map(Json).map_err(bad)
+}
+async fn review_task_team_patch(State(engine):State<Arc<Engine>>,
+    Path((id,task)):Path<(Uuid,String)>)
+    ->Result<Json<crate::workspace::TeamPatchPreview>,ApiError>{
+    engine.preview_task_team_patch(id,&task).await.map(Json).map_err(bad)
+}
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+struct TeamPatchDecision{sha256:String}
+async fn approve_task_team_patch(State(engine):State<Arc<Engine>>,
+    Path((id,task)):Path<(Uuid,String)>,Json(req):Json<TeamPatchDecision>)
+    ->Result<Json<crate::domain::team::TeamView>,ApiError>{
+    if req.sha256.len()!=64||!req.sha256.bytes().all(|b|b.is_ascii_hexdigit()){
+        return Err(bad("approval requires the exact reviewed SHA-256"));
+    }
+    engine.approve_task_team_patch(id,&task,&req.sha256).await.map(Json).map_err(bad)
+}
+async fn reconcile_task_team_patch(State(engine):State<Arc<Engine>>,
+    Path((id,task)):Path<(Uuid,String)>,Json(req):Json<TeamPatchDecision>)
+    ->Result<Json<crate::domain::team::TeamView>,ApiError>{
+    if req.sha256.len()!=64||!req.sha256.bytes().all(|b|b.is_ascii_hexdigit()){
+        return Err(bad("reconciliation requires original approved SHA-256"));
+    }
+    engine.reconcile_task_team_patch(id,&task,&req.sha256).await.map(Json).map_err(bad)
 }
 
 #[cfg(test)]

@@ -707,3 +707,16 @@ A second independent human `approve_task_team_patch` is still mandatory
 before the coordinator sees edits. No automatic source-checkout merge.
 CLI isolation is provider-supplied, not an OS sandbox provided by Dominion.
 Third-party charges remain unmetered; timeouts and cancellation are uncertain.
+
+## 2026-11-21 — Owner Task Team API + TypeScript SDK and native Room route (Sub4)
+
+The existing Rust Engine Task Team methods now have authenticated
+`/api/v1/task-teams` endpoints for owner DAG creation, observation,
+advance, cancellation, exact SHA-256 patch review, explicitly approved
+adoption, and uncertain-effect reconciliation. TypeScript SDK uses the
+same native HTTP routes, **not** an independent scheduler. Approval is
+exposed as a deliberate owner call only; an agent cannot invoke these HTTP
+endpoints using the tool registry. `/api/v1/groups/{id}/next` now invokes
+`Dominion::group_turn` and creates a native Run, eliminating the last
+known native-v1 direct-provider route. The existing React navigation was
+not changed; a UI patch diff/review control can consume this endpoint later.
