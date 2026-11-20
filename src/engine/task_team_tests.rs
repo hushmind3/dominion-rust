@@ -233,11 +233,12 @@ async fn repository_team_requires_review_and_digest_approval_before_reviewer_see
     writer.base_commit=Some(original.clone());
     writer.delegation_profile="implementation".into();
     writer.answer=Some("Changed main.rs".into());
-    writer.event("artifact_evidence_checked","Real Git diff inspected",
-        Some(json!({"inspected":true,"satisfied":true})));
     tokio::fs::write(engine.settings.workspace_dir
-        .join(writer_id.to_string()).join("main.rs"),"fn main() { println!(\"ok\"); }\\n")
+        .join(writer_id.to_string()).join("main.rs"),"fn main() { println!(\"ok\"); }\n")
         .await.unwrap();
+    let evidence=crate::acceptance::inspect(&engine.settings,&writer).await.unwrap();
+    assert!(evidence.inspected&&evidence.satisfied,"test must use an actual Git witness");
+    writer.event("artifact_evidence_checked",evidence.summary,Some(evidence.json()));
     store.put(writer).await.unwrap();
     sdk.advance_task_team(root.id).await.unwrap();
     let view=sdk.task_team(root.id).await.unwrap();
@@ -256,7 +257,7 @@ async fn repository_team_requires_review_and_digest_approval_before_reviewer_see
     sdk.approve_task_team_patch(root.id,"writer",&preview.sha256).await.unwrap();
     assert_eq!(tokio::fs::read_to_string(engine.settings.workspace_dir
         .join(root.id.to_string()).join("main.rs")).await.unwrap(),
-        "fn main() { println!(\"ok\"); }\\n");
+        "fn main() { println!(\"ok\"); }\n");
     assert_eq!(tokio::fs::read_to_string(source.join("main.rs"))
         .await.unwrap(),"fn main() {}\n");
 
@@ -266,13 +267,26 @@ async fn repository_team_requires_review_and_digest_approval_before_reviewer_see
     assert!(reviewer.repository.is_some());
     assert_eq!(tokio::fs::read_to_string(engine.settings.workspace_dir
         .join(reviewer_id.to_string()).join("main.rs")).await.unwrap(),
-        "fn main() { println!(\"ok\"); }\\n");
+        "fn main() { println!(\"ok\"); }\n");
     assert!(sdk.approve_task_team_patch(root.id,"writer",&preview.sha256).await.is_err(),
         "the same approved patch must never be applied twice");
     let saved=sdk.get(root.id).await.unwrap();
     assert!(saved.in_flight.is_none());
     assert_eq!(saved.events.iter().filter(|e|e.kind=="team_patch_integrated").count(),1);
     assert_eq!(saved.events.iter().filter(|e|e.kind=="team_patch_apply_intent").count(),1);
+    let reviewed=sdk.wait(reviewer_id,Duration::from_secs(12)).await.unwrap();
+    assert_eq!(reviewed.status,RunStatus::Completed);
+    // Run Completed precedes the worker teardown and the parent-budget
+    // settlement. Do not remove worktrees while those tasks are active.
+    let mut settled=false;
+    for _ in 0..200{
+        if !engine.active.lock().await.contains(&reviewer_id)
+            && sdk.get(root.id).await.unwrap().settled_child_ids.contains(&reviewer_id){
+            settled=true;break;
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    assert!(settled,"reviewer must settle before test teardown");
     drop(sdk);drop(engine);drop(store);
     let worktrees=[root.id,writer_id,reviewer_id];
     for id in worktrees {
