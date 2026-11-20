@@ -1668,6 +1668,61 @@ mod tests {
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
+
+    #[tokio::test]
+    async fn hundred_owner_turns_keep_bounded_original_evidence_and_independent_cursors(){
+        let root=std::env::temp_dir().join(format!("dominion-room-100-{}",Uuid::new_v4()));
+        let groups=Groups::open(root.clone()).await.unwrap();
+        let mut room=groups.create(NewRoom{
+            topic:"Long multi-agent decision continuity".into(),
+            participants:vec![
+                Participant{name:"analyst".into(),role:"evidence".into(),economy:false},
+                Participant{name:"reviewer".into(),role:"audit".into(),economy:false},
+            ],
+            max_rounds:Some(50),budget_krw:Some(1000.0)
+        }).await.unwrap();
+        let note=|who:&str,text:String|Utterance{
+            speaker:who.into(),content:text,at_ms:now_ms(),model:None
+        };
+        for i in 0..100{
+            let owner=if i==0{
+                "Owner decision: remember project key ALPHA-17, retain original source evidence.".into()
+            }else if i==99{
+                "Final owner override: ALPHA-17 must remain unchanged; do not let peers rewrite it.".into()
+            }else{format!("Owner turn {i}: continue inspecting the original evidence")};
+            room.messages.push(note("user",owner));
+            let author=if i%2==0{"analyst"}else{"reviewer"};
+            room.messages.push(note(author,format!("Evidence note {i}: source trace recorded")));
+            room.read_cursors.insert(author.into(),RoomReadCursor{
+                next_unread_index:room.messages.len(),
+                last_reply_index:Some(room.messages.len()-1),
+                last_owner_index:Some(room.messages.len()-2),
+            });
+        }
+        let cap=2400;
+        let analyst=project_room_context(&room,&room.participants[0],cap);
+        let reviewer=project_room_context(&room,&room.participants[1],cap);
+        assert!(analyst.projected_chars<=cap);
+        assert!(reviewer.projected_chars<=cap);
+        assert!(analyst.omitted_messages>0,
+            "100 turns must not explode the model context");
+        assert!(analyst.text.contains("ALPHA-17"),
+            "original high-priority owner evidence must survive checkpointing");
+        assert!(analyst.text.contains("Final owner override"),
+            "latest real owner correction must stay in the rolling source window");
+        let serialized=serde_json::to_vec(&room).unwrap();
+        let restored:Room=serde_json::from_slice(&serialized).unwrap();
+        assert_eq!(room.read_cursors["analyst"].next_unread_index,198);
+        assert_eq!(room.read_cursors["reviewer"].next_unread_index,200);
+        assert_eq!(restored.unread_range("analyst"),198..200);
+        assert_eq!(restored.unread_range("reviewer"),200..200);
+        let after=project_room_context(&restored,&restored.participants[0],cap);
+        assert_eq!(analyst.text,after.text,
+            "the same original room source must project identical context after restart");
+        assert_eq!(analyst.checkpoint_end,after.checkpoint_end);
+        drop(groups);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
     #[tokio::test]
     async fn mention_selects_correct_participant() {
         let root=std::env::temp_dir().join(format!("dominion-room-{}",Uuid::new_v4()));

@@ -532,3 +532,12 @@ offers \`unified_run_events\`, \`unified_room_events\` and
 READ-ONLY projections: Run journals and original Room transcripts remain
 the authoritative effect/receipt sources; a Chat message is NOT a tool
 execution receipt and no UI/HTTP contract is changed.
+
+### 100-turn deterministic Room evidence regression
+
+The scoped group regression builds 100 owner turns with alternating agent
+replies and 2 independent cursors. It verifies bounded context projection,
+source-linked original owner evidence, latest authoritative owner correction,
+serializable cursor continuation and byte-identical projection after reload.
+This is a synthetic 100-turn CONTEXT/RECOVERY regression, not a claim that
+100 actual paid model answers passed a semantic recall benchmark.
