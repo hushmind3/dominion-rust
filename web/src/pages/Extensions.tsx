@@ -321,6 +321,8 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
         .includes(skillQuery.toLowerCase()),
   );
   const [edit, setEdit] = useState<any | null>(null),
+    [mcpBusy,setMcpBusy] = useState(false),
+    [discovery,setDiscovery] = useState<"idle"|"loading"|"done"|"failed">("idle"),
     [skillEdit, setSkillEdit] = useState<Partial<Skill> | null>(null),
     [tools, setTools] = useState<any[]>([]);
   const install = async (entry: any) => {
@@ -333,14 +335,25 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
     } catch (cause) {setError((cause as Error).message)}
   };
   const saveMcp = async () => {
-    if (!edit) return;
+    if (!edit || mcpBusy) return;
+    setError("");setMessage("");
+    const name=String(edit.name||"").trim();
+    const url=String(edit.url||"").trim();
+    if (!name || !/^https?:\/\/[^/\s]+/i.test(url)) {
+      setError(t('ext.connectionFormError'));
+      return;
+    }
+    setMcpBusy(true);
     try {
-      await post("/api/mcp", edit);
+      await post("/api/mcp", {...edit,name,url});
       setEdit(null);
-      mcp.reload();
+      await mcp.reload();
+      setMessage(t('ext.registeredHint'));
+      setDiscovery("idle");
+      setTools([]);
     } catch (e) {
       setError((e as Error).message);
-    }
+    } finally {setMcpBusy(false)}
   };
   const saveSkill = async () => {
     if (!skillEdit?.name) return;
@@ -380,48 +393,43 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
     }
   };
   const discover = async (silent = false) => {
+    if (discovery==="loading") return;
+    setDiscovery("loading");
+    if (!silent) {setError("");setMessage("")}
     try {
       setTools(await get("/api/mcp/discover"));
+      setDiscovery("done");
       if (!silent) setMessage(t('ext.toolsFound'));
     } catch (e) {
+      setDiscovery("failed");
+      setTools([]);
       if (!silent) setError((e as Error).message);
     }
   };
   useEffect(() => {
-    void discover(true);
+    if (tab==="installed") void discover(true);
   }, [tab]);
   return (
     <div className={embedded?"min-w-0":"mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8"}>
-      <Headline
-        eyebrow={t('ui.eyebrow.marketplace')}
-        title={t('ext.title')}
-        description={t('ext.description')}
-        actions={
-          <Action
-            variant="secondary"
-            onClick={() => {
-              setEdit({name:"",url:"",enabled:true});
-            }}
-          >
-            <Plus size={17} /> {t('ext.addMcp')}
-          </Action>
-        }
-      />
-      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] px-4 py-3 text-[11px] text-[#5C544A]">
-        <StatusLine label={t('ext.tab.servers')} value={mcp.value.length} />
-        <StatusLine
-          label={t('ext.tab.tools')}
-          value={tools.filter((t) => !t.error).length}
-        />
-        <StatusLine
-          label={t('ext.tab.skills')}
-          value={
-            skills.value.filter((s) => s.enabled).length +
-            "/" +
-            skills.value.length
-          }
-        />
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          {embedded ?
+            <><h2 className="text-lg font-bold text-[#24211D]">
+              {tab==="market"?t('ext.recommendedTools'):tab==="installed"?t('ext.connectedServers'):t('ext.tab.skills')}
+            </h2><p className="mt-1 text-[13px] leading-6 text-[#7C7469]">{t('ext.description')}</p></> :
+            <Headline eyebrow={t('ui.eyebrow.marketplace')} title={t('ext.title')} description={t('ext.description')}/>}
+        </div>
+        {tab!=="skills"&&<Action variant="secondary" onClick={()=>{setError("");setEdit({name:"",url:"",enabled:true})}}>
+          <Plus size={17}/> {t('ext.addMcp')}
+        </Action>}
       </div>
+      {(tab==="installed"||tab==="skills")&&<div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] px-4 py-3 text-[11px] text-[#5C544A]">
+        {tab==="installed"&&<>
+          <StatusLine label={t('ext.tab.servers')} value={mcp.value.length}/>
+          <StatusLine label={t('ext.tab.tools')} value={discovery==="done"?tools.filter(item=>!item.error).length:t('ext.checkConnection')}/>
+        </>}
+        {tab==="skills"&&<StatusLine label={t('ext.tab.skills')} value={skills.value.filter(item=>item.enabled).length+"/"+skills.value.length}/>}
+      </div>}
       {!embedded&&<div className="mb-6 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3">
         <Button
           variant={tab === "market" ? "primary" : "ghost"}
@@ -514,8 +522,8 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
           <Subheading
             title={t('ext.connectedServers')}
             extra={
-              <Action variant="secondary" onClick={discover}>
-                <Activity size={16} /> {t('ext.toolSearch')}
+              <Action variant="secondary" disabled={discovery==="loading"} onClick={()=>void discover()}>
+                <Activity size={16} /> {discovery==="loading"?t('ext.checking'):t('ext.toolSearch')}
               </Action>
             }
           />
@@ -534,17 +542,15 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                     {x.url}
                   </p>
                 </div>
-                <StateTag
-                  online={Boolean(
-                    tools.find((t) => t.mcpId === x.id && !t.error),
-                  )}
-                >
+                <StateTag online={x.enabled&&tools.some(tool=>tool.mcpId===x.id&&!tool.error)}>
                   {(() => {
-                    const own = tools.filter((t) => t.mcpId === x.id);
-                    const ok = own.filter((t) => !t.error).length;
-                    if (ok) return t('ext.connectedTools', { count: ok });
-                    if (own.some((t) => t.error)) return t('ext.connectionFailed');
-                    return tools.length ? t('ext.checkConnection') : t('ext.checking');
+                    if (!x.enabled) return t('ext.disabled')
+                    const own=tools.filter(tool=>tool.mcpId===x.id)
+                    const ok=own.filter(tool=>!tool.error).length
+                    if (ok) return t('ext.connectedTools',{count:ok})
+                    if (own.some(tool=>tool.error)) return t('ext.connectionFailed')
+                    if (discovery==="loading") return t('ext.checking')
+                    return t('ext.checkConnection')
                   })()}
                 </StateTag>
                 <Button
@@ -552,6 +558,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                   variant="ghost"
                   title={t('ext.settings')}
                   onClick={() => {
+                    setError("");
                     setEdit(x);
                   }}
                 >
@@ -560,12 +567,17 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                 <Button
                   size="icon"
                   variant="ghost"
+                  aria-label={t('ext.remove')}
                   title={t('ext.remove')}
                   onClick={async () => {
-                    if (confirm(t('ext.confirmRemove'))) {
-                      await del("/api/mcp/" + x.id);
-                      mcp.reload();
-                    }
+                    if (!confirm(t('ext.confirmRemove'))) return;
+                    setError("");setMessage("");
+                    try {
+                      await del("/api/mcp/" + encodeURIComponent(x.id));
+                      await mcp.reload();
+                      setTools([]);
+                      setDiscovery("idle");
+                    } catch (cause) {setError((cause as Error).message)}
                   }}
                 >
                   <Trash2 size={17} />
@@ -631,18 +643,25 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                 />
               </FormField>
               <FormField label={t('ext.url')}>
-                <TextInput value={edit.url || ""} onChange={(e)=>setEdit({...edit,url:e.target.value})}/>
+                <TextInput type="url" autoComplete="url" required value={edit.url || ""}
+                  placeholder="https://example.com/mcp" onChange={(e)=>setEdit({...edit,url:e.target.value})}/>
               </FormField>
-              <FormField label={t('ext.bearer')}>
-                <TextInput type="password" value={edit.bearerToken || ""} onChange={(e)=>setEdit({...edit,bearerToken:e.target.value})} placeholder={t('ext.optional')}/>
+              <FormField label={t('ext.bearer')} hint={edit.id?t('ext.credentialHint'):undefined}>
+                <TextInput type="password" autoComplete="new-password" value={edit.bearerToken || ""}
+                  onChange={(e)=>setEdit({...edit,bearerToken:e.target.value})} placeholder={t('ext.optional')}/>
               </FormField>
+              <label className="flex items-center gap-2 text-sm text-[#4A443C]">
+                <TextInput type="checkbox" checked={edit.enabled!==false}
+                  onChange={event=>setEdit({...edit,enabled:event.target.checked})}/>
+                {t('ext.enabled')}
+              </label>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
               <Action variant="secondary" onClick={() => setEdit(null)}>
                 {t('ext.cancel')}
               </Action>
-              <Action onClick={saveMcp}>
-                <Check size={16} /> {t('ext.save')}
+              <Action disabled={mcpBusy} onClick={()=>void saveMcp()}>
+                <Check size={16} /> {mcpBusy?t('common.processing'):t('ext.save')}
               </Action>
             </div>
           </DialogPanel>
