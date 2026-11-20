@@ -1,0 +1,9 @@
+[package]
+name = "dominion-agent-algo"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Replaceable agent-loop policy without I/O or execution privileges"
+
+[dependencies]
+dominion-agent-core = { path = "../dominion-agent-core" }

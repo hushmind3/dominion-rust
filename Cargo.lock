@@ -278,6 +278,8 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chacha20poly1305",
+ "dominion-agent-algo",
+ "dominion-agent-core",
  "futures-core",
  "reqwest",
  "serde",
@@ -290,6 +292,17 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
 ]
+
+[[package]]
+name = "dominion-agent-algo"
+version = "0.1.0"
+dependencies = [
+ "dominion-agent-core",
+]
+
+[[package]]
+name = "dominion-agent-core"
+version = "0.1.0"
 
 [[package]]
 name = "errno"

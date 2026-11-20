@@ -11,6 +11,7 @@ on:
       - 'scripts/**'
       - 'benchmarks/**'
       - 'Cargo.toml'
+      - 'crates/**'
       - 'Cargo.lock'
       - '.github/workflows/sub4-dev-rust.yml'
   workflow_dispatch:
@@ -77,6 +78,8 @@ jobs:
         run: cargo check --locked --all-targets
       - name: Real backend unit/integration-path regressions
         run: cargo test --locked --lib
+      - name: Independent kernel/algorithm crate contracts
+        run: cargo test --locked -p dominion-agent-core -p dominion-agent-algo
       - name: Coding benchmark CLI contract
         run: cargo test --locked --bin dominion_coding_eval
       - name: Deterministic benchmark harness

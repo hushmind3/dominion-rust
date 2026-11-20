@@ -336,3 +336,30 @@ unless it is byte-for-byte equal (as JSON `Value`) to a previously
 operator-authorized catalog entry. Duplicate names are rejected even when
 the schema is identical. The final answer's audit condition is also fixed
 in the runtime rather than allowing a pluggable strategy to redefine PASS.
+
+## 2026-11-20 — Cargo Workspace, actual agent loop ownership
+
+The native package is now a **three-member Cargo workspace**. The production
+`dominion` binary remains the product/SDK/gateway composition root (all HTTP
+paths and UI remain unchanged). `crates/dominion-agent-core` is a no-dependency
+foundation crate with the immutable `TurnSnapshot`, `LoopStep` and
+object-safe `AgentLoop` contract. `crates/dominion-agent-algo` depends
+only on that foundation and provides the independently testable `ReActLoop`
+controller. The product depends on both; **neither crate depends on the
+product, persistence, provider, UI or external tools**.
+
+The *single real* `Engine::drive` and tool-free chat loop move from
+`src/engine.rs` into `src/algorithms/runner.rs`, preserving all
+receipts, approvals, billing and re-entry semantics. The algorithm determines
+phase precedence (pending approval, native program continuation, queued tool,
+fused/dedicated planning, max steps, model round), while the engine owns
+`perform_tool` and its durable journal, policy and side effects.
+
+The structure is intentionally honest: the real loop is now physically in
+the algorithms module and its pure control policy is in an independent crate,
+**but the loop's async body still implements `Engine` in the product crate**,
+so complete process-level/ABI isolation is a later boundary. Moving it to a
+separate distributable crate will require decoupling `Engine` from
+`ProductHost`/Deref and moving `Run`/repository adapter types to foundation.
+`Cargo.lock` lists all workspace packages, and CI checks the independent
+crate contracts. No WASM sandbox is claimed or implicitly enabled.

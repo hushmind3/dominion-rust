@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/dominion-agent-core", "crates/dominion-agent-algo"]
+resolver = "2"
+
 [package]
 name = "dominion"
 default-run = "dominion"
@@ -7,6 +11,8 @@ description = "Dominion autonomous execution engine"
 license = "Apache-2.0"
 
 [dependencies]
+dominion-agent-core = { path = "crates/dominion-agent-core" }
+dominion-agent-algo = { path = "crates/dominion-agent-algo" }
 axum = { version = "0.8", features = ["json", "macros"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

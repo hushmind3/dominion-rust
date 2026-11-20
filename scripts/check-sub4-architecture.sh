@@ -13,9 +13,16 @@ required_count() {
 # Only the strict provider-view projection is a supported production surface.
 required_count src/algorithms/context.rs '^[[:space:]]*pub fn compact_strict\(' 1
 required_count src/algorithms/context.rs '^[[:space:]]*pub fn compact\(' 0
+# The single executable ReAct loop is outside the engine source.
+required_count src/algorithms/runner.rs 'LoopStep::ModelTurn' 1
+required_count src/engine.rs 'LoopStep::|TurnSnapshot' 0
+required_count src/engine.rs 'pub[(]crate[)] loop_driver:Arc<dyn' 1
+required_count crates/dominion-agent-core/src/lib.rs 'pub trait AgentLoop' 1
+required_count crates/dominion-agent-algo/src/lib.rs 'impl AgentLoop for ReActLoop' 1
 # Native Run, its single real tool dispatch, and durable journal retain control.
-required_count src/engine.rs '^[[:space:]]*async fn drive\(' 1
-required_count src/engine.rs '^[[:space:]]*async fn perform_tool\(' 1
+required_count src/engine.rs '^[[:space:]]*async fn drive\(' 0
+required_count src/algorithms/runner.rs '^[[:space:]]*pub[(]crate[)] async fn drive\(' 1
+required_count src/engine.rs '^[[:space:]]*pub[(]crate[)] async fn perform_tool\(' 1
 required_count src/journal.rs '^[[:space:]]*pub fn begin\(' 1
 # The kernel owns business-state transitions, not the DB or filesystem
 # durability implementation. File I/O is an infrastructure adapter.

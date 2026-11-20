@@ -35,9 +35,19 @@ impl Engine{
     pub fn new_with_algorithm(settings:Settings,backend:Arc<dyn RunRepository>,
         groups:Arc<Groups>,mcp:Arc<Mcp>,algorithm:Arc<dyn AgentAlgorithm>)
         ->Result<Arc<Self>,String>{
+        Self::new_with_algorithm_and_loop(settings,backend,groups,mcp,
+            algorithm,Arc::new(dominion_agent_algo::ReActLoop))
+    }
+    /// Inject a custom pure loop policy into the runtime. Its decisions
+    /// still pass the kernel's mandatory authorization/state gate.
+    pub fn new_with_algorithm_and_loop(settings:Settings,
+        backend:Arc<dyn RunRepository>,groups:Arc<Groups>,mcp:Arc<Mcp>,
+        algorithm:Arc<dyn AgentAlgorithm>,
+        loop_driver:Arc<dyn dominion_agent_core::AgentLoop>)
+        ->Result<Arc<Self>,String>{
         let product=super::ProductHost::open(&settings,groups,mcp)?;
-        Engine::from_ports(settings,Arc::new(RunStorePort::new(backend)),
-            product,algorithm)
+        Engine::from_ports_with_loop(settings,
+            Arc::new(RunStorePort::new(backend)),product,algorithm,loop_driver)
     }
 }
 /// Operator-owned optional prompt profile. No Run can read arbitrary files
