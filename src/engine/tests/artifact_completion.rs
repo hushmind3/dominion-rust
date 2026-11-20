@@ -9,8 +9,9 @@ async fn false_then_repair_model(State((steps,repair)):State<ModelState>,
     Json(input):Json<Value>)->Json<Value>{
     let step=steps.fetch_add(1,Ordering::SeqCst);
     let correction_seen=input["messages"].as_array().is_some_and(|messages|
-        messages.iter().any(|m|m["role"]=="user"&&m["content"].as_str()
-            .is_some_and(|s|s.contains("No changed source or artifact files"))));
+        messages.iter().any(|m|m["role"]=="assistant"&&m["content"].as_str()
+            .is_some_and(|s|s.starts_with("Verifier requested corrections.")
+                &&s.contains("No changed source or artifact files"))));
     if step==0{
         let names=input["tools"].as_array().unwrap().iter()
             .filter_map(|t|t.pointer("/function/name").and_then(Value::as_str))
