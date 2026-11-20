@@ -249,7 +249,7 @@ test('DOMINION Cloud scopes GPT-5.6 cache routes independently per chat within t
   observed.push({key:payload.prompt_cache_key,scope:payload.prompt_cache_options?.mode});
   return new Response(JSON.stringify({choices:[{message:{role:'assistant',content:'ok'}}],
     usage:{prompt_tokens:20,completion_tokens:4,
-      prompt_tokens_details:{cached_tokens:0}}}),{status:200});
+      prompt_tokens_details:{cached_tokens:0,cache_write_tokens:0}}}),{status:200});
  };
  const post=affinity=>new Request('https://dominion-cloud.example.test/v1/chat/completions',{
   method:'POST',headers:{origin,authorization:auth,'content-type':'application/json',
@@ -293,7 +293,7 @@ test('exact native cache boundary overrides heuristic and excludes newest questi
   return new Response(JSON.stringify({
    choices:[{message:{role:'assistant',content:'answer'}}],
    usage:{prompt_tokens:60,completion_tokens:4,
-    prompt_tokens_details:{cached_tokens:0}}}),{status:200})
+    prompt_tokens_details:{cached_tokens:0,cache_write_tokens:0}}}),{status:200})
  }
  const call=(anchor)=>new Request('https://dominion-cloud.example.test/v1/chat/completions',{
   method:'POST',headers:{
@@ -315,5 +315,38 @@ test('exact native cache boundary overrides heuristic and excludes newest questi
    'last changing user turn must never become an explicit cache write')
   assert.equal(calls[1].messages[4].content[0].prompt_cache_breakpoint.mode,'explicit',
    'invalid anchor retains old-client deterministic stable-profile fallback')
+ }finally{globalThis.fetch=old}
+})
+
+test('explicit GPT-6 cache receipt missing cache-write counter remains uncertain, never zero-priced',async()=>{
+ const DB=database(2000000),env=configured(DB),old=globalThis.fetch
+ env.PAID_MODELS_JSON=JSON.stringify([{
+  id:'dominion/missing-writes',provider:'openai',upstream_model:'gpt-6',
+  input_micro_krw:20,cached_input_micro_krw:2,
+  cache_write_micro_krw:25,output_micro_krw:3
+ }])
+ let called=0
+ globalThis.fetch=async()=>{
+  called++
+  return new Response(JSON.stringify({choices:[{message:{role:'assistant',content:'uncertain'}}],
+   usage:{prompt_tokens:40,completion_tokens:2,
+    prompt_tokens_details:{cached_tokens:10}}}),{status:200})
+ }
+ try{
+  const response=await worker.fetch(endpoint({
+   model:'dominion/missing-writes',
+   messages:[
+    {role:'system',content:'fixed assistant'},
+    {role:'user',content:'USER-SUPPLIED AGENT PROFILE and stable historical text'},
+    {role:'user',content:'changing user question'}],
+   max_tokens:6
+  }),env)
+  assert.equal(called,1)
+  assert.equal(response.status,503)
+  const body=await response.json()
+  assert.equal(body.reconciliationRequired,true)
+  const receipt=[...DB.state.usage.values()][0]
+  assert.equal(receipt.status,'uncertain')
+  assert.equal(receipt.charged,receipt.reserved)
  }finally{globalThis.fetch=old}
 })

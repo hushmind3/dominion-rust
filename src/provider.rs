@@ -268,7 +268,8 @@ impl ModelClient {
                 if content.trim().is_empty(){None}else{Some(content)}
             }).ok_or("Responses provider returned no assistant output text")?;
         let (input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,
-             usage_reported,cache_usage_reported)=openai_compatible_usage(&raw);
+             usage_reported,read_cache_known)=openai_compatible_usage(&raw);
+        let cache_usage_reported=reliable_cache_read_write_receipt(&raw,settings,read_cache_known);
         let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,
             cache_write_tokens,output_tokens);
         Ok(StatefulReply{
@@ -386,7 +387,8 @@ impl ModelClient {
         message.as_object_mut().unwrap().retain(|key, _| ["role", "content", "tool_calls"].contains(&key.as_str()));
         // Accept both Chat Completions and Responses-style gateway usage keys.
         let (input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,
-             usage_reported,cache_usage_reported)=openai_compatible_usage(&raw);
+             usage_reported,read_cache_known)=openai_compatible_usage(&raw);
+        let cache_usage_reported=reliable_cache_read_write_receipt(&raw,settings,read_cache_known);
         let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens);
         Ok(Reply { message, text, calls, input_tokens, cached_input_tokens,
             cache_write_tokens,cache_usage_reported,usage_reported,output_tokens,cost_krw,
@@ -674,6 +676,18 @@ fn openai_compatible_usage(raw:&Value)->(u64,u64,u64,u64,bool,bool){
         .min(input.saturating_sub(cached));
     (input,output,cached,written,reported,raw_cache.is_some())
 }
+/// For first-party GPT-5.6+ explicit cache accounting, knowing only
+/// cache READ tokens does not establish that cache WRITE cost was zero.
+/// Legacy providers without a separate write tariff retain their original
+/// read-cache receipt semantics.
+fn reliable_cache_read_write_receipt(raw:&Value,settings:&ModelSettings,read_known:bool)->bool{
+    if !read_known{return false;}
+    if settings.base_url!="https://api.openai.com/v1"
+        ||!openai_explicit_cache_model(&settings.name){return true;}
+    raw.pointer("/usage/prompt_tokens_details/cache_write_tokens")
+        .or_else(||raw.pointer("/usage/input_tokens_details/cache_write_tokens"))
+        .and_then(Value::as_u64).is_some()
+}
 /// Explicit breakpoints are a GPT-5.6+ 2026 provider contract, not a
 /// generic OpenAI-compatible option. Never attach an unsupported request
 /// extension to local, proxy, or older API backends.
@@ -945,6 +959,25 @@ mod tests {
         assert!(native[1]["content"][0].get("cache_control").is_none());
         let (_,proxy)=anthropic_messages(&history,false).unwrap();
         assert!(proxy[0]["content"][0].get("cache_control").is_none());
+    }
+    #[test]
+    fn modern_explicit_cache_receipt_requires_both_read_and_write_counters(){
+        let mut cfg=Settings::from_env().unwrap().main;
+        cfg.name="gpt-6".into();
+        cfg.base_url="https://api.openai.com/v1".into();
+        let partial=json!({"usage":{"prompt_tokens":120,"completion_tokens":9,
+            "prompt_tokens_details":{"cached_tokens":60}}});
+        assert!(!reliable_cache_read_write_receipt(&partial,&cfg,true));
+        let complete=json!({"usage":{"prompt_tokens":120,"completion_tokens":9,
+            "prompt_tokens_details":{"cached_tokens":60,"cache_write_tokens":0}}});
+        assert!(reliable_cache_read_write_receipt(&complete,&cfg,true));
+        cfg.name="gpt-5.5".into();
+        assert!(reliable_cache_read_write_receipt(&partial,&cfg,true),
+            "legacy provider read-cache accounting does not require a write counter");
+        cfg.name="gpt-6".into();
+        cfg.base_url="http://127.0.0.1:11434/v1".into();
+        assert!(reliable_cache_read_write_receipt(&partial,&cfg,true),
+            "local compatibles must not inherit first-party billing claims");
     }
     #[test]
     fn latest_openai_cache_breakpoints_pin_stable_chat_prefix_and_strip_annotations(){

@@ -628,12 +628,16 @@ async function proxy(request, env, user) {
   let charge = reserve, status = 'uncertain';
   let result = { error: 'Model usage pending reconciliation' };
   try {
+    const supplierBody=await paidSupplierBody(body,selected,user,modelEndpoint,upstreamModel,maxTokens,
+      request.headers.get('x-dominion-chat-affinity'),
+      request.headers.get('x-dominion-cache-anchor'));
+    const explicitWriteEligible=supplierBody.prompt_cache_options?.mode==='explicit' &&
+      supplierBody.messages?.some(message=>Array.isArray(message.content)&&
+        message.content.some(block=>block.prompt_cache_breakpoint?.mode==='explicit'));
     const upstream = await fetch(modelEndpoint.replace(/\/$/, '') + '/chat/completions', {
       method: 'POST',
       headers: { authorization: 'Bearer ' + modelKey, 'content-type': 'application/json' },
-      body: JSON.stringify(await paidSupplierBody(body,selected,user,modelEndpoint,upstreamModel,maxTokens,
-        request.headers.get('x-dominion-chat-affinity'),
-        request.headers.get('x-dominion-cache-anchor'))),
+      body: JSON.stringify(supplierBody),
       signal: AbortSignal.timeout(90000)
     });
     if (!upstream.ok) {
@@ -648,10 +652,18 @@ async function proxy(request, env, user) {
     const input = result.usage?.prompt_tokens, output = result.usage?.completion_tokens;
     if (!Number.isSafeInteger(input) || !Number.isSafeInteger(output) || input < 0 || output < 0)
       throw new Error('Upstream usage unavailable');
-    const cached = result.usage?.prompt_tokens_details?.cached_tokens ??
-      result.usage?.input_tokens_details?.cached_tokens ?? 0;
-    const writes = result.usage?.prompt_tokens_details?.cache_write_tokens ??
-      result.usage?.input_tokens_details?.cache_write_tokens ?? 0;
+    const rawCached = result.usage?.prompt_tokens_details?.cached_tokens ??
+      result.usage?.input_tokens_details?.cached_tokens;
+    const rawWrites = result.usage?.prompt_tokens_details?.cache_write_tokens ??
+      result.usage?.input_tokens_details?.cache_write_tokens;
+    // Never settle a first-party explicit cache WRITE as a free 0-token
+    // event when the supplier omitted its billed write count. A missing
+    // receipt retains the bounded uncertain reservation for reconciliation.
+    if (explicitWriteEligible &&
+        (!Number.isSafeInteger(rawCached)||!Number.isSafeInteger(rawWrites)))
+      throw new Error('Provider omitted first-party explicit cache billing counters');
+    const cached=rawCached??0;
+    const writes=rawWrites??0;
     if (![cached,writes].every(v=>Number.isSafeInteger(v)&&v>=0) ||
       cached+writes>input)throw new Error('Invalid upstream cache usage');
     const measured = (input-cached-writes)*inputPrice +
