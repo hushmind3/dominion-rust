@@ -279,6 +279,57 @@ mod tests{
         assert!(BridgeRegistry::disabled().definitions().is_empty());
         assert!(BridgeRegistry::checked_executable(Path::new("codex")).is_err());
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_claude_cli_disables_all_tools_and_uses_json_result(){
+        use std::os::unix::fs::PermissionsExt;
+        use crate::{domain::{CreateRun,Run},store::Store};
+        let root=std::env::temp_dir().join(format!("dominion-claude-bridge-{}",Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let binary=root.join("fake-claude.sh");
+        std::fs::write(&binary,concat!(
+            "#!/bin/sh\n",
+            "test \"$1\" = '-p' || exit 11\n",
+            "test \"$2\" = '--output-format' || exit 12\n",
+            "test \"$3\" = 'json' || exit 13\n",
+            "test \"$4\" = '--tools' || exit 14\n",
+            "test -z \"$5\" || exit 15\n",
+            "test \"$6\" = '--permission-mode' || exit 16\n",
+            "test \"$7\" = 'dontAsk' || exit 17\n",
+            "cat >/dev/null\n",
+            "echo '{\"type\":\"result\",\"result\":\"Claude advisory fixture\",\"is_error\":false}'\n"
+        )).unwrap();
+        let mut perms=std::fs::metadata(&binary).unwrap().permissions();
+        perms.set_mode(0o700);std::fs::set_permissions(&binary,perms).unwrap();
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Arc::new(RunStorePort::new(Arc::new(
+            Store::open(root.join("runs")).await.unwrap())));
+        let mut run=Run::new(CreateRun{instruction:"Review external plan".into(),
+            budget_krw:Some(100.0),max_steps:Some(2)},2).unwrap();
+        let id=run.id;
+        let call=ToolCall{id:"claude-1".into(),name:TOOL.into(),
+            arguments:json!({"provider":"claude","prompt":"Assess this change"})};
+        run.in_flight=Some(call.clone());
+        store.put(run).await.unwrap();
+        let bridge=BridgeRegistry::test_binary(Provider::Claude,&binary);
+        let (_tx,rx)=watch::channel(false);
+        let receipt=bridge.execute(&settings,&store,id,&call,rx).await.unwrap();
+        match receipt{
+            ToolEffectOutcome::Settled(Ok(text))=>{
+                let body:Value=serde_json::from_str(&text).unwrap();
+                assert_eq!(body["answer"],"Claude advisory fixture");
+                assert_eq!(body["source"],"external_agent_advisory");
+            },
+            other=>panic!("Claude adapter did not preserve tool-free restrictions: {other:?}")
+        }
+        assert_eq!(store.get(id).await.unwrap().events.iter()
+            .filter(|e|e.kind=="external_agent_unmetered").count(),1);
+        let _=tokio::fs::remove_dir_all(root).await;
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_codex_cli_requires_journal_intent_and_returns_bounded_receipt(){
