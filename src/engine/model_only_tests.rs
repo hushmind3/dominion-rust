@@ -45,6 +45,26 @@ async fn wait_terminal(engine:&Engine,id:Uuid)->Run{
  }).await.unwrap()
 }
 #[tokio::test]
+async fn model_only_chat_keeps_role_preserving_context_but_never_tools(){
+ let (engine,requests,root,server)=fixture(0).await;
+ let mut run=Run::new(CreateRun{instruction:"latest owner question".into(),
+   budget_krw:Some(200.0),max_steps:Some(3)},3).unwrap();
+ run.model_only=true;
+ run.chat_context=vec![
+  json!({"role":"user","content":"stable operator profile","dominion_cache_anchor":true}),
+  json!({"role":"user","content":"first question","dominion_cache_anchor":true}),
+  json!({"role":"assistant","content":"earlier answer"})
+ ];
+ let id=run.id;engine.store.put(run).await.unwrap();
+ engine.launch(id).await.unwrap();
+ let done=wait_terminal(&engine,id).await;
+ assert_eq!(done.status,RunStatus::Completed);
+ assert_eq!(requests.requests.load(Ordering::SeqCst),1);
+ assert_eq!(done.chat_context[2]["role"],"assistant");
+ assert_eq!(done.instruction,"latest owner question");
+ server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
+}
+#[tokio::test]
 async fn model_only_chat_uses_native_worker_once_and_records_usage(){
  let (engine,requests,root,server)=fixture(25).await;
  let mut run=Run::new(CreateRun{instruction:"Answer using no tools".into(),

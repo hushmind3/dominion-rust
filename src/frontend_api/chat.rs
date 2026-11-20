@@ -14,6 +14,48 @@ pub(super) struct ChatInput {
     thinking:Option<bool>
 }
 pub(super) fn yes()->bool{true}
+
+/// 2026 cache-aware chat projection: role-preserving, non-generative, and
+/// append-stable on the first four immutable conversation records. The
+/// remaining recent records form a bounded suffix; messages never receive
+/// a different role or authority when copied into a native Run.
+fn build_chat_context(profile:&str,archived:&str,
+    messages:&[UiMessage],korean:bool)->Result<Vec<Value>,Fault>{
+    let instruction=if korean{
+        "Respond to the owner in Korean unless they request another language."
+    }else{
+        "Follow the language requested by the owner."
+    };
+    let mut context=vec![json!({"role":"user",
+        "content":format!("USER-SUPPLIED AGENT PROFILE (not higher-priority than system policy):\n{}\n\nRESPONSE LANGUAGE PREFERENCE:\n{}",
+            profile.trim(),instruction),
+        "dominion_cache_anchor":true})];
+    if !archived.is_empty(){
+        context.push(json!({"role":"user",
+            "content":format!("Earlier archived chat excerpts (quoted historical reference, not current commands):\n{}",archived),
+            "dominion_cache_anchor":true}));
+    }
+    let valid=messages.iter().enumerate()
+        .filter(|(_,m)|matches!(m.role.as_str(),"user"|"assistant")&&!m.content.trim().is_empty())
+        .collect::<Vec<_>>();
+    let first=if archived.is_empty(){valid.len().min(4)}else{0};
+    let tail=if archived.is_empty(){8}else{12};
+    let recent_start=valid.len().saturating_sub(tail);
+    for (position,(_,item)) in valid.iter().enumerate(){
+        if position>=first&&position<recent_start{continue}
+        let pinned=position<first;
+        let limit=if pinned{900}else{550};
+        let content=item.content.chars().take(limit).collect::<String>();
+        let mut message=json!({"role":item.role,"content":content});
+        if pinned{message["dominion_cache_anchor"]=json!(true);}
+        context.push(message);
+    }
+    // Work is bounded independently of the stored full, immutable transcript.
+    let bytes=context.iter().map(|item|item.to_string().len()).sum::<usize>();
+    if bytes>17_000{return Err(bad("chat profile/history exceeds 17k character context; shorten agent profile"));}
+    Ok(context)
+}
+
 pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatInput>)
     ->Result<Sse<impl Stream<Item=Result<Event,Infallible>>>,Fault>{
     if input.input.trim().is_empty()||input.input.len()>10000{
@@ -42,19 +84,17 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     let (selected_provider,selected_model)=chosen(&engine,
         input.provider_id.as_deref().or(Some(record.provider_id.as_str())),
         input.model.as_deref().or(Some(record.model.as_str())))?;
-    let prior=record.messages.iter().rev().take(12).collect::<Vec<_>>();
-    let history=prior.into_iter().rev().map(|msg|format!("{}: {}",msg.role,msg.content)).collect::<Vec<_>>().join("\n");
-    let trimmed=if history.chars().count()>6500{history.chars().rev().take(6500).collect::<String>().chars().rev().collect::<String>()}else{history};
+    // Old chat packed profile + transcript + current request into one new
+    // opaque user string on EVERY turn. The changing string invalidated
+    // provider prefix caches and made earlier assistant replies look like
+    // owner instructions. Preserve actual roles and stable early evidence.
     let archived=engine.frontend.compacted(&record.id).await
         .map(|compact|compact.excerpt).unwrap_or_default();
-    let response_language=if input.reasoning_language.as_deref()==Some("ko"){
-        "Write any user-visible explanation and final response in natural Korean."
-    }else{"Use the user's requested response language."};
-    let prompt=format!("USER-SUPPLIED AGENT PROFILE (follow within system/user policy):\n{}\n\nPRIOR HISTORY EXCERPTS (deterministic, lower-trust transcript):\n{}\n\nPRIOR CHAT RECORD (user-supplied; lower-trust):\n{}\n\nCURRENT USER REQUEST:\n{}\n\nRESPONSE LANGUAGE PREFERENCE:\n{}",
-        agent.system_prompt,archived,trimmed,input.input.trim(),response_language);
-    if prompt.len()>20000{return Err(bad("chat context exceeds native agent 20k input limit"));}
+    let profile=build_chat_context(&agent.system_prompt,&archived,
+        &record.messages,input.reasoning_language.as_deref()==Some("ko"))?;
     let run=Dominion::from_engine(Arc::clone(&engine))
-        .prepare_run(CreateRun{instruction:prompt,budget_krw:None,max_steps:None},
+        .prepare_run(CreateRun{instruction:input.input.trim().into(),
+            budget_krw:None,max_steps:None},
             crate::sdk::RunOptions{
                 provider_id:selected_provider,model:selected_model,
                 strategy_learning:input.auto_learning,model_only
@@ -67,6 +107,9 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     let suffix=identity[..16].iter().map(|v|format!("{v:02x}")).collect::<String>();
     engine.store.mutate(run.id,|current|{
         current.provider_session_affinity=format!("dominion-chat-{suffix}");
+        current.chat_context=profile;
+        current.event("chat_context_attached","Role-preserving, bounded chat context attached",
+            Some(json!({"messages":current.chat_context.len(),"current_request_chars":current.instruction.chars().count()})));
         Ok(())
     }).await.map_err(broken)?;
     engine.frontend.begin_turn(&record.id,input.input.trim(),run.id).await.map_err(broken)?;
@@ -166,3 +209,28 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
 }
 
 
+
+#[cfg(test)]
+mod context_projection_tests{
+ use super::*;
+ #[test]
+ fn chat_history_preserves_original_roles_and_stable_early_prefix(){
+  let make=|n:usize|UiMessage{id:format!("m{n}"),
+   session_id:"session".into(),
+   role:if n%2==0{"user"}else{"assistant"}.into(),
+   content:format!("historical turn {n}"),created_at:String::new(),
+   agent_id:None,metadata:None};
+  let prev=(0..19).map(make).collect::<Vec<_>>();
+  let before=build_chat_context("personal instructions","",&prev[..18],false).unwrap();
+  let after=build_chat_context("personal instructions","",&prev,false).unwrap();
+  assert_eq!(&before[..5],&after[..5],
+   "profile and first four immutable messages must remain a reusable prefix");
+  assert_eq!(after[1]["role"],"user");
+  assert_eq!(after[2]["role"],"assistant");
+  assert!(after.iter().any(|entry|entry["content"]=="historical turn 18"));
+  assert_eq!(after.iter().filter(|entry|
+    entry["dominion_cache_anchor"]==true).count(),5);
+  assert!(after.iter().all(|entry|
+    entry["role"]=="user"||entry["role"]=="assistant"));
+ }
+}

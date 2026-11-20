@@ -253,10 +253,11 @@ impl Engine {
         let run=self.store.get(id).await.ok_or("execution not found")?;
         if run.status!=RunStatus::Running||!run.model_only{return Ok(());}
         let selected=self.model_for_run(&run)?;
-        let messages=vec![
+        let mut messages=vec![
             json!({"role":"system","content":"Respond to the user's chat request accurately and directly. Do not claim to have executed tools or accessed files. No tools are available during this turn."}),
-            json!({"role":"user","content":run.instruction}),
         ];
+        messages.extend(run.chat_context.iter().cloned());
+        messages.push(json!({"role":"user","content":run.instruction}));
         self.providers.throttle(&run.provider_id).await;
         let reply=tokio::select!{
             biased;
@@ -448,9 +449,20 @@ impl Engine {
                     if current.status!=RunStatus::Running || current.plan.is_some(){return Ok(());}
                     current.plan=Some(String::new());
                     current.messages.insert(0,json!({"role":"system","content":SYSTEM}));
-                    current.messages.insert(1,json!({"role":"user","content":format!(
-                        "Request:\n{}\nPlan briefly within your first execution response and start with concrete tools when appropriate. No separate planning turn is required.",
-                        current.instruction)}));
+                    if current.chat_context.is_empty(){
+                        current.messages.insert(1,json!({"role":"user","content":format!(
+                            "Request:\n{}\nPlan briefly within your first execution response and start with concrete tools when appropriate. No separate planning turn is required.",
+                            current.instruction)}));
+                    }else{
+                        // The early profile is a normal user-level reference,
+                        // never promoted into the native system instructions.
+                        // Preserve prior user/assistant roles and cache markers.
+                        let mut prior=current.chat_context.clone();
+                        prior.push(json!({"role":"user","content":format!(
+                            "New user instruction: {}\nPlan briefly and use concrete tools only when needed.",
+                            current.instruction)}));
+                        current.messages.splice(1..1,prior);
+                    }
                     current.event("planning_fused",
                         "Initial planning folded into the tool-capable model turn (zero additional model calls)",None);
                     Ok(())
@@ -489,6 +501,17 @@ impl Engine {
                         return Ok(());
                     }
                     run.plan = Some(reply.text.clone());
+                    if !run.chat_context.is_empty(){
+                        run.plan=Some(reply.text.clone());
+                        let mut next=vec![json!({"role":"system","content":SYSTEM})];
+                        next.extend(run.chat_context.iter().cloned());
+                        next.push(json!({"role":"user","content":format!(
+                            "New user instruction: {}\nInitial plan: {}\nProceed with tools and adapt to evidence.",
+                            run.instruction,reply.text)}));
+                        run.messages=next;
+                        run.event("plan","Initial plan created",Some(json!({"text":reply.text})));
+                        return Ok(());
+                    }
                     run.messages = vec![
                         json!({"role":"system","content":SYSTEM}),
                         json!({"role":"user","content":format!("Request:\n{}\n\nInitial plan:\n{}\n\nProceed with tools and adapt the plan as evidence arrives.",run.instruction,reply.text)}),
