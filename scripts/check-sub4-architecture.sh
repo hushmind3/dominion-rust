@@ -24,6 +24,12 @@ required_count src/frontend_rooms.rs 'engine[.]groups[.]say_once' 1
 required_count src/frontend_public_http.rs '^[[:space:]]*pub[(]crate[)] async fn read_json' 1
 required_count src/frontend_huggingface.rs 'reqwest::Client::builder' 0
 required_count src/frontend_provider_public.rs 'reqwest::Client::builder' 0
+# Retired experiment executors and UI routes must not return.
+required_count src/tools.rs 'compare_strategies' 0
+required_count src/config.rs 'strategy_trials_enabled' 0
+required_count src/frontend_growth.rs '"/optimizers"' 0
+required_count src/frontend_growth.rs '"/experiment-requests"' 0
+required_count web/src/i18n/errors.ts '영상' 0
 # Do not resurrect an independent agent run loop or retired media/RSI executor.
 for obsolete in \
   src/engine/chat/runtime.rs \

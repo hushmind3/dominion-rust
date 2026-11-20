@@ -8,17 +8,6 @@ pub fn effective_budget_krw(run:&Run)->f64{
 }
 
 pub fn allowed_tool(run:&Run,name:&str)->bool{
-    if run.strategy_candidate {
-        // A hypothesis worker is NOT a delegated general assistant. It may
-        // touch only its private workspace; no MCP, accounts, memory writes,
-        // recursive subagents, branch merges or additional paid trials.
-        // shell remains subject to the normal explicit human approval gate.
-        return matches!(name,
-            "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"read_program"
-            |"write_file"|"edit_file"|"shell")
-            &&(!run.read_only||matches!(name,
-                "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"read_program"));
-    }
     // Task-oriented children share the parent model/runtime but expose only
     // task-relevant tool classes. Unknown tools never bypass this scope.
     if run.parent_run_id.is_some(){
@@ -132,26 +121,6 @@ mod tests{
         assert!(run.cost_krw<=effective_budget_krw(&run));
         run.cost_krw=41.0;
         assert!(run.cost_krw>effective_budget_krw(&run));
-    }
-    #[test]
-    fn strategy_trial_worker_can_edit_own_workspace_but_never_call_remote_tools(){
-        let mut run=Run::new(CreateRun{
-            instruction:"Compare an isolated implementation".into(),
-            budget_krw:Some(100.0),max_steps:Some(5)},5).unwrap();
-        run.strategy_candidate=true;
-        for tool in ["list_files","read_file","search_files",
-                     "write_file","edit_file","git_status","git_diff","shell"]{
-            assert!(allowed_tool(&run,tool),"local operation {tool} should be available");
-        }
-        for tool in ["compare_strategies","spawn_subagent","merge_subagent",
-                     "github_create_file","mcp__example__mutate","memory_store",
-                     "google_docs_create","check_subagent"]{
-            assert!(!allowed_tool(&run,tool),"child escaped worktree through {tool}");
-        }
-        run.read_only=true;
-        assert!(!allowed_tool(&run,"write_file"));
-        assert!(!allowed_tool(&run,"shell"));
-        assert!(allowed_tool(&run,"git_diff"));
     }
     #[test]
     fn persisted_tool_calls_must_obey_current_operator_policy(){

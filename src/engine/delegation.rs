@@ -48,16 +48,27 @@ impl Engine {
                 !r.terminal()||r.in_flight.is_some()||active_ids.contains(&r.id));
             let parent=self.store.get(id).await.ok_or("parent run missing")?;
             if parent.waiting_for_children && !pending && !parent.terminal(){
+                // Historical experiment parents can settle their existing
+                // child receipts, but must not re-enter the retired executor.
+                let archived=parent.events.iter().any(|event|matches!(event.kind.as_str(),
+                    "strategy_candidate"|"strategy_trials_launched"|"strategy_trials_partial"));
                 self.store.mutate(id,|run|{
                     if run.waiting_for_children && run.status==RunStatus::Paused && run.in_flight.is_none() && run.pending_approval.is_none(){
                         run.waiting_for_children=false;
-                        run.event("subagents_ready","All delegated workers finished; resuming parent verification",None);
+                        if archived {
+                            run.event("archived_run_quarantined",
+                                "Retired experiment settlement retained; execution disabled",None);
+                        }else{
+                            run.event("subagents_ready",
+                                "All delegated workers finished; resuming parent verification",None);
+                        }
                     }
                     Ok(())
                 }).await?;
-                // The scheduler waits for the current parent's worker to
-                // detach before relaunch. No fixed-delay dropped wakeups.
-                self.wake_tx.send(id).map_err(|_|"engine wake scheduler unavailable".to_string())?;
+                if !archived {
+                    // The scheduler owns the wakeup once all children settle.
+                    self.wake_tx.send(id).map_err(|_|"engine wake scheduler unavailable".to_string())?;
+                }
             }
             ancestor=parent.parent_run_id;
         }

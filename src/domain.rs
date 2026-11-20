@@ -96,9 +96,7 @@ pub struct Run {
     /// Constrained investigator: no filesystem writes, shell or merge.
     #[serde(default)]
     pub read_only: bool,
-    /// Isolated strategy trial: permits workspace-local reads and edits only.
-    /// Existing journal snapshots remain compatible via serde(default).
-    #[serde(default)]
+    /// Number of unused schema characters omitted by native tool discovery.
     #[serde(default)]
     pub tool_schema_chars_avoided: u64,
     pub max_steps: usize,

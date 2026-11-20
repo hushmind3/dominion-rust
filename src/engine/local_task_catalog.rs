@@ -12,7 +12,7 @@ const LOCAL:&[&str]=&[
 fn small_local_task(run:&Run)->bool{
     if run.repository.is_none()||run.read_only||run.model_only
         ||run.required_changed_paths.len()!=1||run.parent_run_id.is_some()
-        ||run.strategy_candidate||run.instruction.chars().count()>1800
+        ||run.instruction.chars().count()>1800
         ||run.steps>=4{return false;}
     let text=run.instruction.to_lowercase();
     // User requests requiring external facts, connected account actions or
