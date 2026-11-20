@@ -218,6 +218,8 @@ const ko = {
   'conn.review.notDeliveredDone': "미전송으로 확인했습니다. 다음 전송 기회에 재시도할 수 있습니다.",
   'conn.tab.channels': '메신저 · 채널',
   'conn.tab.accounts': '계정 연결',
+  'conn.quick.disconnected': "계정 연결을 해제했습니다.",
+  'conn.quick.githubCliCancel': "인증 취소",
   'conn.quick.githubCliTitle': 'GitHub 브라우저 인증',
   'conn.quick.githubCliCode': 'GitHub 인증 화면에 입력할 일회용 코드',
   'conn.quick.githubCliOpen': 'GitHub 인증 페이지 열기',
