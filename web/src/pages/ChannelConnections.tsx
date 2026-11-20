@@ -9,7 +9,7 @@ import {t,useLocale,type LocaleKey} from '../i18n'
 type Field={key:string;label:string;type:'secret'|'text'|'url';required?:boolean;placeholder?:string}
 type Entry={id:string;name:string;category:string;mode:string;description:string;docs:string;available:boolean;features:string[];fields:Field[];requiresRoom?:boolean}
 type Room={id:string;name:string;agentIds?:string[]}
-type Delivery={pending?:number;pendingIndex?:number|null;needsReview?:number;cursor?:number}
+type Delivery={pending?:number;sending?:number;pendingIndex?:number|null;needsReview?:number;cursor?:number}
 type Binding={id:string;name:string;kind:string;roomId:string;enabled:boolean;syncRoomMessages:boolean;status:string;runtimeError?:string|null;configured:boolean;credentialsPresent?:Record<string,boolean>;chatId?:string;channelId?:string;delivery?:Delivery}
 type Draft={id?:string;name:string;kind:string;roomId:string;chatId:string;channelId:string;token:string;enabled:boolean;syncRoomMessages:boolean}
 type Editor={entry:Entry;record:Draft;original?:Binding}
