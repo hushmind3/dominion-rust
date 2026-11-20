@@ -25,7 +25,7 @@ The startup path `src/main.rs` opens `Dominion::open` and shares this Engine. Na
 | P2 | `src/frontend_rooms.rs`, `src/frontend_api/agents.rs`, `src/frontend_extensions.rs`, `src/frontend_api/sdk_endpoints.rs` | Room-scoped tools/effort, per-agent reasoning, stdio MCP registration and arbitrary verifier commands return explicit unsupported errors | **Recorded:** real product limitations, not fabricated feature parity |
 | P2 | `src/engine.rs` (69,926 bytes), `web/src/pages/Rooms.tsx` (59,977 bytes) | Large responsibility concentrations remain, although scheduling/delegation and many API/UI components are split already | **Open:** only split after profiling change ownership and regression invariants; file size alone is not a correctness failure |
 | P3 | `docs/ARCHITECTURE.md` (historical audit note) | Some dated paragraphs still describe historical removed source files or an incomplete `/api/*` route adapter that was implemented later | **Resolved 2026-11-20:** stale feature-parity documents removed, active architecture updated |
-| P3 | `src/legacy_import.rs`, `src/legacy_archive.rs`, `src/frontend_system.rs` | Legacy import and backup are separate explicit data operations; they do not imply live old-engine execution, atomic cross-store migration or transfer of credentials | **Verified boundary:** documented under compatibility and recovery |
+| P3 | `src/frontend_system.rs` | Current native backup/restore is active; the former SQLite migration and history adapters had no mounted UI consumer | **Removed 2026-11-20:** obsolete SQLite importer, archive, SDK wrappers and SQLite-only dependencies |
 
 ## Targeted code evidence
 

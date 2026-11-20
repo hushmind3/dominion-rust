@@ -18,7 +18,7 @@ This is a tracked-source audit; it does **not** delete external caches, old Git 
 
 - Removed 7 package scripts referring to missing desktop/build or E2E targets, the unconfigured `@tauri-apps/cli` package, and the 12 associated platform package records from the lockfile.
 - A normal `npm ci --prefix web` remains the frontend install path. No Tauri desktop app is claimed until an actual, tested packaging configuration exists.
-- Kept `rusqlite` because `src/legacy_import.rs` and `src/legacy_archive.rs` still implement explicit read-only legacy SQLite import/archive. Removing that dependency would break supported migration.
+- Subsequent cleanup removed the unmounted SQLite importer and archive, SDK wrappers, stale API routes and SQLite-only dependencies. Current encrypted backups, native Run history, credentials and stored user data are not deleted.
 - Retained `/api` UI compatibility, `/api/v1` typed SDK, MCP, Google Workspace, GitHub, Cloudflare Worker billing and local model support: these still have real consumers and are not embedded video/Money/RSI runtimes.
 
 ## Deliberately retained, not a retired optimizer
