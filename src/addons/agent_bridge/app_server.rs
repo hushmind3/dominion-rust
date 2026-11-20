@@ -63,9 +63,34 @@ async fn response<R:AsyncRead+Unpin>(frames:&mut Frames<R>,id:u64)->Result<Value
         }
     }
 }
-pub(super) async fn consult<R,W>(stdout:R,mut stdin:W,cwd:&Path,prompt:&str)
+/// App Server can retain a *read-only advisory* thread between distinct
+/// human-approved native tool invocations. The caller persists the thread ID
+/// only inside a completed native tool receipt and never accepts model input
+/// as a thread ID.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub(super) struct AdvisoryAnswer{
+    pub answer:String,
+    pub thread_id:Option<String>,
+    pub resumed:bool
+}
+fn valid_thread_id(id:&str)->bool{
+    !id.is_empty()&&id.len()<=128&&id.bytes().all(|b|
+        b.is_ascii_alphanumeric()||matches!(b,b'-'|b'_'))
+}
+pub(super) async fn consult<R,W>(stdout:R,stdin:W,cwd:&Path,prompt:&str)
     ->Result<String,String>
 where R:AsyncRead+Unpin,W:AsyncWrite+Unpin{
+    consult_with_session(stdout,stdin,cwd,prompt,None,false).await
+        .map(|answer|answer.answer)
+}
+pub(super) async fn consult_with_session<R,W>(stdout:R,mut stdin:W,
+    cwd:&Path,prompt:&str,previous:Option<&str>,retain:bool)
+    ->Result<AdvisoryAnswer,String>
+where R:AsyncRead+Unpin,W:AsyncWrite+Unpin{
+    if previous.is_some()&&!retain{return Err("ephemeral App Server session cannot resume".into());}
+    if previous.is_some_and(|id|!valid_thread_id(id)){
+        return Err("invalid operator-scoped App Server thread ID".into());
+    }
     let cwd=cwd.to_str().ok_or("Codex App Server scratch path is not UTF-8")?;
     let mut frames=Frames::new(stdout);
     send(&mut stdin,json!({"id":1,"method":"initialize","params":{
@@ -73,15 +98,27 @@ where R:AsyncRead+Unpin,W:AsyncWrite+Unpin{
     }})).await?;
     response(&mut frames,1).await?;
     send(&mut stdin,json!({"method":"initialized","params":{}})).await?;
-    // An ephemeral thread avoids filling the operator's Codex history. The
-    // advisory bridge never grants workspace writes or interactive approvals.
-    send(&mut stdin,json!({"id":2,"method":"thread/start","params":{
-        "cwd":cwd,"sandbox":"readOnly","approvalPolicy":"never",
-        "ephemeral":true
-    }})).await?;
+    // Only the human-operated retention toggle may create a stored thread.
+    // On resume, repeat the least-privilege configuration; an inherited
+    // thread must not silently restore a more privileged sandbox.
+    if let Some(thread_id)=previous{
+        send(&mut stdin,json!({"id":2,"method":"thread/resume","params":{
+            "threadId":thread_id,"cwd":cwd,"sandbox":"readOnly",
+            "approvalPolicy":"never"
+        }})).await?;
+    }else{
+        send(&mut stdin,json!({"id":2,"method":"thread/start","params":{
+            "cwd":cwd,"sandbox":"readOnly","approvalPolicy":"never",
+            "ephemeral":!retain
+        }})).await?;
+    }
     let started=response(&mut frames,2).await?;
     let thread=started.pointer("/thread/id").and_then(Value::as_str)
-        .filter(|id|!id.is_empty()).ok_or("App Server omitted thread id")?;
+        .filter(|id|valid_thread_id(id))
+        .ok_or("App Server omitted valid thread id")?;
+    if previous.is_some_and(|expected|expected!=thread){
+        return Err("App Server resumed a different thread than the durable receipt".into());
+    }
     let thread=thread.to_string();
     send(&mut stdin,json!({"id":3,"method":"turn/start","params":{
         "threadId":thread,"input":[{"type":"text","text":prompt}]
@@ -114,7 +151,11 @@ where R:AsyncRead+Unpin,W:AsyncWrite+Unpin{
                         .find(|item|item["type"]=="agentMessage"))
                         .and_then(|item|item["text"].as_str()).map(str::to_owned);
                 }
-                return bounded_answer(last.as_deref().unwrap_or(""));
+                return Ok(AdvisoryAnswer{
+                    answer:bounded_answer(last.as_deref().unwrap_or(""))?,
+                    thread_id:retain.then_some(thread),
+                    resumed:previous.is_some()
+                });
             }
             _=>{}
         }
@@ -158,6 +199,44 @@ mod tests{
             "Review exactly this diff").await.unwrap();
         assert_eq!(answer,"Advisory only");
         server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn resume_uses_original_thread_and_reasserts_read_only_permissions(){
+        let (mut server_write,client_read)=tokio::io::duplex(8192);
+        let (client_write,server_read)=tokio::io::duplex(8192);
+        let server=tokio::spawn(async move{
+            let mut input=BufReader::new(server_read);
+            let mut line=String::new();
+            input.read_line(&mut line).await.unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["method"],"initialize");
+            server_write.write_all(b"{\"id\":1,\"result\":{}}\n").await.unwrap();
+            line.clear();input.read_line(&mut line).await.unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["method"],"initialized");
+            line.clear();input.read_line(&mut line).await.unwrap();
+            let resumed:Value=serde_json::from_str(&line).unwrap();
+            assert_eq!(resumed["method"],"thread/resume");
+            assert_eq!(resumed["params"]["threadId"],"thr_owner_123");
+            assert_eq!(resumed["params"]["sandbox"],"readOnly");
+            assert_eq!(resumed["params"]["approvalPolicy"],"never");
+            server_write.write_all(b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thr_owner_123\"}}}\n").await.unwrap();
+            line.clear();input.read_line(&mut line).await.unwrap();
+            let turn:Value=serde_json::from_str(&line).unwrap();
+            assert_eq!(turn["method"],"turn/start");
+            assert_eq!(turn["params"]["threadId"],"thr_owner_123");
+            server_write.write_all(b"{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn2\"}}}\n").await.unwrap();
+            server_write.write_all(b"{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thr_owner_123\",\"item\":{\"type\":\"agentMessage\",\"text\":\"Second reviewed answer\"}}}\n").await.unwrap();
+            server_write.write_all(b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thr_owner_123\",\"turn\":{\"id\":\"turn2\",\"status\":\"completed\"}}}\n").await.unwrap();
+        });
+        let answer=consult_with_session(client_read,client_write,
+            Path::new("/tmp/operator-scoped"),"Continue review",
+            Some("thr_owner_123"),true).await.unwrap();
+        assert_eq!(answer.answer,"Second reviewed answer");
+        assert_eq!(answer.thread_id.as_deref(),Some("thr_owner_123"));
+        assert!(answer.resumed);
+        server.await.unwrap();
+        assert!(valid_thread_id("thr_owner_123"));
+        assert!(!valid_thread_id("../outside"));
+        assert!(!valid_thread_id(""));
     }
     #[test]
     fn server_initiated_approval_never_auto_accepts(){

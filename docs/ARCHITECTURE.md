@@ -627,3 +627,24 @@ The provider registry now persists optional operator-declared parallel tool call
 ## 2026-11-20 — Opt-in live semantic Room benchmark (Sub4)
 
 `src/bin/dominion_room_recall_eval.rs` executes 100 real owner/model turns in a persistent, two-speaker round-robin Room, followed by a strict final test of a random earliest authoritative owner fact and a later superseding correction. The benchmark is opt-in, requires a KRW budget and live credentials/loopback endpoint, records actual Room token/cache/price receipts and partial failures, and never presents mock context tests as measured LLM recall. The result is unmeasured until independently run; no provider credentials or paid inference are embedded in CI. This is a semantic model regression **runner**, not a proof of external frontier-model performance or a new agent harness.
+
+## 2026-11-20 — Opt-in Codex App Server advisory session resume (Sub4)
+
+For operators who set `DOMINION_AGENT_BRIDGE_PERSIST_CODEX_THREAD=true`,
+the existing approval-gated, unmetered, read-only `external_agent_consult`
+Codex App Server provider starts a non-ephemeral `thread/start` and writes
+its threadId, scope and result to the successful **native tool receipt**. A
+later separately approved consultation in that **same Run** can use
+`thread/resume` (2026 App Server protocol), reasserting `sandbox=readOnly`
+and `approvalPolicy=never`. The resumed thread ID is never model-specified:
+the connector obtains it from successful, run-scoped journal receipts, not
+from external text, an older uncertain call, or another Run. A protocol
+mismatch or interrupted resume becomes an uncertain native effect and is
+not auto-replayed. Disabled by default: original ephemeral advisory behavior
+and existing tests remain unchanged. Persistent Codex histories can exist
+in CODEX_HOME when explicitly opted into; native KRW budgets still cannot
+meter the external CLI.
+
+This is **read-only session continuation**, not arbitrary external agent
+code-writing authorization, OS sandbox isolation, patch acceptance, ACP host
+support, or automatic resumption of an uncertain remote turn.
