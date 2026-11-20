@@ -5,36 +5,11 @@ import {
   Button,
   TextInput,
   TextArea,
-  SelectInput,
 } from "../components/Primitives";
 import { useEffect, useState } from "react";
 import {
-  Activity,
-  ArrowDownToLine,
-  ArrowRight,
-  Blocks,
-  BookOpenText,
-  Check,
-  ChevronRight,
-  Code2,
-  Compass,
-  Download,
-  ExternalLink,
-  FileCode2,
-  Globe2,
-  HardDrive,
-  LoaderCircle,
-  PackagePlus,
-  Plus,
-  RefreshCw,
-  Search,
-  Server,
-  Settings2,
-  ShieldCheck,
-  Sparkles,
-  TerminalSquare,
-  Trash2,
-  X,
+  Activity, Blocks, BookOpenText, Check, Code2, ExternalLink,
+  Plus, Search, Settings2, Sparkles, Trash2, X,
 } from "lucide-react";
 import { del, get, post } from "../api";
 import {
@@ -46,13 +21,11 @@ import {
   Panel,
   StateTag,
   Subheading,
-  refresh,
   useRemote,
 } from "../components/UI";
 type Mcp = {
   id: string;
   name: string;
-  transport: "http";
   url?: string;
   enabled: boolean;
 };
@@ -354,7 +327,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
     if (!confirm(t('ext.confirmRegister'))) return;
     setError("");setMessage("");
     try {
-      await post("/api/mcp", {name:entry.name,transport:"http",
+      await post("/api/mcp", {name:entry.name,
         url:entry.endpoint || entry.url || "",enabled:true});
       await mcp.reload();setMessage(t('ext.registeredHint'));
     } catch (cause) {setError((cause as Error).message)}
@@ -427,7 +400,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
           <Action
             variant="secondary"
             onClick={() => {
-              setEdit({name:"",transport:"http",url:"",enabled:true});
+              setEdit({name:"",url:"",enabled:true});
             }}
           >
             <Plus size={17} /> {t('ext.addMcp')}

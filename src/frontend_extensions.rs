@@ -193,16 +193,12 @@ async fn mcp_discover(State(engine):State<Arc<Engine>>)->Json<Value>{
 #[serde(rename_all="camelCase")]
 struct McpDraft{
     id:Option<String>,name:String,
-    #[serde(default)]transport:String,
     #[serde(default)]url:String,
     #[serde(default)]enabled:Option<bool>,
     #[serde(default)]bearer_token:Option<String>,
 }
 async fn mcp_save(State(engine):State<Arc<Engine>>,Json(input):Json<McpDraft>)
     ->Result<Json<Value>,Fault>{
-    if input.transport!=""&&input.transport!="http"{
-        return Err(bad("MCP transport must be http"));
-    }
     if input.name.trim().is_empty()||input.name.len()>120||
         input.url.len()>1024||input.bearer_token.as_deref().is_some_and(|s|s.len()>8192){
         return Err(bad("invalid MCP server name, URL or credential size"));
