@@ -145,7 +145,7 @@ test('room context budget control reflects the native bounded character projecti
  assert.match(backend,/context_budget_tokens\.clamp\(200,8_000\)/)
 })
 test('native Runs capture actual per-call prompt/tool character footprints before provider dispatch',()=>{
- const engine=source('../../src/engine.rs')
+ const engine=source('../../src/algorithms/runner.rs')
  assert.match(engine,/model_request_footprint/)
  assert.match(engine,/tool_schema_chars/)
  assert.match(engine,/history_messages/)
