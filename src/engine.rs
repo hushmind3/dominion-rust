@@ -508,6 +508,16 @@ impl Engine {
             }
             if run.cost_krw > policy::effective_budget_krw(&run) { return Err("hierarchical budget exceeded".into()); }
             let mut available_tools = tools::definitions(self.settings.shell_enabled);
+            // Receipt recall is useful only once there is old, long evidence.
+            // Do not send its schema on simple chat or early agent turns.
+            let receipts=run.messages.iter().filter(|m|m["role"]=="tool")
+                .collect::<Vec<_>>();
+            let recall_needed=receipts.len()>2 && receipts[..receipts.len()-2].iter()
+                .any(|m|m["content"].as_str().is_some_and(|v|v.chars().count()>1200));
+            if !recall_needed {
+                available_tools.retain(|tool|tool.pointer("/function/name")
+                    .and_then(Value::as_str)!=Some("read_tool_receipt"));
+            }
             let mut external=self.mcp.definitions().await;
             external.extend(crate::connected_tools::definitions(&self.settings));
             let (external,deferred_schema_chars,discovery_active)=
@@ -919,6 +929,14 @@ impl Engine {
             } else if call.name == "load_skill" {
                 let name=call.arguments.get("name").and_then(Value::as_str).ok_or("skill name required")?;
                 crate::skills::load(&self.settings,id,name).await
+            } else if call.name == "read_tool_receipt" {
+                let receipt_id=call.arguments.get("call_id").and_then(Value::as_str)
+                    .ok_or("receipt call_id required")?;
+                let offset=call.arguments.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let limit=call.arguments.get("limit").and_then(Value::as_u64).unwrap_or(3000) as usize;
+                let current=self.store.get(id).await.ok_or("run not found")?;
+                crate::context::receipt_slice(&current.messages,receipt_id,offset,limit)
+                    .map(|receipt|receipt.to_string())
             } else if call.name == "memory_search" {
                 let query=call.arguments.get("query").and_then(Value::as_str).ok_or("memory search query required")?;
                 if query.len()>512{return Err("memory search query too long".into());}
