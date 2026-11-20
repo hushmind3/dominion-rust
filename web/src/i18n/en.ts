@@ -869,6 +869,8 @@ const en: Record<LocaleKey, string> = {
   'usage.input': 'input {count}',
   'usage.calls': 'cumulative across {count} model calls',
   'usage.newInput': 'new input {count}',
+  'usage.cacheWrite': 'Cache writes {count}',
+  'usage.unmetered': 'Provider tokens not reported',
   'usage.cached': 'cached {count}',
   'usage.cacheUnknown': 'cache unreported',
   'usage.output': 'output {count}',

@@ -21,25 +21,23 @@ pub(super) async fn sync_session(engine:&Arc<Engine>,id:&str)->Result<(),String>
     let actual_model=if run.model_name.trim().is_empty(){
         engine.settings.main.name.clone()
     }else{run.model_name.clone()};
-    let message=answer.map(|text|UiMessage{
-        id:Uuid::new_v4().to_string(),session_id:id.into(),
-        role:"assistant".into(),content:text,created_at:timestamp(now_ms()),
-        agent_id:Some(session.agent_id.clone()),
-        metadata:Some(json!({
-            "executionId":run.id,
-            "model":actual_model,
-            "providerId":run.provider_id,
-            "status":run.status,
-            "costKrw":run.cost_krw,
-            "usage":{
-                "promptTokens":run.input_tokens,"cachedPromptTokens":run.cached_input_tokens,
-                "modelCalls":run.events.iter().filter(|event|event.kind=="model").count(),
-                "completionTokens":run.output_tokens,
-                "totalTokens":run.input_tokens+run.output_tokens,
+    let message=answer.map(|text|{
+        let mut usage=native_run_usage(&run);
+        usage["model"]=json!(actual_model);
+        usage["providerId"]=json!(run.provider_id);
+        UiMessage{
+            id:Uuid::new_v4().to_string(),session_id:id.into(),
+            role:"assistant".into(),content:text,created_at:timestamp(now_ms()),
+            agent_id:Some(session.agent_id.clone()),
+            metadata:Some(json!({
+                "executionId":run.id,
                 "model":actual_model,
-                "providerId":run.provider_id
-            }
-        })),
+                "providerId":run.provider_id,
+                "status":run.status,
+                "costKrw":run.cost_krw,
+                "usage":usage
+            })),
+        }
     });
     // No assistant message is fabricated on failure/cancellation.
     // Cancel SSE finalizer and cancel API can race. A second finalizer is
@@ -137,9 +135,30 @@ pub(super) async fn session_usage(State(engine):State<Arc<Engine>>,Path(id):Path
         let room=engine.groups.get(rid).await.ok_or_else(||missing("bound room not found"))?;
         return Ok(Json(crate::frontend_rooms::room_usage(&room)));
     }
-    let total=record.messages.iter().map(|m|m.metadata.as_ref()
-        .and_then(|v|v.pointer("/usage/totalTokens")).and_then(Value::as_u64).unwrap_or(0)).sum::<u64>();
-    Ok(Json(json!({"totalTokens":total})))
+    // All numbers originate from completed native model receipts stored on
+    // assistant messages. Provider-unknown usage is never treated as 0-cost
+    // or a 0-cache-hit claim.
+    let mut prompt=0u64;let mut output=0u64;let mut cached=0u64;
+    let mut written=0u64;let mut requests=0usize;let mut unmetered=0usize;
+    let mut cost=0.0f64;
+    for message in &record.messages{
+        let Some(meta)=message.metadata.as_ref()else{continue};
+        let Some(usage)=meta.get("usage")else{continue};
+        prompt=prompt.saturating_add(usage["promptTokens"].as_u64().unwrap_or(0));
+        output=output.saturating_add(usage["completionTokens"].as_u64().unwrap_or(0));
+        cached=cached.saturating_add(usage["cachedPromptTokens"].as_u64().unwrap_or(0));
+        written=written.saturating_add(usage["cacheWriteTokens"].as_u64().unwrap_or(0));
+        let calls=usage["modelRequests"].as_u64()
+            .or_else(||usage["modelCalls"].as_u64()).unwrap_or(0) as usize;
+        requests=requests.saturating_add(calls);
+        unmetered=unmetered.saturating_add(
+            usage["unmeteredModelRequests"].as_u64()
+                .unwrap_or_else(||if calls>0&&usage["providerUsageReported"]!=true{
+                    calls as u64
+                }else{0}) as usize);
+        cost+=meta["costKrw"].as_f64().unwrap_or(0.0).max(0.0);
+    }
+    Ok(Json(usage_values(prompt,cached,written,output,requests,unmetered,cost)))
 }
 #[derive(Deserialize)]
 pub(super) struct Rename{title:String}
@@ -338,7 +357,14 @@ mod selected_model_receipt_tests{
   assert_eq!(receipt["usage"]["model"],"mock-2026-model");
   assert_eq!(receipt["usage"]["providerId"],"provider-custom");
   assert_eq!(receipt["usage"]["totalTokens"],51);
+  assert_eq!(receipt["usage"]["uncachedPromptTokens"],42);
+  assert_eq!(receipt["usage"]["providerUsageReported"],false);
+  assert_eq!(receipt["usage"]["usageStatus"],"not_started");
   assert_eq!(receipt["costKrw"],12.5);
+  let summary=session_usage(State(engine.clone()),Path(session.clone())).await.unwrap().0;
+  assert_eq!(summary["totalTokens"],51);
+  assert_eq!(summary["uncachedPromptTokens"],42);
+  assert_eq!(summary["costKrw"],12.5);
   drop(engine);drop(store);
   tokio::fs::remove_dir_all(root).await.unwrap();
  }

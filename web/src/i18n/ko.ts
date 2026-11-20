@@ -868,6 +868,8 @@ const ko = {
   'usage.input': '입력 {count}',
   'usage.calls': '모델 {count}회 호출 누적',
   'usage.newInput': '신규 입력 {count}',
+  'usage.cacheWrite': '캐시 쓰기 {count}',
+  'usage.unmetered': '토큰 사용량 미계측',
   'usage.cached': '캐시 {count}',
   'usage.cacheUnknown': '캐시 미보고',
   'usage.output': '출력 {count}',

@@ -38,7 +38,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const transcript=useRemote<ChatMessage[]>(current?'/api/sessions/'+encodeURIComponent(current)+'/messages':null,[],active);
  const messages=transcript.value
  const messageUsage=useMemo(()=>messages.reduce((sum,message)=>sum+(Number(message.metadata?.usage?.totalTokens)||0),0),[messages])
- const [serverUsage,setServerUsage]=useState(0);
+ type SessionUsage={totalTokens?:number;promptTokens?:number;completionTokens?:number;
+ cachedPromptTokens?:number;uncachedPromptTokens?:number;cacheWriteTokens?:number;
+ modelRequests?:number;unmeteredModelRequests?:number;providerUsageReported?:boolean}
+ const [serverUsage,setServerUsage]=useState<SessionUsage>({});
  const approvals=useRemote<Approval[]>('/api/approvals',[],active);
  const [input,setInput]=useState('');
  const [agentChoice,setAgentChoice]=useState<{scope?:string;id:string}>();
@@ -84,7 +87,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const slashItems=slashOpen?slashCandidates(input,agents.value,models):[];
  const transcriptRevision=JSON.stringify([messages.at(-1)?.id,messages.length,viewingTurn?live.length:0,viewingTurn?thought.length:0,viewingTurn?toolStatus:'',approval?.id]);
  const usageRevision=JSON.stringify([messages.at(-1)?.id,messages.length]);
- useEffect(()=>{if(!current){setServerUsage(0);return}let alive=true;get<{totalTokens?:number}>('/api/sessions/'+encodeURIComponent(current)+'/usage').then(usage=>{if(alive)setServerUsage(Number(usage.totalTokens)||0)}).catch(()=>{});return()=>{alive=false}},[current,usageRevision])
+ useEffect(()=>{if(!current){setServerUsage({});return}let alive=true;get<SessionUsage>('/api/sessions/'+encodeURIComponent(current)+'/usage').then(usage=>{if(alive)setServerUsage(usage)}).catch(()=>{});return()=>{alive=false}},[current,usageRevision])
  const {scrollRef,onScroll,jumpDown}=useTranscriptScroll(current,transcriptRevision);
  const modelPanel=useAnchoredPanel(modelMenu,()=>setModelMenu(false),380);
  useEffect(()=>()=>stream.current?.abort(),[]);
@@ -396,7 +399,15 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
      </div>
     </div>
     <div className="flex shrink-0 items-center gap-1">
-     {(serverUsage||messageUsage)>0&&<span className="hidden rounded-lg border border-[#E7DDCC] bg-[#F7F1E6] px-2 py-1 text-[10px] font-semibold text-[#8A775F] sm:inline-flex">{t('usage.sessionTotal',{count:(serverUsage||messageUsage).toLocaleString()})}</span>}
+     {(serverUsage.totalTokens||messageUsage)>0&&<span
+      title={serverUsage.promptTokens!==undefined?
+       [t('usage.newInput',{count:(serverUsage.uncachedPromptTokens??0).toLocaleString()}),
+        t('usage.cached',{count:(serverUsage.cachedPromptTokens??0).toLocaleString()}),
+        t('usage.output',{count:(serverUsage.completionTokens??0).toLocaleString()}),
+        serverUsage.unmeteredModelRequests?t('usage.unmetered'):''].filter(Boolean).join(' · '):''}
+      className="hidden rounded-lg border border-[#E7DDCC] bg-[#F7F1E6] px-2 py-1 text-[10px] font-semibold text-[#8A775F] sm:inline-flex">
+      {t('usage.sessionTotal',{count:(serverUsage.totalTokens||messageUsage).toLocaleString()})}
+     </span>}
 
      
      <Button size="icon" variant="ghost" title={t('chat.modelManage')} aria-label={t('chat.modelManage')} onClick={openModels}><Cpu size={18}/></Button>
