@@ -617,3 +617,31 @@ async fn algorithm_identity_is_pinned_across_run_resumption(){
     drop(engine);
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+#[tokio::test]
+async fn workflow_loop_identity_is_pinned_before_queued_work_resumes(){
+    let root=std::env::temp_dir().join(format!("dominion-loop-pin-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.addons_enabled=false;
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+    let backend:Arc<dyn crate::ports::RunRepository>=store.clone();
+    let mcp=Arc::new(crate::mcp::Mcp::new(Vec::new()).unwrap());
+    let algorithm=Arc::new(crate::algorithms::DefaultAlgorithm::default());
+    let engine=Engine::new_with_algorithm_and_loop(
+        settings,backend,groups,mcp,algorithm,
+        Arc::new(dominion_agent_algo::ReActLoop)).unwrap();
+    assert_eq!(engine.loop_id(),"react-2026-turn-controller");
+    let mut run=Run::new(CreateRun{instruction:"inspect one file".into(),
+        budget_krw:None,max_steps:Some(2)},2).unwrap();
+    run.event("loop_bound","another-loop-v9",None);
+    let id=run.id;
+    store.put(run).await.unwrap();
+    let error=engine.launch(id).await.unwrap_err();
+    assert!(error.contains("agent loop changed"),"{error}");
+    assert_eq!(store.get(id).await.unwrap().status,RunStatus::Queued);
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}

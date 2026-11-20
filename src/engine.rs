@@ -106,6 +106,8 @@ impl Engine {
     /// Expose the pinned algorithm identity for diagnostics without exposing
     /// strategy internals, model credentials or mutable runtime state.
     pub fn algorithm_id(&self)->&str{self.algorithm.id()}
+    /// Stable identifier of the effect-free workflow loop controller.
+    pub fn loop_id(&self)->&str{self.loop_driver.name()}
     /// Attach a synchronous, fail-closed policy/receipt hook to this runtime.
     /// The native SDK and HTTP share the same engine and hook chain.
     pub async fn register_tool_hook(&self, hook:Arc<dyn ToolHook>){self.hooks.write().await.add(hook);}
@@ -158,6 +160,17 @@ impl Engine {
                     }
                 }else{
                     run.event("algorithm_bound",self.algorithm.id(),None);
+                }
+            }
+            if !run.model_only{
+                if let Some(binding)=run.events.iter().find(|event|event.kind=="loop_bound"){
+                    if binding.message!=self.loop_driver.name(){
+                        return Err(format!(
+                            "agent loop changed from {} to {}; resume requires its original controller",
+                            binding.message,self.loop_driver.name()));
+                    }
+                }else{
+                    run.event("loop_bound",self.loop_driver.name(),None);
                 }
             }
             run.status = RunStatus::Running;

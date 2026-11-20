@@ -363,3 +363,11 @@ separate distributable crate will require decoupling `Engine` from
 `ProductHost`/Deref and moving `Run`/repository adapter types to foundation.
 `Cargo.lock` lists all workspace packages, and CI checks the independent
 crate contracts. No WASM sandbox is claimed or implicitly enabled.
+
+### Resumption pins both reasoning and loop identity
+
+The first normal Run launch persists `algorithm_bound` (prompt/reasoning
+strategy) and `loop_bound` (pure turn controller). A later restart that
+selects a different component refuses to resume existing queued work before
+any external effect is dispatched. Existing legacy Runs without a loop marker
+bind to the currently configured default controller on their first upgrade.
