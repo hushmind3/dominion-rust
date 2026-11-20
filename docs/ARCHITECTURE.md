@@ -648,3 +648,14 @@ meter the external CLI.
 This is **read-only session continuation**, not arbitrary external agent
 code-writing authorization, OS sandbox isolation, patch acceptance, ACP host
 support, or automatic resumption of an uncertain remote turn.
+
+### Fail-closed stored Codex thread provenance
+
+Before each persistent advisory consultation the adapter identifies the *most
+recent* prior Codex App invocation in the native `external_agent_unmetered`
+journal, requiring its exact successful native `tool_result` receipt and a
+same-Run, retained thread identity. An interrupted or failed newer call
+invalidates older thread reuse; it never falls back to an earlier known ID.
+Resumed `item/completed` events with a different explicit turnId are ignored
+when selecting the final answer. These checks do not infer remote work
+completion from missing receipts.

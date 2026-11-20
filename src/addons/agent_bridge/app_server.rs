@@ -135,7 +135,9 @@ where R:AsyncRead+Unpin,W:AsyncWrite+Unpin{
         if event.pointer("/params/threadId").and_then(Value::as_str)
             .is_some_and(|id|id!=thread){continue;}
         match event["method"].as_str(){
-            Some("item/completed") if event["params"]["item"]["type"]=="agentMessage"=>{
+            Some("item/completed") if event["params"]["item"]["type"]=="agentMessage"
+                &&event["params"]["turnId"].as_str()
+                    .is_none_or(|item_turn|item_turn==turn)=>{
                 if let Some(text)=event["params"]["item"]["text"].as_str(){
                     last=Some(text.to_string());
                 }
