@@ -747,3 +747,17 @@ archive contains the authoritative `dominion.sqlite3`, Room, Knowledge
 and other preserved product data, excluding volatile `-wal` and `-shm`
 files. The existing staged restoration runs before the database opens.
 This is intentionally not a live hot-backup API.
+
+### Qwen Code native headless bridge (November 2026)
+
+Qwen Code is now the fourth opt-in external agent provider, separate
+from the Model Gateway. `DOMINION_AGENT_BRIDGE_QWEN` selects an
+operator-installed absolute executable path. Plan-only consultations
+use Qwen's documented 2026 headless JSON protocol, safe-mode, bounded
+turn/wall/tool budgets and `--approval-mode plan`. True Team Writer
+calls are separately owner-approved and use the **isolated Git worktree**
+with `--sandbox --approval-mode auto-edit`; result JSON is accepted only
+when a terminal `type=result,subtype=success` appears. It yields a
+Git diff digest requiring the independent Team merge approval.
+The ACP persistent-session bridge remains separate future work; CLI
+sandbox availability and subprocess interop are not yet validated.

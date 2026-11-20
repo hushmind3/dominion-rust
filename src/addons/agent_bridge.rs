@@ -50,17 +50,19 @@ const MAX_ANSWER:usize=12_000;
 const MAX_SECONDS:u64=120;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Hash)]
-pub enum Provider{Codex,Claude,CodexApp}
+pub enum Provider{Codex,Claude,CodexApp,Qwen}
 impl Provider{
-    fn name(self)->&'static str{match self{Self::Codex=>"codex",Self::Claude=>"claude",Self::CodexApp=>"codex_app"}}
+    fn name(self)->&'static str{match self{Self::Codex=>"codex",Self::Claude=>"claude",Self::CodexApp=>"codex_app",Self::Qwen=>"qwen"}}
     fn from_str(value:&str)->Result<Self,String>{
-        match value{"codex"=>Ok(Self::Codex),"claude"=>Ok(Self::Claude),"codex_app"=>Ok(Self::CodexApp),
-            _=>Err("unsupported external agent; allowed: codex, claude, codex_app".into())}
+        match value{"codex"=>Ok(Self::Codex),"claude"=>Ok(Self::Claude),
+            "codex_app"=>Ok(Self::CodexApp),"qwen"=>Ok(Self::Qwen),
+            _=>Err("unsupported external agent; allowed: codex, claude, codex_app, qwen".into())}
     }
     fn config_name(self)->&'static str{match self{
         Self::Codex=>"DOMINION_AGENT_BRIDGE_CODEX",
         Self::Claude=>"DOMINION_AGENT_BRIDGE_CLAUDE",
-        Self::CodexApp=>"DOMINION_AGENT_BRIDGE_CODEX_APP"
+        Self::CodexApp=>"DOMINION_AGENT_BRIDGE_CODEX_APP",
+        Self::Qwen=>"DOMINION_AGENT_BRIDGE_QWEN"
     }}
 }
 /// Operator-selected, absolute executable paths, never model-selected.
@@ -76,7 +78,7 @@ impl BridgeRegistry{
             return Ok(Self::disabled());
         }
         let mut executables=HashMap::new();
-        for provider in [Provider::Codex,Provider::Claude,Provider::CodexApp]{
+        for provider in [Provider::Codex,Provider::Claude,Provider::CodexApp,Provider::Qwen]{
             if let Ok(raw)=std::env::var(provider.config_name()){
                 if raw.trim().is_empty(){continue;}
                 let canonical=Self::checked_executable(Path::new(raw.trim()))?;
@@ -113,7 +115,7 @@ impl BridgeRegistry{
         }})];
         if self.allow_edit{
             let mut writers=self.executables.keys().copied()
-                .filter(|p|matches!(p,Provider::Codex|Provider::Claude))
+                .filter(|p|matches!(p,Provider::Codex|Provider::Claude|Provider::Qwen))
                 .map(Provider::name).collect::<Vec<_>>();
             writers.sort_unstable();
             if !writers.is_empty(){
@@ -163,7 +165,7 @@ impl BridgeRegistry{
         // External edits require a real, isolated Team Writer lease; a
         // normal Run, a Room peer or a read-only investigator is not enough.
         let workdir=if editing{
-            if !matches!(request.0,Provider::Codex|Provider::Claude){
+            if !matches!(request.0,Provider::Codex|Provider::Claude|Provider::Qwen){
                 return Ok(ToolEffectOutcome::Settled(Err(
                     "Codex App Server edit permissions are not bridged".into())));
             }
@@ -215,6 +217,21 @@ impl BridgeRegistry{
                 }else{
                     cmd.args(["-p","--output-format","json","--tools","",
                         "--permission-mode","dontAsk"]);
+                }
+            }
+            Provider::Qwen=>{
+                // Official 2026 Qwen Code headless mode. In inspection
+                // mode plan approval forbids writes/commands. In Writer
+                // mode only a separately owner-approved sandboxed job can
+                // auto-approve edits within its isolated Worktree.
+                cmd.args(["--output-format","json",
+                    "--max-session-turns","12","--max-wall-time","110s",
+                    "--max-tool-calls","24","--safe-mode",
+                    "--exclude-tools","shell,agent"]);
+                if editing{
+                    cmd.args(["--sandbox","--approval-mode","auto-edit"]);
+                }else{
+                    cmd.args(["--approval-mode","plan"]);
                 }
             }
             Provider::CodexApp=>{cmd.args(["app-server","--stdio"]);}
@@ -329,6 +346,7 @@ impl BridgeRegistry{
         let answer=match request.0{
             Provider::Codex=>parse_codex_jsonl(&output),
             Provider::Claude=>parse_claude_json(&output),
+            Provider::Qwen=>parse_qwen_json(&output),
             Provider::CodexApp=>unreachable!("App Server handled before exec output")
         };
         match answer{
@@ -424,9 +442,42 @@ fn parse_claude_json(bytes:&[u8])->Result<String,String>{
     bounded_answer(event["result"].as_str().unwrap_or(""))
 }
 
+fn parse_qwen_json(bytes:&[u8])->Result<String,String>{
+    let text=std::str::from_utf8(bytes)
+        .map_err(|_|"Qwen Code returned non-UTF8 JSON")?;
+    // The documented 2026 headless result is an ARRAY of typed messages.
+    // Only a successful terminal result may be used as a tool receipt.
+    let parsed:Value=serde_json::from_str(text)
+        .map_err(|_|"Qwen Code emitted invalid structured JSON")?;
+    let records=parsed.as_array().ok_or("Qwen Code response must be a JSON array")?;
+    let terminal=records.iter().rev().find(|item|item["type"]=="result")
+        .ok_or("Qwen Code response omitted terminal result")?;
+    if terminal["subtype"]!="success"||terminal["is_error"]==true{
+        return Err("Qwen Code reported unsuccessful run".into());
+    }
+    bounded_answer(terminal["result"].as_str().unwrap_or(""))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn qwen_headless_json_accepts_only_completed_terminal_result(){
+        let good=serde_json::json!([
+            {"type":"system","subtype":"session_start"},
+            {"type":"assistant","message":{"content":[{"type":"text","text":"draft"}]}},
+            {"type":"result","subtype":"success","is_error":false,"result":"Reviewed changes"}
+        ]);
+        assert_eq!(parse_qwen_json(good.to_string().as_bytes()).unwrap(),
+            "Reviewed changes");
+        let failed=serde_json::json!([
+            {"type":"assistant","message":{"content":[{"type":"text","text":"unsafe"}]}}
+        ]);
+        assert!(parse_qwen_json(failed.to_string().as_bytes()).is_err());
+        let error=serde_json::json!([{"type":"result","subtype":"error",
+            "is_error":true,"result":"pretend PASS"}]);
+        assert!(parse_qwen_json(error.to_string().as_bytes()).is_err());
+    }
     #[test]
     fn session_resume_uses_only_this_runs_completed_native_tool_receipts(){
         let mut run=Run::new(crate::domain::CreateRun{
