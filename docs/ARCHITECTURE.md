@@ -770,3 +770,14 @@ vision and context. Every native Run journals this exact typed endpoint
 capability contract before the first inference; a later provider rebind
 cannot silently upgrade/alter tool or thinking behavior on Run resume.
 Unspecified traits remain `unknown`, not auto-detected support.
+
+### Evidence-only strategy evaluation (no optimizer or second agent loop)
+
+The native `/api/v1/strategies/evaluation` endpoint aggregates actual
+completed/failed/approval/uncertain Run receipts by frozen
+`algorithm_bound`+ `loop_bound` identity, with independently verified
+artifact counts separate from model-claimed completion. The endpoint and
+TypeScript SDK return total token/cache and observed KRW charges,
+unreported provider usage and external CLI consultations. These are
+historical observations, not causal lift or experiment scores. No model
+calls, background training, auto source edits or CI execution are involved.

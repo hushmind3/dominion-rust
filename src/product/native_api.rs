@@ -86,6 +86,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/memory/scopes",get(memory_scopes))
         .route("/memory/{id}",post(revise_memory).delete(forget_memory))
         .route("/strategies",get(list_strategies))
+        .route("/strategies/evaluation",get(evaluate_strategies))
         .route("/runs",get(list_runs).post(create_run))
         .route("/runs/from-repository",post(create_repository_run))
         .route("/runs/{id}",get(get_run))
@@ -176,6 +177,14 @@ async fn list_strategies(State(engine):State<Arc<Engine>>,Query(q):Query<Strateg
     let records=engine.store.strategy_evidence(&q.repository).await;
     Json(crate::strategy::rank(records,&q.repository,
         q.query.as_deref().unwrap_or(""),q.limit.unwrap_or(6).min(6)))
+}
+#[derive(Default,Deserialize)]
+struct StrategyEvaluationQuery{repository:Option<String>}
+async fn evaluate_strategies(State(engine):State<Arc<Engine>>,
+    Query(q):Query<StrategyEvaluationQuery>)
+    ->Json<Vec<crate::strategy::StrategyEvaluation>>{
+    let runs=engine.store.list().await;
+    Json(crate::strategy::evaluate_observed(&runs,q.repository.as_deref()))
 }
 async fn get_owner_profile(State(engine):State<Arc<Engine>>)->Json<crate::profile::OwnerProfile>{
     Json(engine.owner_profile.get().await)

@@ -108,6 +108,14 @@ export interface RecoveryProof {
   verification_basis:'auditor_pass_with_postflight'|'deterministic_exact_artifact';
   claim:string;
 }
+export interface StrategyEvaluation {
+  strategyId:string;loopId:string;observedRuns:number;completedRuns:number;
+  artifactVerifiedRuns:number;failedRuns:number;cancelledRuns:number;
+  approvalPausedRuns:number;uncertainEffectRuns:number;
+  modelCalls:number;modelUsageUnreported:number;externalUnmeteredCalls:number;
+  inputTokens:number;outputTokens:number;cachedInputTokens:number;
+  observedCostKrw:number;steps:number;sourceNote:string;
+}
 export interface StrategyEvidence {
   source_id: string; source: 'agent'|'trace_recovery_2026'; repository: string;
   goal: string; principle: string; when_to_use: string; failure_mode: string;
@@ -275,6 +283,8 @@ export class Dominion {
   };
   /** Durable, evidence-ranked cross-task strategy retrieval owned by Rust. */
   readonly strategies = {
+    evaluate:(repository?:string)=>this.request<StrategyEvaluation[]>('GET',
+      '/strategies/evaluation'+(repository?'?repository='+encodeURIComponent(repository):'')),
     search: (repository:string, query:string, limit=6) => this.request<StrategyEvidence[]>(
       'GET','/strategies?repository='+encodeURIComponent(repository)+
       '&query='+encodeURIComponent(query)+'&limit='+Math.min(6,Math.max(1,limit))
