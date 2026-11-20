@@ -19,7 +19,7 @@ function cors(origin, env) {
   return origin && origin === env.ALLOWED_ORIGIN ? {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'POST, GET, OPTIONS',
-    'access-control-allow-headers': 'content-type, authorization, x-dominion-chat-affinity',
+    'access-control-allow-headers': 'content-type, authorization, x-dominion-chat-affinity, x-dominion-cache-anchor',
     'access-control-max-age': '600',
     vary: 'Origin'
   } : {};
@@ -484,7 +484,7 @@ function modernOpenAI(name) {
   const match=/^gpt-(\d+)(?:\.(\d+))?(?:-|$)/.exec(String(name||''));
   return Boolean(match && (+match[1]>5 || (+match[1]===5 && +(match[2]||0)>=6)));
 }
-async function paidSupplierBody(body, selected, user, endpoint, modelName, maxTokens, cacheAffinity) {
+async function paidSupplierBody(body, selected, user, endpoint, modelName, maxTokens, cacheAffinity, sourceAnchor) {
   const supplier={model:modelName,messages:body.messages,max_tokens:maxTokens,stream:false,
     ...(body.tools ? {tools:body.tools}:{}),
     ...(body.tool_choice ? {tool_choice:body.tool_choice}:{})};
@@ -501,6 +501,21 @@ async function paidSupplierBody(body, selected, user, endpoint, modelName, maxTo
   const digest=await hash(user.id+'\n'+(selected?.id||modelName)+'\n'+scoped);
   supplier.prompt_cache_key='dominion-'+digest.slice(0,43);
   const messages=body.messages.map(m=>({...m}));
+  // Native Rust knows exactly which message is the final immutable prefix
+  // boundary. An explicit integer index is stronger than heuristically
+  // matching owner-controlled text. Foreign clients cannot bypass account
+  // isolation or provider model restrictions with this optional hint.
+  const index=typeof sourceAnchor==='string'&&/^(0|[1-9][0-9]{0,2})$/.test(sourceAnchor)?
+    Number(sourceAnchor):-1;
+  const explicit=index>=0&&index<messages.length-1&&
+    ['user','system','developer'].includes(messages[index]?.role)&&
+    typeof messages[index]?.content==='string'&&messages[index].content.length>0;
+  if(explicit){
+    messages[index].content=[{type:'text',text:messages[index].content,
+      prompt_cache_breakpoint:{mode:'explicit'}}];
+    supplier.messages=messages;
+    return supplier;
+  }
   const profileAt=messages.findIndex(m=>m.role==='user'&&typeof m.content==='string'&&
     m.content.startsWith('USER-SUPPLIED AGENT PROFILE'));
   if(profileAt>=0){
@@ -617,7 +632,8 @@ async function proxy(request, env, user) {
       method: 'POST',
       headers: { authorization: 'Bearer ' + modelKey, 'content-type': 'application/json' },
       body: JSON.stringify(await paidSupplierBody(body,selected,user,modelEndpoint,upstreamModel,maxTokens,
-        request.headers.get('x-dominion-chat-affinity'))),
+        request.headers.get('x-dominion-chat-affinity'),
+        request.headers.get('x-dominion-cache-anchor'))),
       signal: AbortSignal.timeout(90000)
     });
     if (!upstream.ok) {

@@ -124,6 +124,20 @@ impl ModelClient {
         let digest=Sha256::digest(session.as_bytes());
         Some(digest[..16].iter().map(|v|format!("{v:02x}")).collect())
     }
+    /// Provider-specific header for Dominion's own Worker gateway only.
+    /// The delimiter is a *message index*, not an untrusted prompt substring.
+    /// The changing latest user question and pending tool results never
+    /// become paid cache-write boundaries.
+    fn dominion_cloud_cache_boundary_for(&self,settings:&ModelSettings,
+        messages:&[Value])->Option<usize>{
+        self.dominion_cloud_affinity_for(settings)?;
+        messages.iter().enumerate()
+            .filter(|(index,message)|*index+1<messages.len()
+                &&message.get("dominion_cache_anchor")==Some(&Value::Bool(true))
+                &&matches!(message["role"].as_str(),Some("user"|"system"|"developer"))
+                &&message["content"].as_str().is_some_and(|text|!text.is_empty()))
+            .map(|(index,_)|index).last()
+    }
     fn opencode_session_for(&self,settings:&ModelSettings)->Option<&str>{
         let url=reqwest::Url::parse(&settings.base_url).ok()?;
         if url.scheme()=="https" && url.host_str()==Some("opencode.ai")
@@ -334,6 +348,9 @@ impl ModelClient {
         }
         if let Some(fingerprint)=self.dominion_cloud_affinity_for(settings){
             req=req.header("x-dominion-chat-affinity",fingerprint);
+            if let Some(boundary)=self.dominion_cloud_cache_boundary_for(settings,messages){
+                req=req.header("x-dominion-cache-anchor",boundary.to_string());
+            }
         }
         if !settings.api_key.is_empty() { req = req.bearer_auth(&settings.api_key); }
         // OpenCode Go conversation affinity survives retries/restarts for
@@ -1082,6 +1099,18 @@ mod tests {
         assert_eq!(hash.len(),32);
         assert_ne!(hash,"dominion-chat-one");
         assert_eq!(hash,session.dominion_cloud_affinity_for(&cfg.main).unwrap());
+        let conversation=vec![
+            json!({"role":"system","content":"stable","dominion_cache_anchor":true}),
+            json!({"role":"user","content":"historical","dominion_cache_anchor":true}),
+            json!({"role":"user","content":"new instruction"})
+        ];
+        assert_eq!(session.dominion_cloud_cache_boundary_for(&cfg.main,&conversation),Some(1));
+        let short=vec![json!({"role":"user","content":"single current request",
+            "dominion_cache_anchor":true})];
+        assert_eq!(session.dominion_cloud_cache_boundary_for(&cfg.main,&short),None);
+        cfg.main.base_url="https://api.deepseek.com/v1".into();
+        assert_eq!(session.dominion_cloud_cache_boundary_for(&cfg.main,&conversation),None);
+        cfg.main.base_url="https://dominion-cloud.dominion-hushmind.workers.dev/v1".into();
         let other=base.with_session_affinity("dominion-chat-two");
         assert_ne!(hash,other.dominion_cloud_affinity_for(&cfg.main).unwrap());
         cfg.main.base_url="https://dominion-cloud.dominion-hushmind.workers.dev.evil.test/v1".into();

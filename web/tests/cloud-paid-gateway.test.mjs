@@ -272,3 +272,48 @@ test('DOMINION Cloud scopes GPT-5.6 cache routes independently per chat within t
     'upstream cache route must never disclose member ID');
  }finally{globalThis.fetch=prev;}
 })
+
+test('exact native cache boundary overrides heuristic and excludes newest question',async()=>{
+ const DB=database(1000000),env=configured(DB),old=globalThis.fetch
+ env.PAID_MODELS_JSON=JSON.stringify([{
+  id:'dominion/exact-boundary',provider:'openai',upstream_model:'gpt-6',
+  input_micro_krw:2,output_micro_krw:3
+ }])
+ const messages=[
+  {role:'system',content:'stable native kernel'},
+  {role:'user',content:'USER-SUPPLIED AGENT PROFILE: previous owner settings'},
+  {role:'user',content:'old fixed input'},
+  {role:'assistant',content:'old fixed answer'},
+  {role:'user',content:'stable history anchor'},
+  {role:'user',content:'CURRENT REQUEST changes'}
+ ]
+ const calls=[]
+ globalThis.fetch=async(_url,options)=>{
+  calls.push(JSON.parse(options.body))
+  return new Response(JSON.stringify({
+   choices:[{message:{role:'assistant',content:'answer'}}],
+   usage:{prompt_tokens:60,completion_tokens:4,
+    prompt_tokens_details:{cached_tokens:0}}}),{status:200})
+ }
+ const call=(anchor)=>new Request('https://dominion-cloud.example.test/v1/chat/completions',{
+  method:'POST',headers:{
+   authorization:auth,origin,'content-type':'application/json',
+   'x-dominion-chat-affinity':'d'.repeat(32),
+   'x-dominion-cache-anchor':anchor
+  },body:JSON.stringify({model:'dominion/exact-boundary',
+   messages,max_tokens:6})
+ })
+ try{
+  assert.equal((await worker.fetch(call('4'),env)).status,200)
+  assert.equal(calls.length,1)
+  assert.equal(calls[0].messages[4].content[0].text,'stable history anchor')
+  assert.equal(calls[0].messages[4].content[0].prompt_cache_breakpoint.mode,'explicit')
+  assert.equal(calls[0].messages[1].content,messages[1].content)
+  assert.equal(calls[0].messages[5].content,messages[5].content)
+  assert.equal((await worker.fetch(call('5'),env)).status,200)
+  assert.equal(calls[1].messages[5].content,messages[5].content,
+   'last changing user turn must never become an explicit cache write')
+  assert.equal(calls[1].messages[2].content[0].prompt_cache_breakpoint.mode,'explicit',
+   'invalid anchor retains old-client deterministic stable-profile fallback')
+ }finally{globalThis.fetch=old}
+})
