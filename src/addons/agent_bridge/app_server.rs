@@ -73,7 +73,7 @@ pub(super) struct AdvisoryAnswer{
     pub thread_id:Option<String>,
     pub resumed:bool
 }
-fn valid_thread_id(id:&str)->bool{
+pub(super) fn valid_thread_id(id:&str)->bool{
     !id.is_empty()&&id.len()<=128&&id.bytes().all(|b|
         b.is_ascii_alphanumeric()||matches!(b,b'-'|b'_'))
 }
