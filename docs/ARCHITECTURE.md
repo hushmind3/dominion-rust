@@ -34,7 +34,7 @@ User / Chat / TypeScript SDK / HTTP
 8. After each committed Store update, the broadcast channel emits one small `RunUpdate`. `/api/events` forwards these updates by SSE. A lagged client receives a resync indication. Idle tabs do **not** clone the entire stored job history every 1.5 seconds.
 9. The frontend and SDK read the same native `Run` and memory records. Planning checks only direct-child existence; delegation limits use direct-child snapshots; settlement reads one consistent two-level family snapshot rather than cloning every historical Run. Explicit scheduled tasks remain available via `src/automations.rs`; retired RSI campaigns are not scheduled.
 
-## Data ownership and migration
+## Data ownership
 
 - `src/store.rs`: durable native Run metadata, messages, planned tool calls, receipts, token/cost measurements and status. Startup diffs the semantic recovered Run against the loaded record and fsyncs only changed snapshots; unrelated historical records are not rewritten. `recovery_candidates` returns only paused/safe Run IDs instead of cloning every stored transcript into the SDK on restart.
 - `src/knowledge.rs`: user-managed notes, corrections and reusable procedures.
@@ -44,29 +44,13 @@ User / Chat / TypeScript SDK / HTTP
 
 Old-format records are not automatically replayed or deleted. Native chat, Run and memory stores retain their ordinary on-disk formats. Historical experiment receipts are quarantined from startup recovery and explicit resume.
 
-## Main SQLite read-only compatibility boundary
-
-Main's `records(kind,id,data)` and `messages` tables are read through a **query-only SQLite snapshot**, never opened for schema updates or writes. `src/legacy_import.rs` converts supported agents, active private sessions and messages into `FrontendStore`'s copy-on-write/fsync snapshot, preserving original message IDs and inert tool metadata. The same loader also previews supported provider records, which `Registry::import_disabled` persists with **no credentials and enabled=false**. Existing IDs are never replaced.
-
-The copy is operator-triggered from the existing Operations/Settings page, the native Rust SDK, or the thin TypeScript adapter. There is no automatic boot migration, secret substitution or replay of old jobs. Incomplete migrations remain retriable because each target store skips existing IDs. The main DB and WAL remain independent and unchanged.
-
-Archived/room/channel sessions, the old vault, memory and execution artifacts are **not imported by this path**. The 8 MiB frontend JSON cap remains and prevents a too-large copy from committing. A full migration needs explicit compatibility semantics and separate tests for those historical formats.
-
-## Historical archive and memory promotion
-
-`src/legacy_archive.rs` provides a separate, indexed SQLite archive populated from the main `dominion.sqlite` through `legacy_import::open_legacy` (query-only read snapshot). Only specifically enumerated nonsecret history categories enter the archive: memory, room, job, execution, operation, workflow, experience, strategy, session and message. It is not mounted into `Store<Run>` or the scheduler, preventing old tool intents and stale queued jobs from firing. Existing keys are updated only when source bytes/timestamps change. A successful re-import can refresh completed job receipts.
-
-`Dominion::list_legacy_history` and `legacy_history_item` expose paginated, bounded owner-facing queries; the same native functions back the React Operations archive panel and typed TypeScript SDK. `promote_legacy_memory` is the **only** crossing into live `Knowledge`: it requires a specific archived memory ID and target scope plus an API confirmation. Deleted, archived and superseded memory records are refused. The original archive remains unchanged.
-
-The historical archive is separate from the 8 MiB chat frontend snapshot, keeping large job transcripts out of the ordinary UI/session write path. It is not an automatic prompt memory cache; no redundant background scan runs at startup. The browser panel only fetches requested archive pages and selected record details.
-
 ## Frontend source and runtime contract
 
 The React workspace was synchronized from main commit `a026ce8e237fde2272b92cf929c7a944337f1d38` into `dominion-sub4` while leaving the sub4 Rust engine, adapters, and databases intact. The main conversation layout retains mounted chat and group views when switching between them, with an overlay settings workspace. New components include `ConversationSettings`, `ExecutionPermissions`, `GrowthDashboard`, and `LearningRecords` along with source styles/locales.
 
-The preserved sub4 `OperationsPage` continues to mount the `LegacyImportPanel` and `LegacyHistoryPanel`; the connected GitHub repository grant is reattached in the main `ConnectionsPage`. The main event shell emits typed `dominion-refresh` events so the native `useRemote` hook can skip unrelated query refreshes.
+The active `OperationsPage` exposes live execution status, settings and native backup/restore, without unmounted SQLite migration screens. The connected GitHub repository grant is in `ConnectionsPage`. The main event shell emits typed `dominion-refresh` events so the native `useRemote` hook can skip unrelated query refreshes.
 
-The historical/research panels are frontend-only where an API is not implemented; they must not be mistaken for live native functionality. Growth panels are lazy-mounted on user expansion to avoid idle background API requests. Browser tests confirm main chat/group navigation, settings, legacy import/history visibility and the repository authorization control against the native Rust API.
+The historical/research panels are frontend-only where an API is not implemented; they must not be mistaken for live native functionality. Growth panels are lazy-mounted on user expansion to avoid idle background API requests. Browser tests cover main chat/group navigation, settings and the repository authorization control against the native Rust API.
 
 Follow-up frontend synchronization imports the latest main `web/src/refreshEvents.ts` scoped SSE router and its unit tests. Sub4 adds native post-fsync Run `job_event {id,status}` mapping so SDK, job and terminal session views update without forcing unrelated model/provider reloads. The `web` CI job runs `npm run test:refresh` before bundling.
 

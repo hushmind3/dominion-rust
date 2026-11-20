@@ -89,26 +89,6 @@ export interface StrategyEvidence {
   attempts: number; cost_krw: number; updated_at_ms: number;
   recovery?: RecoveryProof | null;
 }
-export interface LegacySqlitePreview {
-  sourceAgents:number;sourceProviders:number;importableProviders:number;alreadyPresentProviders:number;skippedProviderRecords:number;sourceSessions:number;sourceMessages:number;
-  importableAgents:number;importableSessions:number;
-  alreadyPresentAgents:number;alreadyPresentSessions:number;
-  skippedBoundSessions:number;skippedArchivedSessions:number;note:string;
-}
-export interface LegacySqliteImport {
-  importedAgents:number;importedProviders:number;existingProviders:number;skippedProviderRecords:number;importedSessions:number;importedMessages:number;
-  existingAgents:number;existingSessions:number;
-  skippedBoundSessions:number;skippedArchivedSessions:number;
-}
-export interface LegacyArchiveStats {
-  inspected:number;storedOrUpdated:number;unchanged:number;byKind:Record<string,number>;mode:string;
-}
-export interface LegacyArchiveRow {
-  kind:string;id:string;title:string;status:string;updatedAt:string;
-}
-export interface LegacyArchivePage {
-  total:number;rows:LegacyArchiveRow[];limit:number;offset:number;
-}
 export interface ConnectedAccount {
   id:string;provider:string;displayName:string;scopes:string;hasToken:boolean;
   repositoryAccess?:boolean;workspaceAccess?:boolean;tools?:string[];
@@ -189,19 +169,6 @@ export class Dominion {
       get:(id:string)=>this.frontendRequest<MainExecution>('GET','/sdk/runs/'+encodeURIComponent(id)),
       cancel:(id:string)=>this.frontendRequest<MainExecution>('POST','/sdk/runs/'+encodeURIComponent(id)+'/cancel',{}),
       resume:(id:string)=>this.frontendRequest<MainExecution>('POST','/sdk/runs/'+encodeURIComponent(id)+'/resume',{}),
-    },
-    legacySqlite:{
-      preview:(path:string)=>this.frontendRequest<LegacySqlitePreview>('POST','/system/legacy-sqlite/preview',{path}),
-      import:(path:string)=>this.frontendRequest<LegacySqliteImport>('POST','/system/legacy-sqlite/import',{path,confirm:true}),
-      archive:(path:string)=>this.frontendRequest<LegacyArchiveStats>('POST','/system/legacy-sqlite/archive',{path,confirm:true}),
-    },
-    legacyHistory:{
-      list:(kind:string,offset=0,limit=30)=>this.frontendRequest<LegacyArchivePage>(
-        'GET','/system/legacy-archive?kind='+encodeURIComponent(kind)+'&offset='+offset+'&limit='+limit),
-      item:(kind:string,id:string)=>this.frontendRequest<unknown>(
-        'GET','/system/legacy-archive/item?kind='+encodeURIComponent(kind)+'&id='+encodeURIComponent(id)),
-      promoteMemory:(id:string,scope:string)=>this.frontendRequest<MemoryEntry>(
-        'POST','/system/legacy-archive/promote-memory',{id,scope,confirm:true}),
     },
     status:()=>this.frontendRequest<{agents:number;providers:number;jobs:number;executions:number}>('GET','/status'),
   };
