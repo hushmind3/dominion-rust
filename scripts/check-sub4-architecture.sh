@@ -104,7 +104,7 @@ if [[ -e src/engine/local_task_catalog.rs || ! -e src/algorithms/local_task_cata
  echo "ERROR: tool-presentation heuristic belongs to algorithms, not Engine" >&2
  exit 1
 fi
-required_count src/engine.rs 'algorithm:Arc<dyn AgentAlgorithm>' 3
+required_count src/engine.rs 'algorithm:Arc<dyn AgentAlgorithm>' 4
 required_count src/algorithms/mod.rs 'pub trait AgentAlgorithm' 1
 required_count src/algorithms/mod.rs 'fn fused_messages' 2
 required_count src/algorithms/mod.rs 'fn initialize_fused' 0
