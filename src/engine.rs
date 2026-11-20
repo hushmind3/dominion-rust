@@ -542,11 +542,17 @@ impl Engine {
                     tool.pointer("/function/name").and_then(Value::as_str),
                     Some("read_tool_receipt"|"search_tool_receipts")));
             }
+            // A normal user chat need not pay for every native schema on
+            // every turn. Search exposes any omitted native capability on
+            // demand under the original policy and approval journal.
+            let (mut available_tools,chat_schema_saved,chat_discovery_active)=
+                crate::tool_discovery::for_chat_turn(
+                    &run,available_tools,&self.settings.denied_tools);
             let mut external=self.mcp.definitions().await;
             external.extend(crate::connected_tools::definitions(&self.settings));
             let (external,deferred_schema_chars,discovery_active)=
                 crate::tool_discovery::for_turn(&run,external,&self.settings.denied_tools);
-            if !discovery_active {
+            if !discovery_active && !chat_discovery_active {
                 available_tools.retain(|tool|tool.pointer("/function/name")
                     .and_then(Value::as_str)!=Some("tool_search"));
             }
@@ -555,7 +561,7 @@ impl Engine {
             let (catalog,policy_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
             let (catalog,local_profile_saved)=local_task_catalog::project(&run,catalog);
             let schema_chars_saved=policy_saved.saturating_add(deferred_schema_chars)
-                .saturating_add(local_profile_saved);
+                .saturating_add(local_profile_saved).saturating_add(chat_schema_saved);
             let projection=crate::context::compact_execution(&run.messages,self.settings.context_max_chars)?;
             let mut outbound=projection.messages.clone();
             // The source is a durable tool/verifier receipt, not model or
@@ -944,9 +950,16 @@ impl Engine {
                 let query=call.arguments.get("query").and_then(Value::as_str)
                     .ok_or("tool_search query required")?;
                 let limit=call.arguments.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
-                let mut external=self.mcp.definitions().await;
-                external.extend(crate::connected_tools::definitions(&self.settings));
-                crate::tool_discovery::search(&snapshot,external,&self.settings.denied_tools,query,limit)
+                // Native and external tools share search, current Run
+                // permissions, and the exact same subsequent schema admission.
+                let mut available=tools::definitions(self.settings.shell_enabled);
+                available.extend(self.mcp.definitions().await);
+                available.extend(crate::connected_tools::definitions(&self.settings));
+                let has_children=self.store.has_children(id).await;
+                let (authorized,_)=policy::select_catalog(&snapshot,available,
+                    has_children,&self.settings.denied_tools);
+                crate::tool_discovery::search(&snapshot,authorized,
+                    &self.settings.denied_tools,query,limit)
             } else if call.name == "list_skills" {
                 let found=crate::skills::list(&self.settings,id).await?;
                 Ok(json!(found).to_string())

@@ -47,7 +47,9 @@ fn build_chat_context(profile:&str,archived:&str,
         let limit=if pinned{900}else{550};
         let content=item.content.chars().take(limit).collect::<String>();
         let mut message=json!({"role":item.role,"content":content});
-        if pinned{message["dominion_cache_anchor"]=json!(true);}
+        if pinned && item.role=="user"{
+            message["dominion_cache_anchor"]=json!(true);
+        }
         context.push(message);
     }
     // Work is bounded independently of the stored full, immutable transcript.
@@ -229,7 +231,7 @@ mod context_projection_tests{
   assert_eq!(after[2]["role"],"assistant");
   assert!(after.iter().any(|entry|entry["content"]=="historical turn 18"));
   assert_eq!(after.iter().filter(|entry|
-    entry["dominion_cache_anchor"]==true).count(),5);
+    entry["dominion_cache_anchor"]==true).count(),3);
   assert!(after.iter().all(|entry|
     entry["role"]=="user"||entry["role"]=="assistant"));
  }

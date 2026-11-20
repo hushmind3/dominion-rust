@@ -19,6 +19,31 @@ fn allowed<'a>(run:&Run,tools:impl IntoIterator<Item=&'a Value>,
     tools.into_iter().filter(|tool|name(tool)
         .is_some_and(|n|policy::admitted_tool(run,n,denied))).collect()
 }
+/// Chat-only schema economy: native tools use the SAME search/receipt path as
+/// external MCP tools, with no new executor, policy, or alternate approval.
+/// Never apply this to delegated SDK Runs or repository-anchored coding tasks.
+pub fn for_chat_turn(run:&Run,tools:Vec<Value>,denied:&[String])
+    ->(Vec<Value>,usize,bool){
+    if run.chat_context.is_empty()||run.parent_run_id.is_some()||run.repository.is_some()
+        ||!policy::admitted_tool(run,"tool_search",denied){
+        return (tools,0,false);
+    }
+    let eligible=allowed(run,tools.iter(),denied);
+    if eligible.len()<=THRESHOLD{return (eligible.into_iter().cloned().collect(),0,false)}
+    let original=eligible.iter().map(|t|t.to_string().len()).sum::<usize>();
+    let docs=documents(eligible.clone());
+    // The latest actual user instruction is the ranking query. History and
+    // older quoted assistant messages never select tools or grant authority.
+    let goal=owner_directive(run).unwrap_or(&run.instruction);
+    let selected=ranked(&docs,goal).into_iter().take(4)
+        .filter_map(|idx|name(docs[idx].tool)).collect::<BTreeSet<_>>();
+    let visible=eligible.into_iter().filter(|tool|name(tool).is_some_and(|n|
+        n=="tool_search"||run.discovered_tools.iter().any(|v|v==n)
+        ||selected.contains(n))).cloned().collect::<Vec<_>>();
+    let remaining=visible.iter().map(|t|t.to_string().len()).sum::<usize>();
+    (visible,original.saturating_sub(remaining),true)
+}
+
 /// Small external catalogs remain eager: cold discovery has a real model-turn
 /// cost. If search was disabled, NEVER hide the tools needed to complete work.
 pub fn for_turn(run:&Run,tools:Vec<Value>,denied:&[String])->(Vec<Value>,usize,bool){
@@ -283,4 +308,23 @@ mod tests{
         assert_eq!(r.discovered_tools.len(),MAX_RETAINED);
         assert_eq!(r.discovered_tools.last().unwrap(),"mcp__x__29");
     }
+    #[test]
+    fn chat_native_tool_economy_defers_schemas_and_unlocks_only_searched_tools(){
+        let mut r=run();
+        r.chat_context=vec![json!({"role":"user","content":"prior chat"})];
+        r.instruction="Explain what Rust means".into();
+        let original=crate::tools::definitions(true);
+        let (small,saved,active)=for_chat_turn(&r,original.clone(),&[]);
+        assert!(active&&saved>0);
+        assert!(small.len()<original.len());
+        assert!(small.iter().any(|item|name(item)==Some("tool_search")));
+        let target="run_program".to_string();
+        remember(&mut r,&[target.clone()]);
+        let (after,_,_)=for_chat_turn(&r,original.clone(),&[]);
+        assert!(after.iter().any(|item|name(item)==Some(target.as_str())));
+        let blocked=vec![target];
+        let (safe,_,_)=for_chat_turn(&r,original,&blocked);
+        assert!(!safe.iter().any(|item|name(item)==Some("run_program")));
+    }
+
 }
