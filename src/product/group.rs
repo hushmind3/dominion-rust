@@ -743,12 +743,12 @@ impl Groups {
         let owner=room.messages.get(binding.owner_message_index)
             .ok_or("original owner message was removed")?;
         if owner.speaker!="user"||owner.at_ms!=binding.owner_at_ms{
-            return Err("Room was reset or original owner message changed");
+            return Err("Room was reset or original owner message changed".into());
         }
         if room.messages.iter().enumerate().skip(binding.owner_message_index+1)
             .take_while(|(_,m)|m.speaker!="user")
             .any(|(_,m)|m.speaker==binding.participant){
-            return Err("Room already has a different reply for this speaker");
+            return Err("Room already has a different reply for this speaker".into());
         }
         let participant=room.participants.iter().find(|p|p.name==binding.participant)
             .ok_or("Room speaker no longer registered")?.clone();
@@ -1026,7 +1026,8 @@ impl Groups {
         // The cursor commits in the exact same persisted Room as this
         // accepted speaker message and its authoritative provider receipt.
         let owner_message_index=room.messages.iter().rposition(|m|m.speaker=="user");
-        Self::append_accepted_response(&mut room,participant,reply.text,
+        let accepted_participant=participant.clone();
+        Self::append_accepted_response(&mut room,&accepted_participant,reply.text,
             reply.model,owner_message_index);
         if done {
             room.status=RoomStatus::Finished;
