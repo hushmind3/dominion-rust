@@ -673,6 +673,8 @@ const en: Record<LocaleKey, string> = {
   'ext.credentialHint': "Existing tokens are never shown. Enter a new token only to replace it.",
   'ext.enabled': "Enable MCP server",
   'ext.disabled': "Disabled",
+  'ext.skillFormError': "Enter both a skill name and instructions.",
+  'ext.skillSaved': "Skill saved.",
   'ext.addMcp': 'Add MCP manually',
   'ext.tab.servers': 'MCP servers',
   'ext.tab.tools': 'Connected tools',
