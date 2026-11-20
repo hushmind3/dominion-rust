@@ -218,6 +218,7 @@ pub fn message_rows(room:&Room)->Vec<UiMessage>{
       agent_id:if user{None}else{Some(m.speaker.clone())},
       metadata:Some(json!({
         "roomId":room.id.to_string(),
+        "executionId":receipts.get(&i).and_then(|r|r.origin_run_id),
         "authorKind":if user{"user"}else{"agent"},
         "model":m.model,"usage":usage
       }))
@@ -392,6 +393,7 @@ async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   let room=engine.groups.get(id).await.ok_or_else(missing)?;
   let active=room_native::running(&engine,&room).await;
   let approval=room_native::approvals(&engine,&room).await;
+  let executions=room_native::executions(&engine,&room).await;
   let running=engine.groups.frontend_turn_active(id)||active;
   let pending=if running{speakers_for_owner_turn(&room)}else{Vec::new()};
   let owner=room.messages.iter().rposition(|m|m.speaker=="user");
@@ -407,8 +409,9 @@ async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   })]}else{vec![]};
   Ok(Json(json!({
     "room":room_view(&room),"sessionId":room_session(id),
-    "jobs":jobs,"executions":[],"learningJobs":[],"operations":[],"approvals":approval,
-    "status":if running{"running"}else{room_status(&room)},
+    "jobs":jobs,"executions":executions,"learningJobs":[],"operations":[],"approvals":approval,
+    "status":if running{"running"}else if !approval.is_empty(){"awaiting_approval"}
+        else{room_status(&room)},
     "activeAgentId":pending.first(),"queueDepth":pending.len(),
     "lastProviderFailure":room.last_provider_failure,
     "usage":room_usage(&room)
@@ -430,6 +433,19 @@ async fn admit_owner_message(
     if input.reasoning_language.as_deref().is_some_and(|value|
         !matches!(value,"ko"|"default"|"original")){
         return Err(bad("unsupported reasoning language"));
+    }
+    // An approval-held or still-running old Room Run cannot be bypassed by
+    // another owner message. Exact clientMessageId retry is still permitted.
+    // Reconcile a completed Run first: source-index order stays authoritative.
+    room_native::reconcile_ready(engine,id).await.map_err(bad)?;
+    let current=engine.groups.get(id).await.ok_or_else(missing)?;
+    if config_of(&current).tools_enabled
+        &&!current.client_messages.contains_key(&input.client_message_id)
+        &&room_native::unsettled(engine,&current).await{
+        return Err((StatusCode::CONFLICT,Json(json!({
+            "error":"previous native Room speaker has not settled; resolve approval or reconcile its Run before sending a new owner message",
+            "errorCode":"room_native_run_unsettled"
+        }))));
     }
     let requested=input.agent_ids.clone();
     let mut recipients=requested.clone();
@@ -651,6 +667,13 @@ async fn run(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
 }
 async fn reset(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Value>,Fault>{
+  room_native::reconcile_ready(&engine,id).await.map_err(bad)?;
+  let snapshot=engine.groups.get(id).await.ok_or_else(missing)?;
+  if room_native::unsettled(&engine,&snapshot).await{
+    return Err((StatusCode::CONFLICT,Json(json!({
+      "error":"native Room Run still awaits approval, execution or durable settlement; cannot erase its owner message"
+    }))));
+  }
   let room=engine.groups.reset(id).await.map_err(bad)?;
   Ok(Json(json!({"ok":true,"room":room_view(&room),"sessionId":room_session(id)})))
 }

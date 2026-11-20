@@ -532,6 +532,13 @@ async fn tool_room_uses_one_native_harness_run_with_source_linked_receipt_and_id
     assert!(native.read_only);
     assert!(native.events.iter().any(|e|e.kind=="room_context_attached"));
     assert_eq!(native.answer.as_deref(),Some(persisted.messages[1].content.as_str()));
+    let event=crate::sdk::Dominion::from_engine(engine.clone())
+        .unified_room_events(id,1).await.unwrap();
+    assert_eq!(event.len(),1);
+    assert_eq!(event[0].detail.as_ref().unwrap()["originRunId"],id_of_run.to_string());
+    let room_state=state(State(engine.clone()),Path(id)).await.unwrap().0;
+    assert_eq!(room_state["executions"][0]["id"],id_of_run.to_string());
+    assert_eq!(room_state["executions"][0]["delivered"],true);
     assert_eq!(persisted.used_tokens,native.input_tokens+native.output_tokens);
     assert_eq!(first["job"]["result"]["actualResponses"],1);
     // The very same owner key must never launch another paid native Run.
@@ -541,5 +548,47 @@ async fn tool_room_uses_one_native_harness_run_with_source_linked_receipt_and_id
     let settled=engine.groups.settle_native_run(&native).await.unwrap();
     assert_eq!(settled.messages.len(),2);
     assert_eq!(settled.usage_receipts.len(),1);
+    server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+
+#[tokio::test]
+async fn native_room_pending_approval_blocks_new_owner_and_surfaces_same_execution_id(){
+    use crate::domain::{CreateRun,Run,RunStatus,ToolCall};
+    let (engine,id,_requests,server,root)=setup(2,"round_robin").await;
+    let before=engine.groups.get(id).await.unwrap();
+    let mut config=before.frontend.clone().unwrap();
+    config.tools_enabled=true;
+    engine.groups.configure(id,config,before.participants).await.unwrap();
+    engine.groups.say_once(id,"First owner instruction".into(),
+        "owner-key",vec!["agent-0".into()]).await.unwrap();
+    let room=engine.groups.get(id).await.unwrap();
+    let (run_id,binding)=room_native::identity(&room,"agent-0").unwrap();
+    let mut run=Run::new(CreateRun{instruction:"Inspect using tool".into(),
+        budget_krw:Some(100.0),max_steps:Some(2)},2).unwrap();
+    run.id=run_id;
+    run.room_binding=Some(binding);
+    run.provider_id="dominion-native".into();
+    run.model_name="mock-room-model".into();
+    run.status=RunStatus::AwaitingApproval;
+    run.pending_approval=Some(ToolCall{
+        id:"read-1".into(),name:"read_file".into(),
+        arguments:json!({"path":"a.txt"})
+    });
+    engine.store.put(run).await.unwrap();
+    let err=admit_owner_message(&engine,id,&SayInput{
+        input:"Second owner instruction".into(),agent_ids:vec![],
+        client_message_id:"different-key".into(),reasoning_language:None
+    }).await.unwrap_err();
+    assert_eq!(err.0,StatusCode::CONFLICT);
+    assert_eq!(engine.groups.get(id).await.unwrap().messages.len(),1);
+    let state=state(State(engine.clone()),Path(id)).await.unwrap().0;
+    assert_eq!(state["status"],"awaiting_approval");
+    assert_eq!(state["approvals"][0]["id"],run_id.to_string());
+    assert_eq!(state["approvals"][0]["sessionId"],format!("room-{id}"));
+    let global=crate::frontend_api::operations::approvals(State(engine.clone())).await.0;
+    assert_eq!(global[0]["sessionId"],format!("room-{id}"));
+    let reset=reset(State(engine.clone()),Path(id)).await.unwrap_err();
+    assert_eq!(reset.0,StatusCode::CONFLICT);
     server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
 }

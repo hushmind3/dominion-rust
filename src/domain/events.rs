@@ -41,6 +41,10 @@ impl UnifiedEvent{
     }
     pub fn room(room_id:Uuid,index:usize,speaker:&str,content:&str,
         at_ms:u64,model:Option<&str>)->Self{
+        Self::room_with_run(room_id,index,speaker,content,at_ms,model,None)
+    }
+    pub fn room_with_run(room_id:Uuid,index:usize,speaker:&str,content:&str,
+        at_ms:u64,model:Option<&str>,run_id:Option<Uuid>)->Self{
         let seq=(index as u64).saturating_add(1);
         Self{schema_version:1,origin:EventOrigin::Room,
             source_id:room_id.to_string(),seq:Some(seq),
@@ -48,7 +52,9 @@ impl UnifiedEvent{
             actor:Some(speaker.to_string()),
             kind:if speaker=="user"{"owner_message"}else{"participant_message"}.into(),
             content:content.to_string(),
-            detail:model.map(|value|serde_json::json!({"model":value})),
+            detail:if model.is_some()||run_id.is_some(){
+                Some(serde_json::json!({"model":model,"originRunId":run_id}))
+            }else{None},
             at_ms:Some(at_ms),created_at:None}
     }
     pub fn chat(session_id:&str,message_id:&str,role:&str,content:&str,
@@ -77,6 +83,10 @@ mod tests{
         let room=UnifiedEvent::room(run.id,0,"user","test",123,None);
         assert_eq!(room.seq,Some(1));
         assert_eq!(room.kind,"owner_message");
+        let linked=UnifiedEvent::room_with_run(run.id,1,"expert","evidence",
+            124,Some("local-model"),Some(run.id));
+        assert_eq!(linked.detail.as_ref().unwrap()["originRunId"],run.id.to_string());
+        assert_eq!(linked.seq,Some(2));
         let chat=UnifiedEvent::chat("chat-2","message-9","assistant",
             "response","2026-11-20T00:00:00Z",None);
         assert_eq!(chat.seq,None,

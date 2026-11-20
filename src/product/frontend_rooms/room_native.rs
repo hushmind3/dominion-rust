@@ -8,7 +8,7 @@ use std::time::Duration;
 
 /// Stable after a retry or restart; distinct from previous owner turns and
 /// after a reset. No stored sequence counter or parallel session allocator.
-fn identity(room:&Room,participant:&str)->Option<(Uuid,RoomRunBinding)>{
+pub(super) fn identity(room:&Room,participant:&str)->Option<(Uuid,RoomRunBinding)>{
     let owner_message_index=room.messages.iter().rposition(|m|m.speaker=="user")?;
     let owner=&room.messages[owner_message_index];
     let binding=RoomRunBinding{room_id:room.id,owner_message_index,
@@ -28,6 +28,35 @@ async fn source_run(engine:&Arc<Engine>,room:&Room,participant:&str)->Option<Run
     let (id,binding)=identity(room,participant)?;
     let run=engine.store.get(id).await?;
     (run.room_binding.as_ref()==Some(&binding)).then_some(run)
+}
+/// No new owner turn or reset may hide an unobserved native Room effect.
+pub(super) async fn unsettled(engine:&Arc<Engine>,room:&Room)->bool{
+    for participant in &room.participants{
+        if let Some(run)=source_run(engine,room,&participant.name).await{
+            if !room.usage_receipts.iter().any(|receipt|
+                receipt.origin_run_id==Some(run.id)){
+                return true;
+            }
+        }
+    }
+    false
+}
+pub(super) async fn executions(engine:&Arc<Engine>,room:&Room)->Vec<Value>{
+    let mut runs=Vec::new();
+    for participant in &room.participants{
+        if let Some(run)=source_run(engine,room,&participant.name).await{
+            let delivered=room.usage_receipts.iter().any(|receipt|
+                receipt.origin_run_id==Some(run.id)&&receipt.accepted);
+            runs.push(json!({
+                "id":run.id,"roomId":room.id,"agentId":participant.name,
+                "status":run.status,"source":"native_run",
+                "delivered":delivered,"currentTool":run.pending_approval,
+                "costKrw":run.cost_krw,"inputTokens":run.input_tokens,
+                "outputTokens":run.output_tokens
+            }));
+        }
+    }
+    runs
 }
 pub(super) async fn running(engine:&Arc<Engine>,room:&Room)->bool{
     for participant in &room.participants{
@@ -58,9 +87,9 @@ pub(super) async fn approvals(engine:&Arc<Engine>,room:&Room)->Vec<Value>{
 pub(super) async fn reconcile_ready(engine:&Arc<Engine>,id:Uuid)->Result<(),String>{
     let room=engine.groups.get(id).await.ok_or("room not found")?;
     if !config_of(&room).tools_enabled{return Ok(());}
-    let Some(owner_index)=room.messages.iter().rposition(|m|m.speaker=="user")else{
+    if !room.messages.iter().any(|m|m.speaker=="user"){
         return Ok(());
-    };
+    }
     for participant in &room.participants{
         let Some(run)=source_run(engine,&room,&participant.name).await else{continue};
         if run.terminal(){
@@ -72,7 +101,6 @@ pub(super) async fn reconcile_ready(engine:&Arc<Engine>,id:Uuid)->Result<(),Stri
         }
     }
     // No new model calls are made merely by reading a Room.
-    let _=owner_index;
     Ok(())
 }
 /// Execute once; on retry only observe the original Run. At most one

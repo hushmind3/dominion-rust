@@ -82,9 +82,15 @@ impl Dominion {
         ->Result<Vec<crate::domain::events::UnifiedEvent>,String>{
         let room=self.engine.groups.get(id).await.ok_or("room not found")?;
         let start=since.min(room.messages.len() as u64) as usize;
+        let linked=room.usage_receipts.iter()
+            .filter(|receipt|receipt.accepted)
+            .filter_map(|receipt|receipt.origin_run_id
+                .map(|id|(receipt.message_index,id)))
+            .collect::<std::collections::HashMap<_,_>>();
         Ok(room.messages.iter().enumerate().skip(start).map(|(i,m)|
-            crate::domain::events::UnifiedEvent::room(room.id,i,
-                &m.speaker,&m.content,m.at_ms,m.model.as_deref())
+            crate::domain::events::UnifiedEvent::room_with_run(room.id,i,
+                &m.speaker,&m.content,m.at_ms,m.model.as_deref(),
+                linked.get(&i).copied())
         ).collect())
     }
     pub async fn agent_profiles(&self)->Vec<crate::frontend_state::UiAgent>{

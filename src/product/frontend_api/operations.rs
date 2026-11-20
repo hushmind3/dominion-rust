@@ -3,12 +3,18 @@ use super::*;
 
 pub(super) async fn approvals(State(engine):State<Arc<Engine>>)->Json<Value>{
     let sessions=engine.frontend.pending_run_sessions().await;
-    let pending=engine.store.pending_approvals().await.into_iter()
-        .map(|(id,call)|json!({
+    let mut pending=Vec::new();
+    for (id,call) in engine.store.pending_approvals().await{
+        let origin=engine.store.get(id).await
+            .and_then(|run|run.room_binding)
+            .map(|binding|format!("room-{}",binding.room_id));
+        pending.push(json!({
             "id":id.to_string(),"tool":call.name,"args":call.arguments,
             "status":"pending",
-            "sessionId":sessions.get(&id).map(String::as_str).unwrap_or("")
-        })).collect::<Vec<_>>();
+            "sessionId":sessions.get(&id).map(String::as_str)
+                .or(origin.as_deref()).unwrap_or("")
+        }));
+    }
     Json(json!(pending))
 }
 #[derive(Deserialize)]
