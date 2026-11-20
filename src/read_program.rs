@@ -9,6 +9,7 @@
 //! an external TypeScript executor.
 use crate::{config::Settings,domain::{Run,ToolCall},hooks::HookChain,policy,program_ir,tool_schema,tools};
 use serde_json::{json,Value};
+#[cfg(test)] use uuid::Uuid;
 use sha2::{Digest,Sha256};
 use std::{collections::{HashMap,HashSet},sync::Arc,time::Duration};
 use tokio::{task::JoinSet,time::timeout};
