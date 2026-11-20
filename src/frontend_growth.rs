@@ -36,51 +36,88 @@ async fn capabilities(State(engine):State<Arc<Engine>>)->Json<Value>{
  }
  Json(json!({"items":items}))
 }
+/// Provider-reported model-token ledger. A reduced wire payload is NOT a
+/// cached token, and a missing cache counter is not a measured zero hit.
+/// Legacy Run events with no JSON detail retain the old message-text parser.
 async fn model_usage(State(engine):State<Arc<Engine>>)->Json<Value>{
- let mut grouped=HashMap::<String,(u64,u64,u64,u64)>::new();
- let mut calls=0u64;let mut tokens=0u64;let mut completion=0u64;
- for run in engine.store.list().await {
+ // calls,total,prompt,output,cached,writes,unmetered,cache_unknown
+ type Counts=(u64,u64,u64,u64,u64,u64,u64,u64);
+ let mut grouped=HashMap::<String,Counts>::new();
+ let mut totals:Counts=(0,0,0,0,0,0,0,0);
+ for run in engine.store.list().await{
   let mut events=0u64;
   for event in run.events.iter().filter(|event|event.kind=="model"){
+   let detail=event.detail.as_ref();
    let mut fields=event.message.split(" · ");
    let name=fields.next().unwrap_or("").trim();
-   let usage=fields.next().unwrap_or("");
-   let mut parts=usage.split_whitespace();
-   let input=if parts.next()==Some("in"){parts.next().and_then(|s|s.parse::<u64>().ok())}else{None};
-   let output=usage.split("out ").nth(1).and_then(|s|s.split_whitespace().next())
-    .and_then(|s|s.parse::<u64>().ok());
-   let model=if name.is_empty(){engine.settings.main.name.as_str()}else{name};
-   let row=grouped.entry(model.to_string()).or_default();
-   row.0+=1;calls+=1;events+=1;
-   if let (Some(input),Some(output))=(input,output){
-    let total=input.saturating_add(output);
-    row.1=row.1.saturating_add(total);
-    row.2=row.2.saturating_add(output);
-    tokens=tokens.saturating_add(total);
-    completion=completion.saturating_add(output);
-   }else{
-    row.3+=1; // Receipt format did not expose tokens; never invent them.
+   let raw=fields.next().unwrap_or("");
+   let mut parts=raw.split_whitespace();
+   let old_input=if parts.next()==Some("in"){
+    parts.next().and_then(|v|v.parse::<u64>().ok())
+   }else{None};
+   let old_output=raw.split("out ").nth(1)
+    .and_then(|v|v.split_whitespace().next())
+    .and_then(|v|v.parse::<u64>().ok());
+   let input=detail.and_then(|d|d["input_tokens"].as_u64()).or(old_input);
+   let output=detail.and_then(|d|d["output_tokens"].as_u64()).or(old_output);
+   let model=detail.and_then(|d|d["model"].as_str())
+    .filter(|v|!v.is_empty()).unwrap_or_else(||if name.is_empty(){
+     if run.model_name.is_empty(){engine.settings.main.name.as_str()}
+     else{run.model_name.as_str()}
+    }else{name});
+   let cached=detail.and_then(|d|d["cached_input_tokens"].as_u64()).unwrap_or(0);
+   let written=detail.and_then(|d|d["cache_write_tokens"].as_u64()).unwrap_or(0);
+   let unmetered=if input.is_none()||output.is_none()
+    ||detail.is_some_and(|d|d["usage_reported"]!=true){1}else{0};
+   let cache_unknown=if detail.is_none_or(|d|d["cache_usage_reported"]!=true){1}else{0};
+   let (in_tokens,out_tokens)= (input.unwrap_or(0),output.unwrap_or(0));
+   let combined=in_tokens.saturating_add(out_tokens);
+   let row=grouped.entry(model.to_owned()).or_default();
+   for x in [&mut totals,row]{
+    x.0+=1;x.1=x.1.saturating_add(combined);
+    x.2=x.2.saturating_add(in_tokens);
+    x.3=x.3.saturating_add(out_tokens);
+    x.4=x.4.saturating_add(cached);
+    x.5=x.5.saturating_add(written);
+    x.6=x.6.saturating_add(unmetered);
+    x.7=x.7.saturating_add(cache_unknown);
+   }
+   events+=1;
+  }
+  // Pre-upgrade model-only snapshots can have terminal aggregate usage but
+  // no individual event: attribute only to the original selected model.
+  if events==0&&run.input_tokens.saturating_add(run.output_tokens)>0{
+   let model=if run.model_name.is_empty(){engine.settings.main.name.clone()}
+    else{run.model_name.clone()};
+   let row=grouped.entry(model).or_default();
+   for x in [&mut totals,row]{
+    x.0+=1;x.1=x.1.saturating_add(run.input_tokens.saturating_add(run.output_tokens));
+    x.2=x.2.saturating_add(run.input_tokens);
+    x.3=x.3.saturating_add(run.output_tokens);
+    x.4=x.4.saturating_add(run.cached_input_tokens);
+    x.5=x.5.saturating_add(run.cache_write_tokens);
+    x.7+=1;
    }
   }
-  // Historical model-only snapshots can contain usage even when older
-  // receipts used a different format. Attribute only when unambiguous.
-  if events==0 && run.input_tokens.saturating_add(run.output_tokens)>0{
-   let row=grouped.entry(engine.settings.main.name.clone()).or_default();
-   row.0+=1;calls+=1;
-   let total=run.input_tokens.saturating_add(run.output_tokens);
-   row.1=row.1.saturating_add(total);row.2=row.2.saturating_add(run.output_tokens);
-   tokens=tokens.saturating_add(total);
-   completion=completion.saturating_add(run.output_tokens);
-  }
  }
- let mut groups=grouped.into_iter().map(|(model,(count,total,output,unknown))|json!({
+ let mut groups=grouped.into_iter().map(|(model,x)|json!({
   "providerId":"native","model":model,"purpose":"native execution",
-  "calls":count,"totalTokens":total,"completionTokens":output,
-  "estimatedCalls":unknown
+  "calls":x.0,"totalTokens":x.1,"promptTokens":x.2,
+  "completionTokens":x.3,"cachedPromptTokens":x.4,
+  "uncachedPromptTokens":x.2.saturating_sub(x.4),
+  "cacheWriteTokens":x.5,"cacheUsageReported":x.0>0&&x.7==0,
+  "unmeteredCalls":x.6,"cacheUnreportedCalls":x.7,
+  "estimatedCalls":x.6
  })).collect::<Vec<_>>();
  groups.sort_by(|a,b|b["calls"].as_u64().cmp(&a["calls"].as_u64()));
- Json(json!({"calls":calls,"totalTokens":tokens,
-    "completionTokens":completion,"groups":groups}))
+ Json(json!({"calls":totals.0,"totalTokens":totals.1,
+    "promptTokens":totals.2,"completionTokens":totals.3,
+    "cachedPromptTokens":totals.4,
+    "uncachedPromptTokens":totals.2.saturating_sub(totals.4),
+    "cacheWriteTokens":totals.5,
+    "cacheUsageReported":totals.0>0&&totals.7==0,
+    "unmeteredCalls":totals.6,"cacheUnreportedCalls":totals.7,
+    "groups":groups}))
 }
 
 async fn synergy(State(engine):State<Arc<Engine>>)->Json<Value>{
