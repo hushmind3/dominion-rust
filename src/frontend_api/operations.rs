@@ -54,12 +54,18 @@ pub(super) fn native_run_usage(run:&Run)->Value{
     let missing=run.events.iter().filter(|e|e.kind=="model"
         &&e.detail.as_ref().and_then(|v|v.get("usage_reported"))
             .and_then(Value::as_bool)!=Some(true)).count();
-    usage_values(run.input_tokens,run.cached_input_tokens,run.cache_write_tokens,
-        run.output_tokens,requests,missing,run.cost_krw)
+    let mut usage=usage_values(run.input_tokens,run.cached_input_tokens,run.cache_write_tokens,
+        run.output_tokens,requests,missing,run.cost_krw);
+    usage["cacheUsageReported"]=json!(requests>0&&run.cache_unreported_requests==0);
+    usage["cacheUnreportedCalls"]=json!(run.cache_unreported_requests);
+    usage
 }
 pub(super) fn native_header_usage(run:&crate::store::RunHeader)->Value{
-    usage_values(run.input_tokens,run.cached_input_tokens,run.cache_write_tokens,
-        run.output_tokens,run.model_requests,run.unmetered_model_requests,run.cost_krw)
+    let mut usage=usage_values(run.input_tokens,run.cached_input_tokens,run.cache_write_tokens,
+        run.output_tokens,run.model_requests,run.unmetered_model_requests,run.cost_krw);
+    usage["cacheUsageReported"]=json!(run.model_requests>0&&run.cache_unreported_requests==0);
+    usage["cacheUnreportedCalls"]=json!(run.cache_unreported_requests);
+    usage
 }
 pub(super) fn as_job(run:&Run)->Value{
     json!({
