@@ -5,10 +5,23 @@ use crate::{engine::Engine,group::Room};
 use axum::{extract::{Path,State},http::StatusCode,routing::{get,post},Json,Router};
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
-use std::{collections::HashMap,fs,io::Write,path::{Path as FilePath,PathBuf},sync::{Arc,Mutex,OnceLock},time::Duration};
+use std::{collections::{HashMap,HashSet},fs,io::Write,path::{Path as FilePath,PathBuf},sync::{Arc,Mutex,OnceLock},time::Duration};
 use uuid::Uuid;
 type Fault=(StatusCode,Json<Value>);
 static WRITE_LOCK:OnceLock<Mutex<()>>=OnceLock::new();
+// A process-local gate distinguishes an active HTTP send from a crash-unknown
+// delivery. Only the latter can be reconciled by a user.
+static ACTIVE_SENDS:OnceLock<Mutex<HashSet<String>>>=OnceLock::new();
+fn active_sends()->&'static Mutex<HashSet<String>>{
+ ACTIVE_SENDS.get_or_init(||Mutex::new(HashSet::new()))
+}
+struct ActiveSend(String);
+impl Drop for ActiveSend {
+ fn drop(&mut self){
+  active_sends().lock().unwrap_or_else(|e|e.into_inner()).remove(&self.0);
+ }
+}
+
 fn guard()->std::sync::MutexGuard<'static,()>{
  WRITE_LOCK.get_or_init(||Mutex::new(())).lock().unwrap_or_else(|e|e.into_inner())
 }
@@ -66,13 +79,17 @@ fn public(channel:&Channel)->Value{
   "status":if !channel.enabled{"disabled"}
    else if channel.pending_index.is_some(){"needs_review"}
    else if channel.runtime_error.is_some(){"error"}
-   else if channel.verified{"outbound_ready"}else{"not_verified"},
+   else if !channel.verified{"not_verified"}
+   else if !channel.sync_room_messages{"sync_disabled"}
+   else{"outbound_ready"},
   "runtimeError":channel.runtime_error,
   "configured":!channel.token.is_empty(),
   "credentialsPresent":{"token":!channel.token.is_empty()},
   "chatId":channel.chat_id,"channelId":channel.channel_id,
   "syncRoomMessages":channel.sync_room_messages,
-  "delivery":{"pending":usize::from(channel.pending_index.is_some()),"cursor":channel.cursor}
+  "delivery":{"pending":usize::from(channel.pending_index.is_some()),
+   "needsReview":usize::from(channel.pending_index.is_some()),
+   "pendingIndex":channel.pending_index,"cursor":channel.cursor}
  })
 }
 pub fn routes()->Router<Arc<Engine>>{
@@ -81,6 +98,7 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/channels",get(list).post(upsert))
   .route("/channels/{id}",axum::routing::delete(remove))
   .route("/channels/{id}/diagnose",post(diagnose))
+  .route("/channels/{id}/delivery/reconcile",post(reconcile_delivery))
 }
 async fn catalog()->Json<Value>{
  Json(json!([
@@ -142,6 +160,14 @@ async fn upsert(State(engine):State<Arc<Engine>>,Json(input):Json<Value>)
  if previous.is_some_and(|row|row.kind!=kind){
   return Err(err(StatusCode::CONFLICT,"channel driver cannot be changed after creation"));
  }
+ // A pending external effect cannot be silently transferred to different
+ // credentials or destination. Resolve its observed outcome first.
+ if previous.is_some_and(|row|row.pending_index.is_some() &&
+     (row.room_id!=room_id || row.token!=new_token && !new_token.is_empty() ||
+      (if kind=="telegram"{row.chat_id!=destination}else{row.channel_id!=destination}))){
+  return Err(err(StatusCode::CONFLICT,
+   "review the pending delivery before changing credentials or destination"));
+ }
  let token=if new_token.is_empty(){
   previous.map(|row|row.token.clone()).unwrap_or_default()
  }else{new_token.to_owned()};
@@ -159,7 +185,8 @@ async fn upsert(State(engine):State<Arc<Engine>>,Json(input):Json<Value>)
     else{row.channel_id==destination})),
   token,sync_room_messages:input["syncRoomMessages"].as_bool().unwrap_or(true),
   cursor,pending_index:previous.and_then(|row|row.pending_index),
-  runtime_error:None,
+  runtime_error:previous.filter(|row|row.pending_index.is_some())
+   .and_then(|row|row.runtime_error.clone()),
  };
  if previous.is_some_and(|p|p.room_id!=room_id){record.pending_index=None;}
  state.channels.insert(id,record.clone());
@@ -205,15 +232,78 @@ async fn diagnose(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
  let record=read(&file(&engine)).map_err(|e|err(StatusCode::INTERNAL_SERVER_ERROR,e))?
   .channels.remove(&id).ok_or_else(||err(StatusCode::NOT_FOUND,"channel not found"))?;
  let checked=probe(&record).await;
- update(&file(&engine),&id,|row|{
-  row.verified=checked.is_ok();
-  row.runtime_error=checked.as_ref().err().cloned();
- }).map_err(|e|err(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ // Reject stale verification: a user may have rotated the token or target
+ // while the remote probe was in flight. Such a result is not authorization
+ // for a newly configured destination.
+ let file=file(&engine);
+ let _held=guard();
+ let mut state=read(&file).map_err(|e|err(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ let row=state.channels.get_mut(&id)
+  .ok_or_else(||err(StatusCode::NOT_FOUND,"channel not found"))?;
+ if row.token!=record.token || row.room_id!=record.room_id ||
+     row.chat_id!=record.chat_id || row.channel_id!=record.channel_id {
+  return Err(err(StatusCode::CONFLICT,
+   "channel changed during verification; run the check again"));
+ }
+ row.verified=checked.is_ok();
+ // Never overwrite an unresolved outbound receipt with a diagnostic result.
+ if row.pending_index.is_none(){row.runtime_error=checked.as_ref().err().cloned();}
+ save(&file,&state).map_err(|e|err(StatusCode::INTERNAL_SERVER_ERROR,e))?;
  match checked{
   Ok(())=>Ok(Json(json!({"verified":true,"message":"Bot and destination verified by live API"}))),
   Err(error)=>Ok(Json(json!({"verified":false,"message":error})))
  }
 }
+/// A human must identify the observed outcome of an uncertain external send.
+/// "confirmed_delivered" skips the exact already-sent message; "confirmed_not_delivered"
+/// allows retry on the next room event. Neither outcome is invented by the server.
+async fn reconcile_delivery(State(engine):State<Arc<Engine>>,
+ Path(id):Path<String>,Json(input):Json<Value>)->Result<Json<Value>,Fault>{
+ let resolution=input["resolution"].as_str().unwrap_or("");
+ if !matches!(resolution,"confirmed_delivered"|"confirmed_not_delivered"){
+  return Err(err(StatusCode::BAD_REQUEST,"select an observed delivery outcome"));
+ }
+ let _held=guard();
+ if active_sends().lock().unwrap_or_else(|e|e.into_inner()).contains(&id){
+  return Err(err(StatusCode::CONFLICT,
+   "delivery is still in progress; check again when it finishes"));
+ }
+ let file=file(&engine);
+ let mut state=read(&file).map_err(|e|err(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ let row=state.channels.get_mut(&id)
+  .ok_or_else(||err(StatusCode::NOT_FOUND,"channel not found"))?;
+ let pending=row.pending_index.ok_or_else(||err(StatusCode::CONFLICT,
+  "there is no uncertain delivery to reconcile"))?;
+ if resolution=="confirmed_delivered"{row.cursor=pending.saturating_add(1);}
+ row.pending_index=None;
+ row.runtime_error=None;
+ let response=public(row);
+ save(&file,&state).map_err(|e|err(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ Ok(Json(response))
+}
+
+/// Atomically claim a specific unsent room message. No stale concurrent
+/// fanout may send the same message merely because the earlier caller already
+/// wrote its pending_index. The active marker is installed before any await.
+fn claim_delivery(file:&FilePath,entry:&Channel,index:usize)
+ ->Result<Option<ActiveSend>,String>{
+ let _held=guard();
+ let mut state=read(file)?;
+ let Some(row)=state.channels.get_mut(&entry.id)else{return Ok(None)};
+ if !row.enabled || !row.verified || !row.sync_room_messages ||
+     row.pending_index.is_some() || row.cursor!=index ||
+     row.room_id!=entry.room_id || row.token!=entry.token ||
+     row.chat_id!=entry.chat_id || row.channel_id!=entry.channel_id {
+  return Ok(None);
+ }
+ row.pending_index=Some(index);
+ row.runtime_error=Some("delivery outcome has not been confirmed".into());
+ save(file,&state)?;
+ active_sends().lock().unwrap_or_else(|e|e.into_inner())
+  .insert(entry.id.clone());
+ Ok(Some(ActiveSend(entry.id.clone())))
+}
+
 async fn transmit(row:&Channel,content:&str)->Result<(),String>{
  let client=http()?;
  let response=if row.kind=="telegram"{
@@ -253,17 +343,19 @@ pub async fn dispatch_room(engine:&Arc<Engine>,room:&Room){
    let limit=if entry.kind=="telegram"{3000}else{1700};
    let content=format!("{}: {}",message.speaker,
     message.content.chars().take(limit).collect::<String>());
-   let claimed=update(&file,&entry.id,|row|{
-    if row.pending_index.is_none()&&row.cursor==index{
-     row.pending_index=Some(index);
-     row.runtime_error=Some("delivery may be in-flight; review before retrying".into());
-    }
-   });
-   if claimed.is_err(){break;}
+   let _active=match claim_delivery(&file,&entry,index){
+    Ok(Some(guard))=>guard,
+    Ok(None)=>break,
+    Err(error)=>{tracing::warn!(%error,"outbound claim could not be persisted");break;}
+   };
    let current=match read(&file).ok().and_then(|s|s.channels.get(&entry.id).cloned()){
     Some(record) if record.pending_index==Some(index)=>record,
     _=>break
    };
+   // If the operator disabled/suspended this channel during the claim,
+   // do not send a new external message. Retain the unknown receipt for
+   // deliberate reconciliation rather than silently advancing the cursor.
+   if !current.enabled || !current.sync_room_messages{break;}
    let outcome=transmit(&current,&content).await;
    if let Err(error)=update(&file,&entry.id,|row|{
     if row.pending_index==Some(index){
@@ -282,6 +374,21 @@ pub async fn dispatch_room(engine:&Arc<Engine>,room:&Room){
 mod tests{
  use super::*;
  #[test]
+
+ #[test]
+ fn projected_delivery_status_never_misreports_disabled_sync_as_ready(){
+  let mut row=Channel{id:"c".into(),name:"Channel".into(),kind:"discord".into(),
+   room_id:"room".into(),enabled:true,chat_id:String::new(),channel_id:"123".into(),
+   token:"secret".into(),verified:true,sync_room_messages:false,cursor:5,
+   pending_index:None,runtime_error:None};
+  assert_eq!(public(&row)["status"],"sync_disabled");
+  row.sync_room_messages=true;
+  assert_eq!(public(&row)["status"],"outbound_ready");
+  row.pending_index=Some(5);
+  assert_eq!(public(&row)["status"],"needs_review");
+  assert_eq!(public(&row)["delivery"]["pendingIndex"],5);
+  assert!(!public(&row).to_string().contains("secret"));
+ }
  fn channel_public_projection_never_contains_bot_secret(){
   let row=Channel{id:"id".into(),name:"Bot".into(),kind:"telegram".into(),
    room_id:"room".into(),enabled:true,chat_id:"123".into(),channel_id:String::new(),
