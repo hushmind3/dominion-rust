@@ -732,7 +732,7 @@ impl Groups {
             // Model-only: leave the peer-neutral shared developer message
             // before all cacheable indexed records; append speaker identity
             // LAST so all room participants share an identical long prefix.
-            let mut context=vec![json!({"role":"developer","content":shared})];
+            let mut context=vec![json!({"role":"developer","content":shared.clone()})];
             if let Some(identity)=messages.last_mut(){
                 identity["role"]=json!("developer");
             }
