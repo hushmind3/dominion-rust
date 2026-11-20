@@ -53,7 +53,7 @@ export function ConnectedAccounts(){
  const disconnect=async(id:string)=>{
   if(!window.confirm(t('conn.quick.disconnectConfirm')))return
   setBusy(id);setError('');setNotice('')
-  try{await del('/api/oauth/'+encodeURIComponent(id));refresh()}
+  try{await del('/api/oauth/'+encodeURIComponent(id));refresh();setNotice(t('conn.quick.disconnected'))}
   catch(e){setError((e as Error).message)}
   finally{setBusy(null)}
  }
@@ -82,9 +82,11 @@ export function ConnectedAccounts(){
    {githubCli.status!=='completed'&&githubCli.status!=='failed'&&githubCli.status!=='cancelled'&&<div className="mt-4 flex flex-wrap gap-2">
     {githubCli.userCode&&<a href={githubCli.url||'https://github.com/login/device'} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-[#24211D] px-4 py-2 text-sm font-semibold text-white" onClick={()=>{void post('/api/providers/cli/github/login/input',{input:'enter'}).catch(e=>setError((e as Error).message))}}><ExternalLink size={16}/>{t('conn.quick.githubCliOpen')}</a>}
     <Action variant="secondary" onClick={()=>{void post('/api/providers/cli/github/login/input',{input:'enter'}).catch(e=>setError((e as Error).message))}}>{t('conn.quick.githubCliContinue')}</Action>
-    <Action variant="ghost" onClick={()=>{void post('/api/providers/cli/github/login/cancel',{}).then(()=>setGithubCli(null))}}>{t('conn.cancel')}</Action>
+    <Action variant="ghost" onClick={()=>{void post('/api/providers/cli/github/login/cancel',{})
+      .then(()=>setGithubCli(null)).catch(e=>setError((e as Error).message))}}>{t('conn.quick.githubCliCancel')}</Action>
    </div>}
   </Panel>}
+  {providers.loading&&!providers.value.length&&<p role="status" className="text-sm text-[#7C7469]">{t('cap.loading')}</p>}
   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
    {ordered.map(provider=>{
     const account=accounts.value.find(a=>a.provider===provider.id&&a.hasToken)
@@ -95,7 +97,7 @@ export function ConnectedAccounts(){
     return <Panel key={provider.id} className="flex flex-col gap-4 p-5">
      <div className="flex items-start justify-between gap-3">
       <span className="grid size-12 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><Icon size={27}/></span>
-      <StateTag online={ready}>{ready?t('conn.quick.connected'):provider.configured?t('conn.quick.notConnected'):t('conn.quick.unavailable')}</StateTag>
+      <StateTag online={ready}>{ready?t('conn.quick.connected'):available?t('conn.quick.notConnected'):t('conn.quick.unavailable')}</StateTag>
      </div>
      <div><h3 className="text-lg font-bold text-[#24211D]">{title}</h3>
       <p className="mt-1 text-[13px] leading-6 text-[#7C7469]">{t(provider.id==='github'?'conn.quick.githubDescription':'conn.quick.googleDescription')}</p></div>
