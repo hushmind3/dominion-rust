@@ -36,6 +36,7 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
             "implementation"=>return !run.read_only&&matches!(name,
                 "list_files"|"read_file"|"read_tool_receipt"|"search_tool_receipts"|"search_files"|"git_status"|"git_diff"
                 |"read_program"|"run_program"|"write_file"|"edit_file"|"shell"
+                |"external_agent_edit"
                 |"memory_search"|"list_skills"|"load_skill"),
             "verification"=>return !run.read_only&&matches!(name,
                 "list_files"|"read_file"|"read_tool_receipt"|"search_tool_receipts"|"search_files"|"git_status"|"git_diff"
@@ -69,6 +70,7 @@ pub fn select_catalog(run:&Run,tools:Vec<Value>,has_children:bool,denied:&[Strin
         if name.starts_with("git_") && run.repository.is_none(){return false;}
         if matches!(name,"check_subagent"|"read_subagent_file"|"merge_subagent") && !has_children{return false;}
         if name=="merge_subagent" && run.repository.is_none(){return false;}
+        if name=="external_agent_edit" && (run.repository.is_none()||run.parent_run_id.is_none()||run.read_only){return false;}
         true
     }).collect::<Vec<_>>();
     let remaining=selected.iter().map(|t|t.to_string().len()).sum::<usize>();

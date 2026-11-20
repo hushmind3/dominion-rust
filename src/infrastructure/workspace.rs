@@ -119,6 +119,14 @@ pub struct TeamPatchPreview{
     pub can_apply:bool,
     pub conflict:Option<String>,
 }
+/// Verify the owner/Writer detached worktrees and immutable Git revisions
+/// before allowing an external coding CLI to enter the child's directory.
+pub async fn verified_external_writer_worktree(settings:&Settings,parent:Uuid,
+    child:Uuid,parent_base:&str,child_base:&str)->Result<std::path::PathBuf,String>{
+    let (_,writer)=verified_team_worktrees(settings,parent,child,
+        parent_base,child_base).await?;
+    Ok(writer)
+}
 async fn verified_team_worktrees(settings:&Settings,parent:Uuid,child:Uuid,
     parent_base:&str,child_base:&str)->Result<(std::path::PathBuf,std::path::PathBuf),String>{
     let root=settings.workspace_dir.canonicalize().map_err(|e|e.to_string())?;

@@ -693,3 +693,17 @@ compatibility implementation and should not be invoked by production routes.
 Existing tests for the historical provider continuation need adaptation to
 the source-linked Run semantics; actual cache-hit parity must be measured
 with provider receipts rather than assumed.
+
+## 2026-11-21 — Native approval-gated external Writer (Sub4)
+
+`external_agent_edit` is a separate opt-in external tool
+(`DOMINION_AGENT_BRIDGE_ENABLE_WRITER=true`), available only on attached,
+revision-pinned **Task Team Writer** Runs with implementation permissions.
+The worker launches Codex CLI with `workspace-write` or Claude CLI with
+`Read,Glob,Grep,Edit,Write` tools, both in the child's own detached Git
+worktree. An explicit native tool approval precedes CLI launch; only an
+actual Git diff, bounded file list, and SHA-256 are emitted afterward.
+A second independent human `approve_task_team_patch` is still mandatory
+before the coordinator sees edits. No automatic source-checkout merge.
+CLI isolation is provider-supplied, not an OS sandbox provided by Dominion.
+Third-party charges remain unmetered; timeouts and cancellation are uncertain.

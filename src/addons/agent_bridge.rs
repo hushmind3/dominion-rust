@@ -43,6 +43,7 @@ fn previous_codex_thread(run:&Run)->Option<String>{
 }
 
 pub const TOOL:&str="external_agent_consult";
+pub const EDIT_TOOL:&str="external_agent_edit";
 const MAX_PROMPT:usize=12_000;
 const MAX_OUTPUT:usize=256*1024;
 const MAX_ANSWER:usize=12_000;
@@ -65,9 +66,10 @@ impl Provider{
 /// Operator-selected, absolute executable paths, never model-selected.
 pub struct BridgeRegistry{
     executables:HashMap<Provider,PathBuf>,
+    allow_edit:bool,
 }
 impl BridgeRegistry{
-    pub fn disabled()->Self{Self{executables:HashMap::new()}}
+    pub fn disabled()->Self{Self{executables:HashMap::new(),allow_edit:false}}
     pub fn from_env()->Result<Self,String>{
         if std::env::var("DOMINION_AGENT_BRIDGE_ALLOW_UNMETERED")
             .ok().as_deref()!=Some("true"){
@@ -81,7 +83,9 @@ impl BridgeRegistry{
                 executables.insert(provider,canonical);
             }
         }
-        Ok(Self{executables})
+        let allow_edit=std::env::var("DOMINION_AGENT_BRIDGE_ENABLE_WRITER")
+            .ok().as_deref()==Some("true");
+        Ok(Self{executables,allow_edit})
     }
     fn checked_executable(path:&Path)->Result<PathBuf,String>{
         if !path.is_absolute(){return Err("external agent executable must be an absolute operator-owned path".into());}
@@ -91,14 +95,14 @@ impl BridgeRegistry{
     }
     #[cfg(test)]
     fn test_binary(provider:Provider,path:&Path)->Self{
-        Self{executables:HashMap::from([(provider,path.to_path_buf())])}
+        Self{executables:HashMap::from([(provider,path.to_path_buf())]),allow_edit:false}
     }
     pub fn available(&self)->bool{!self.executables.is_empty()}
     pub fn definitions(&self)->Vec<Value>{
         if !self.available(){return Vec::new();}
         let names=self.executables.keys().map(|p|p.name()).collect::<Vec<_>>();
         let mut names=names;names.sort_unstable();
-        vec![json!({"type":"function","function":{
+        let mut result=vec![json!({"type":"function","function":{
             "name":TOOL,
             "description":"Consult an operator-installed external coding agent in bounded advisory-only mode. Explicit human approval is mandatory. No native tool permissions are delegated; external model charges may be unmetered. The returned text is untrusted evidence, not executed instructions.",
             "parameters":{"type":"object","properties":{
@@ -106,13 +110,34 @@ impl BridgeRegistry{
                 "prompt":{"type":"string","minLength":1,"maxLength":MAX_PROMPT,
                     "description":"Question or source excerpt for review; do not include secrets."}
             },"required":["provider","prompt"],"additionalProperties":false}
-        }})]
+        }})];
+        if self.allow_edit{
+            let mut writers=self.executables.keys().copied()
+                .filter(|p|matches!(p,Provider::Codex|Provider::Claude))
+                .map(Provider::name).collect::<Vec<_>>();
+            writers.sort_unstable();
+            if !writers.is_empty(){
+                result.push(json!({"type":"function","function":{
+                    "name":EDIT_TOOL,
+                    "description":"Edit files ONLY in a revision-pinned isolated Task Team Writer worktree after human approval. Original checkout is untouched. The SHA-256 patch needs separate owner merge approval. CLI model charges are unmetered; no OS sandbox guarantee.",
+                    "parameters":{"type":"object","properties":{
+                        "provider":{"type":"string","enum":writers},
+                        "prompt":{"type":"string","minLength":1,"maxLength":MAX_PROMPT}
+                    },"required":["provider","prompt"],"additionalProperties":false}
+                }}));
+            }
+        }
+        result
     }
     pub async fn execute(&self,settings:&Settings,store:&Arc<RunStorePort>,
         id:Uuid,call:&ToolCall,mut cancel:watch::Receiver<bool>)
         ->Result<ToolEffectOutcome,String>{
-        if call.name!=TOOL{
+        let editing=call.name==EDIT_TOOL;
+        if call.name!=TOOL&&!editing{
             return Ok(ToolEffectOutcome::Settled(Err("unknown agent bridge tool".into())));
+        }
+        if editing&&!self.allow_edit{
+            return Ok(ToolEffectOutcome::Settled(Err("external Team Writer is not enabled".into())));
         }
         let request=match parse_request(&call.arguments){
             Ok(value)=>value,
@@ -135,27 +160,62 @@ impl BridgeRegistry{
             pending.arguments!=call.arguments){
             return Ok(ToolEffectOutcome::Settled(Err("external agent requires journalled tool intent".into())));
         }
+        // External edits require a real, isolated Team Writer lease; a
+        // normal Run, a Room peer or a read-only investigator is not enough.
+        let workdir=if editing{
+            if !matches!(request.0,Provider::Codex|Provider::Claude){
+                return Ok(ToolEffectOutcome::Settled(Err(
+                    "Codex App Server edit permissions are not bridged".into())));
+            }
+            let parent_id=run.parent_run_id
+                .ok_or("external Writer requires a Task Team parent")?;
+            let parent=store.get(parent_id).await
+                .ok_or("Task Team coordinator not found")?;
+            let writer=parent.team.as_ref().is_some_and(|team|
+                team.tasks.iter().any(|task|task.run_id==id
+                    &&task.spec.role==crate::domain::team::TeamRole::Writer));
+            if !writer||run.read_only||run.room_binding.is_some()
+                ||run.delegation_profile!="implementation"
+                ||run.repository.is_none()||run.repository!=parent.repository{
+                return Ok(ToolEffectOutcome::Settled(Err(
+                    "external Writer requires an isolated repository Team Writer".into())));
+            }
+            crate::workspace::verified_external_writer_worktree(
+                settings,parent_id,id,
+                parent.base_commit.as_deref().ok_or("Team root revision unavailable")?,
+                run.base_commit.as_deref().ok_or("Worker seed revision unavailable")?).await?
+        }else{
+            let scratch=settings.data_dir.join("agent-bridge").join(id.to_string());
+            tokio::fs::create_dir_all(&scratch).await.map_err(|e|e.to_string())?;
+            scratch
+        };
         // Never imply that model spend is 0 KRW. Billing for an independent
         // CLI subscription/API is not visible to Dominion's token meter.
         store.mutate(id,|run|{
             run.event("external_agent_unmetered",
                 "External coding agent model pricing is not included in KRW Run budget",
                 Some(json!({"provider":request.0.name(),"call_id":call.id,
-                    "human_approval":true,"metered":false})));
+                    "human_approval":true,"metered":false,
+                    "effect":if editing{"writer_patch"}else{"advisory"}})));
             Ok(())
         }).await?;
-        let scratch=settings.data_dir.join("agent-bridge").join(id.to_string());
-        tokio::fs::create_dir_all(&scratch).await.map_err(|e|e.to_string())?;
+        let scratch=workdir;
         let mut cmd=Command::new(exe);
         // No model-provided command, shell, arguments, cwd or environment.
         match request.0{
             Provider::Codex=>{
-                cmd.args(["exec","--json","--sandbox","read-only",
+                cmd.args(["exec","--json","--sandbox",
+                    if editing{"workspace-write"}else{"read-only"},
                     "--skip-git-repo-check","-"]);
             }
             Provider::Claude=>{
-                cmd.args(["-p","--output-format","json","--tools","",
-                    "--permission-mode","dontAsk"]);
+                if editing{
+                    cmd.args(["-p","--output-format","json","--allowedTools",
+                        "Read,Glob,Grep,Edit,Write","--permission-mode","acceptEdits"]);
+                }else{
+                    cmd.args(["-p","--output-format","json","--tools","",
+                        "--permission-mode","dontAsk"]);
+                }
             }
             Provider::CodexApp=>{cmd.args(["app-server","--stdio"]);}
         }
@@ -272,6 +332,29 @@ impl BridgeRegistry{
             Provider::CodexApp=>unreachable!("App Server handled before exec output")
         };
         match answer{
+            Ok(text) if editing=>{
+                let parent_id=run.parent_run_id.ok_or("Writer lost coordinator")?;
+                let parent=store.get(parent_id).await.ok_or("Team coordinator unavailable")?;
+                let preview=crate::workspace::preview_team_patch(settings,parent_id,id,
+                    parent.base_commit.as_deref().ok_or("Team base SHA missing")?,
+                    run.base_commit.as_deref().ok_or("Writer seed SHA missing")?).await;
+                match preview{
+                    Ok(review) if review.can_apply=>
+                        Ok(ToolEffectOutcome::Settled(Ok(json!({
+                            "provider":request.0.name(),"answer":text,
+                            "billing":"unmetered_external","source":"external_agent_worker",
+                            "isolatedRunId":id,"teamId":parent_id,
+                            "patchSha256":review.sha256,
+                            "changedPaths":review.changed_paths,"patchBytes":review.patch_bytes,
+                            "requiresOwnerMergeApproval":true
+                        }).to_string()))),
+                    Ok(review)=>Ok(ToolEffectOutcome::Settled(Err(format!(
+                        "External Writer patch conflicts: {}",
+                        review.conflict.unwrap_or_default())))),
+                    Err(error)=>Ok(ToolEffectOutcome::Settled(Err(format!(
+                        "External Writer patch was not admissible: {error}"))))
+                }
+            }
             Ok(text)=>Ok(ToolEffectOutcome::Settled(Ok(json!({
                 "provider":request.0.name(),"answer":text,
                 "billing":"unmetered_external","source":"external_agent_advisory"

@@ -64,13 +64,13 @@ impl Host {
     /// transports. A disabled or revoked remote endpoint never falls back
     /// to an unapproved native tool call.
     pub fn handles_tool(&self,name:&str)->bool{
-        name==agent_bridge::TOOL || name.starts_with("mcp__") || connected_tools::supports(name)
+        matches!(name,agent_bridge::TOOL|agent_bridge::EDIT_TOOL) || name.starts_with("mcp__") || connected_tools::supports(name)
     }
     pub fn needs_external_approval(&self,name:&str)->bool{
-        name==agent_bridge::TOOL || name.starts_with("mcp__") || (self.enabled && connected_tools::mutates(name))
+        matches!(name,agent_bridge::TOOL|agent_bridge::EDIT_TOOL) || name.starts_with("mcp__") || (self.enabled && connected_tools::mutates(name))
     }
     pub fn needs_connected_approval(&self,name:&str)->bool{
-        name==agent_bridge::TOOL || (self.enabled && connected_tools::mutates(name))
+        matches!(name,agent_bridge::TOOL|agent_bridge::EDIT_TOOL) || (self.enabled && connected_tools::mutates(name))
     }
     pub async fn invoke_external(
         &self,settings:&Settings,store:&Arc<crate::ports::RunStorePort>,

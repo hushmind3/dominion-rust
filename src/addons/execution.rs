@@ -15,7 +15,7 @@ pub async fn invoke(host:&Host,settings:&Settings,store:&Arc<RunStorePort>,
         return Ok(ToolEffectOutcome::Settled(
             Err("external add-ons are disabled by the operator".into())));
     }
-    if call.name==agent_bridge::TOOL{
+    if matches!(call.name.as_str(),agent_bridge::TOOL|agent_bridge::EDIT_TOOL){
         return host.bridge.execute(settings,store,id,call,cancellation).await;
     }
     if call.name.starts_with("mcp__"){
