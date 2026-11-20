@@ -679,6 +679,21 @@ impl Groups {
         messages
     }
 
+
+    /// One canonical Room transition for both cached legacy responses and
+    /// native Harness receipts. Never advance a cursor for unaccepted work.
+    fn append_accepted_response(room:&mut Room,participant:&Participant,
+        content:String,model:String,owner_message_index:Option<usize>){
+        let last_reply_index=room.messages.len();
+        room.messages.push(Utterance{
+            speaker:participant.name.clone(),content,at_ms:now_ms(),model:Some(model)
+        });
+        room.read_cursors.insert(participant.name.clone(),RoomReadCursor{
+            next_unread_index:room.messages.len(),
+            last_reply_index:Some(last_reply_index),
+            last_owner_index:owner_message_index
+        });
+    }
     /// Project exactly the existing bounded Room evidence into a native Run.
     /// The only high-authority additions are deterministic, owner-selected
     /// speaker metadata, not quoted peer messages or learned notes.
@@ -795,14 +810,8 @@ impl Groups {
                 c.routing_mode=="discussion");
             let done=(!is_discussion&&text.trim_start().starts_with("[END]"))
                 ||room.rounds>=room.max_rounds;
-            room.messages.push(Utterance{
-                speaker:participant.name.clone(),content:text,
-                at_ms:now_ms(),model:Some(run.model_name.clone())});
-            room.read_cursors.insert(participant.name.clone(),RoomReadCursor{
-                next_unread_index:room.messages.len(),
-                last_reply_index:Some(message_index),
-                last_owner_index:Some(binding.owner_message_index)
-            });
+            Self::append_accepted_response(&mut room,&participant,text,
+                run.model_name.clone(),Some(binding.owner_message_index));
             if done{
                 room.status=RoomStatus::Finished;
                 room.finish_reason=if room.rounds>=room.max_rounds{
@@ -1017,13 +1026,8 @@ impl Groups {
         // The cursor commits in the exact same persisted Room as this
         // accepted speaker message and its authoritative provider receipt.
         let owner_message_index=room.messages.iter().rposition(|m|m.speaker=="user");
-        let last_reply_index=room.messages.len();
-        room.messages.push(Utterance{speaker:participant.name.clone(),content:reply.text,at_ms:now_ms(),model:Some(reply.model)});
-        room.read_cursors.insert(participant.name.clone(),RoomReadCursor{
-            next_unread_index:room.messages.len(),
-            last_reply_index:Some(last_reply_index),
-            last_owner_index:owner_message_index,
-        });
+        Self::append_accepted_response(&mut room,participant,reply.text,
+            reply.model,owner_message_index);
         if done {
             room.status=RoomStatus::Finished;
             room.finish_reason=if room.rounds>=room.max_rounds{"room_lifetime_limit_reached"}
