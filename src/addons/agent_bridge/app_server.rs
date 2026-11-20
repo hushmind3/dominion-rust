@@ -179,4 +179,76 @@ mod tests{
         assert!(failure.contains("byte cap"));
         task.abort();
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_app_server_process_passes_existing_native_approval_journal(){
+        use crate::{config::Settings,domain::{CreateRun,Run,ToolCall,ToolEffectOutcome},
+            ports::RunStorePort,store::Store};
+        use std::{os::unix::fs::PermissionsExt,sync::Arc};
+        use tokio::sync::watch;
+        use uuid::Uuid;
+        let root=std::env::temp_dir().join(format!("sub4-app-server-test-{}",Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let executable=root.join("fake-app-server.py");
+        std::fs::write(&executable,r#"#!/usr/bin/env python3
+import sys, json
+assert sys.argv[1:] == ["app-server", "--stdio"]
+def recv():
+    return json.loads(sys.stdin.readline())
+def send(payload):
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+assert recv()["method"] == "initialize"
+send({"id":1,"result":{}})
+assert recv()["method"] == "initialized"
+begin=recv()
+assert begin["method"] == "thread/start"
+assert begin["params"]["approvalPolicy"] == "never"
+assert begin["params"]["sandbox"] == "readOnly"
+assert begin["params"]["ephemeral"] is True
+send({"id":2,"result":{"thread":{"id":"fixture-thread"}}})
+turn=recv()
+assert turn["method"] == "turn/start"
+assert turn["params"]["threadId"] == "fixture-thread"
+send({"id":3,"result":{"turn":{"id":"fixture-turn"}}})
+send({"method":"item/completed","params":{"threadId":"fixture-thread","item":{"type":"agentMessage","text":"Validated App Server fixture"}}})
+send({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":"fixture-turn","status":"completed"}}})
+"#).unwrap();
+        let mut permissions=std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o700);std::fs::set_permissions(&executable,permissions).unwrap();
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Arc::new(RunStorePort::new(Arc::new(
+            Store::open(root.join("runs")).await.unwrap())));
+        let mut run=Run::new(CreateRun{instruction:"Review".into(),
+            budget_krw:Some(100.0),max_steps:Some(2)},2).unwrap();
+        let id=run.id;
+        let call=ToolCall{id:"app-server-review-1".into(),
+            name:super::super::TOOL.into(),
+            arguments:json!({"provider":"codex_app","prompt":"Review patch"})};
+        let bridge=super::super::BridgeRegistry::test_binary(
+            super::super::Provider::CodexApp,&executable);
+        store.put(run.clone()).await.unwrap();
+        let (_sender,rx)=watch::channel(false);
+        let refused=bridge.execute(&settings,&store,id,&call,rx.clone()).await.unwrap();
+        assert!(matches!(refused,ToolEffectOutcome::Settled(Err(_))),
+            "process must not start without matching native Run journal intent");
+        run.in_flight=Some(call.clone());
+        store.put(run).await.unwrap();
+        let result=bridge.execute(&settings,&store,id,&call,rx).await.unwrap();
+        match result{
+            ToolEffectOutcome::Settled(Ok(receipt))=>{
+                let evidence:Value=serde_json::from_str(&receipt).unwrap();
+                assert_eq!(evidence["answer"],"Validated App Server fixture");
+                assert_eq!(evidence["protocol"],"codex_app_server");
+                assert_eq!(evidence["billing"],"unmetered_external");
+            }
+            other=>panic!("fake App Server receipt was not settled: {other:?}"),
+        }
+        assert_eq!(store.get(id).await.unwrap().events.iter()
+            .filter(|e|e.kind=="external_agent_unmetered").count(),1);
+        let _=tokio::fs::remove_dir_all(root).await;
+    }
 }
