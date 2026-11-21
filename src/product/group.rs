@@ -484,13 +484,6 @@ impl Groups {
             last_owner_index:owner_message_index
         });
     }
-    /// Project exactly the existing bounded Room evidence into a native Run.
-    /// The only high-authority additions are deterministic, owner-selected
-    /// speaker metadata, not quoted peer messages or learned notes.
-    pub(crate) fn native_speaker_context(room:&Room,speaker:&str)
-        ->Result<(Vec<Value>,Value),String>{
-        Self::native_speaker_context_for(room,speaker,true)
-    }
     /// The same bounded, source-indexed Room evidence feeds BOTH native
     /// model-only and tool-enabled Runs. The model-only prefix is identical
     /// for every participant until its personal operator metadata suffix,

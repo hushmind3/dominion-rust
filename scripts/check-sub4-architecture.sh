@@ -236,4 +236,8 @@ required_count src/engine.rs '^[[:space:]]*pub[(]crate[)] fn from_ports\(' 0
 required_count src/addons/agent_bridge/app_server.rs '^[[:space:]]*pub[(]super[)] async fn consult<' 0
 required_count src/infrastructure/model_transport.rs 'strip_internal_cache_markers' 0
 required_count src/product/coordination.rs 'pub fn (completed|total|can_schedule)\(' 0
+# Retired wrappers must not return: active callers use the explicit
+# node-bound ID function and tool-policy-aware Room context entry.
+required_count src/addons/remote_worker.rs '^[[:space:]]*fn remote_id\(' 0
+required_count src/product/group.rs '^[[:space:]]*pub[(]crate[)] fn native_speaker_context\(' 0
 echo "PASS: one native Run/tool executor, one durable journal, one strict context projection"

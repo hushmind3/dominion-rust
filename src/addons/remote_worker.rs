@@ -170,9 +170,6 @@ impl RemoteWorker{
             },"required":["instruction"],"additionalProperties":false}
         }})
     }
-    fn remote_id(&self,origin:Uuid,call_id:&str)->Uuid{
-        self.remote_id_for(&self.endpoint,origin,call_id)
-    }
     fn remote_id_for(&self,endpoint:&str,origin:Uuid,call_id:&str)->Uuid{
         let mut digest=Sha256::new();
         digest.update(b"dominion-remote-readonly-v1\\0");
@@ -739,7 +736,13 @@ mod tests{
             assert!(RemoteWorker::configured(invalid,token.clone()).is_err());
         }
         let worker=RemoteWorker::configured("https://worker.example.com",token).unwrap();
-        assert_eq!(worker.remote_id(Uuid::nil(),"call"),worker.remote_id(Uuid::nil(),"call"));
-        assert_ne!(worker.remote_id(Uuid::nil(),"call"),worker.remote_id(Uuid::nil(),"other"));
+        assert_eq!(
+            worker.remote_id_for(&worker.endpoint,Uuid::nil(),"call"),
+            worker.remote_id_for(&worker.endpoint,Uuid::nil(),"call")
+        );
+        assert_ne!(
+            worker.remote_id_for(&worker.endpoint,Uuid::nil(),"call"),
+            worker.remote_id_for(&worker.endpoint,Uuid::nil(),"other")
+        );
     }
 }
