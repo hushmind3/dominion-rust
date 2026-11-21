@@ -927,6 +927,76 @@ fn estimate_cost(settings:&ModelSettings,input:u64,cached:u64,written:u64,output
 mod tests {
     use super::*;
     #[test]
+    fn run_reasoning_model_matrix_rejects_unsupported_requests_before_billing(){
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.main.name="gpt-5.6".into();
+        cfg.main.base_url="https://api.openai.com/v1".into();
+        let model=ModelClient::new(&cfg).unwrap();
+        let selected=model.with_run_reasoning(Some("high"),None).unwrap();
+        let mut openai=json!({"model":"gpt-5.6","messages":[]});
+        selected.apply_run_reasoning(&mut openai).unwrap();
+        assert_eq!(openai["reasoning_effort"],"high");
+        assert!(openai.get("think").is_none());
+        assert!(model.with_run_reasoning(None,Some(false)).is_err());
+        assert!(model.with_run_reasoning(Some("xhigh"),None).is_err());
+        cfg.main.base_url="https://proxy.example/v1".into();
+        assert!(ModelClient::new(&cfg).unwrap()
+            .with_run_reasoning(Some("high"),None).is_err(),
+            "unverified compatible gateways cannot receive first-party fields");
+        cfg.main.name="qwen3:4b".into();
+        cfg.main.base_url="http://127.0.0.1:11434".into();
+        let ollama=ModelClient::new(&cfg).unwrap()
+            .with_primary_protocol(cfg.main.clone(),"ollama").unwrap();
+        let disabled=ollama.with_run_reasoning(None,Some(false)).unwrap();
+        let mut body=json!({"model":"qwen3:4b","messages":[]});
+        disabled.apply_run_reasoning(&mut body).unwrap();
+        assert_eq!(body["think"],false);
+        assert!(ollama.with_run_reasoning(Some("high"),None).is_err());
+        cfg.main.name="gpt-oss:20b".into();
+        let gpt_oss=ModelClient::new(&cfg).unwrap()
+            .with_primary_protocol(cfg.main.clone(),"ollama").unwrap();
+        assert!(gpt_oss.with_run_reasoning(None,Some(false)).is_err());
+        let mut level_body=json!({"model":"gpt-oss:20b"});
+        gpt_oss.with_run_reasoning(Some("low"),None).unwrap()
+            .apply_run_reasoning(&mut level_body).unwrap();
+        assert_eq!(level_body["think"],"low");
+    }
+    #[tokio::test]
+    async fn native_ollama_final_wire_request_contains_verified_thinking_disable(){
+        use axum::{extract::State,routing::post,Json,Router};
+        use std::sync::{Arc,Mutex};
+        async fn capture(State(received):State<Arc<Mutex<Vec<Value>>>>,
+            Json(body):Json<Value>)->Json<Value>{
+            received.lock().unwrap().push(body);
+            Json(json!({"done":true,"message":{"role":"assistant",
+                "content":"No-thinking response"},
+                "prompt_eval_count":13,"eval_count":3}))
+        }
+        let requests=Arc::new(Mutex::new(Vec::<Value>::new()));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let app=Router::new().route("/api/chat",post(capture))
+            .with_state(requests.clone());
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.main.base_url=format!("http://{address}");
+        cfg.main.name="qwen3:4b".into();
+        cfg.main.api_key.clear();
+        let selected=ModelClient::new(&cfg).unwrap()
+            .with_primary_protocol(cfg.main.clone(),"ollama").unwrap()
+            .with_run_reasoning(None,Some(false)).unwrap();
+        let reply=selected.complete(&[json!({"role":"user",
+            "content":"안녕하세요"})],&[],false).await.unwrap();
+        assert_eq!(reply.text,"No-thinking response");
+        let received=requests.lock().unwrap();
+        assert_eq!(received.len(),1,"never silently retry a paid model call");
+        assert_eq!(received[0]["think"],false);
+        assert!(received[0].get("reasoning_effort").is_none());
+        assert!(received[0].get("tools").is_none());
+        drop(received);
+        server.abort();
+    }
+    #[test]
     fn native_ollama_history_maps_tool_names_and_object_arguments(){
         let original=vec![
             json!({"role":"system","content":"tools"}),
