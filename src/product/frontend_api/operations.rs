@@ -328,7 +328,28 @@ mod resume_tests{
   let result=resume_job(State(Arc::clone(&engine)),Path(blocked_id)).await;
   assert_eq!(result.unwrap_err().0,StatusCode::CONFLICT);
   assert!(store.get(blocked_id).await.unwrap().in_flight.is_some());
+  // Resume schedules a real native worker. Cancel before removing its store:
+  // a final journal fsync otherwise races directory teardown on Linux.
+  if store.get(id).await.is_some_and(|run|!run.terminal()){
+      engine.cancel(id).await.unwrap();
+  }
+  for _ in 0..100{
+      if !engine.worker_active_for_test(id).await{break;}
+      tokio::time::sleep(Duration::from_millis(10)).await;
+  }
+  assert!(!engine.worker_active_for_test(id).await,
+      "resumed worker must quiesce before test teardown");
   drop(engine);drop(store);
-  tokio::fs::remove_dir_all(root).await.unwrap();
+  for attempt in 0..20{
+      match tokio::fs::remove_dir_all(&root).await{
+          Ok(())=>break,
+          Err(error) if error.kind()==std::io::ErrorKind::NotFound=>break,
+          Err(error) if attempt<19 &&
+              error.kind()==std::io::ErrorKind::DirectoryNotEmpty=>{
+                  tokio::time::sleep(Duration::from_millis(50)).await;
+              }
+          Err(error)=>panic!("native resume test cleanup failed: {error}")
+      }
+  }
  }
 }
