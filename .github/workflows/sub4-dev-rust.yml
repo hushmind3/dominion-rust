@@ -38,8 +38,7 @@ jobs:
         run: |
           ./web/node_modules/.bin/tsc -p sdk/typescript/tsconfig.json
           node --test sdk/typescript/tests/*.test.mjs
-      - name: Production frontend bundle (manual release gate)
-        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[sub4-browser-e2e]')
+      - name: Production frontend bundle (build only; deployment remains a separate gate)
         run: npm run build --prefix web
       - name: UI and Cloud Worker integration regressions
         working-directory: web
@@ -135,8 +134,9 @@ jobs:
 
   browser-e2e:
     name: Real Rust HTTP + Vite + Chromium integration
+    # Run on every source-scoped push after the cheap correctness gates pass.
+    # It starts isolated loopback fixtures and never deploys production.
     needs: [frontend, rust]
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[sub4-browser-e2e]')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
