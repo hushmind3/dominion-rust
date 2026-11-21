@@ -154,7 +154,8 @@ mod tests{
         let mut newer=run.clone();newer.event("done","confirmed",None);
         upsert(db.clone(),newer.clone()).await.unwrap();
         let opened=import_or_read(db.clone(),legacy).await.unwrap();
-        assert_eq!(opened[0].events.len(),2,"stale JSON must never overwrite SQLite");
+        assert_eq!(opened[0].events.len(),3,"stale JSON must never overwrite SQLite");
+        assert_eq!(opened[0].events.last().unwrap().message,"confirmed");
         let mut fake=newer;fake.events[0].message="tampered".into();
         assert!(upsert(db,fake).await.is_err());
         std::fs::remove_dir_all(root).unwrap();
