@@ -408,7 +408,7 @@ struct TaskTeamCreate {
     #[serde(default)]model:String,
     #[serde(default)]strategy_learning:bool,
     #[serde(default)]worker_routes:std::collections::HashMap<String,
-        crate::engine::task_team::WorkerModelRoute>,
+        crate::engine::WorkerModelRoute>,
 }
 async fn create_task_team(State(engine):State<Arc<Engine>>,
     Json(req):Json<TaskTeamCreate>)->Result<(StatusCode,Json<Run>),ApiError>{
