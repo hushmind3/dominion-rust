@@ -3,6 +3,7 @@ import {Activity,Clock3,Play,RefreshCw,Square,Terminal} from 'lucide-react'
 import {post} from '../api'
 import {Button,SelectInput,TextArea} from './Primitives'
 import {Panel,useRemote} from './UI'
+import {RunInspectorDialog} from './RunInspectorDialog'
 import {t,useLocale,jobKindLabel,type LocaleKey} from '../i18n'
 import {translateError} from '../i18n/errors'
 
@@ -31,6 +32,7 @@ export function ExecutionMonitor(){
  const agents=useRemote<Agent[]>('/api/agents',[])
  const [prompt,setPrompt]=useState(''),[agentChoice,setAgentChoice]=useState(''),[info,setInfo]=useState('')
  const [selected,setSelected]=useState<string|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('')
+ const [inspected,setInspected]=useState('')
  const availableAgents=agents.value.filter(x=>x.providerId&&x.model)
  const executorId=availableAgents.some(x=>x.id===agentChoice)?agentChoice:availableAgents[0]?.id||''
  const current=runs.value.find(x=>x.id===selected)||runs.value[0]
@@ -91,11 +93,13 @@ export function ExecutionMonitor(){
      </div>
      <p className="mt-3 flex items-center gap-2 text-xs text-[#7C7469]"><Clock3 size={13}/>{current.startedAt?.replace('T',' ').slice(0,19)} UTC</p>
      {current.reason&&<p role="alert" className="mt-2 break-words rounded-lg bg-amber-50 p-3 text-xs text-amber-800">{translateError(current.reason)}</p>}
-     {active(current.status)&&<Button variant="danger" disabled={busy} onClick={()=>void cancel()}><Square size={14}/> {t('em.cancel')}</Button>}
+     <div className="mt-2 flex flex-wrap gap-2"><Button variant="secondary" size="sm" onClick={()=>setInspected(current.id)}><Activity size={14}/>{t('em.detail')}</Button>
+     {active(current.status)&&<Button variant="danger" disabled={busy} onClick={()=>void cancel()}><Square size={14}/> {t('em.cancel')}</Button>}</div>
      <ToolHistory key={current.id} id={current.id}/>
     </>:<p className="text-sm text-[#7C7469]">{t('em.idle')}</p>}
    </div>
   </div>
   {error&&<p role="alert" className="px-5 pb-4 text-xs text-rose-600">{translateError(error)}</p>}
+  {inspected&&<RunInspectorDialog id={inspected} onClose={()=>setInspected('')}/>}
  </Panel>
 }
