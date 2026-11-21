@@ -35,6 +35,29 @@ function graphMessage(issue:TeamDraftIssue,ko:boolean){
  }
  return id+labels[issue.code][ko?0:1]+dep
 }
+// Provider-specific suggestions keep custom registered model IDs editable.
+function WorkerModelField({providerId,model,onChange,ko}:{
+ providerId:string;model:string;onChange:(value:string)=>void;ko:boolean
+}){
+ const available=useProviderModels(providerId)
+ const options=available.value.filter(item=>item.id)
+ const listed=options.some(item=>item.id===model)
+ return <div className="space-y-1">
+  <SelectInput aria-label={ko?'등록된 Worker 모델 선택':'Choose registered Worker model'}
+   disabled={!providerId||available.loading}
+   value={listed?model:''} onChange={event=>onChange(event.target.value)}>
+   <option value="">{available.loading?(ko?'모델 목록 불러오는 중':'Loading models'):
+    (ko?'등록 모델 선택 또는 직접 입력':'Choose a registered model or type below')}</option>
+   {options.map(item=><option key={item.id} value={item.id}>{item.name||item.id}</option>)}
+  </SelectInput>
+  <TextInput disabled={!providerId} value={model} onChange={event=>onChange(event.target.value)}
+   aria-label={ko?'Worker 모델 ID 직접 입력':'Enter exact Worker model ID'}
+   placeholder={ko?'등록된 제공자의 모델 ID':'Registered provider model ID'}/>
+  {providerId&&available.error&&<p role="status" className="break-words text-[10px] text-rose-700">
+   {ko?'모델 목록을 불러오지 못했습니다. 등록된 정확한 ID를 직접 입력할 수 있습니다.':
+    'Could not load model choices; enter an exact registered ID manually.'}</p>}
+ </div>
+}
 export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
  const ko=useLocale()==='ko'
  const [open,setOpen]=useState(false),[goal,setGoal]=useState('')
@@ -140,11 +163,10 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
        {enabledProviders.map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}
       </SelectInput>
      </label>
-     <label className="text-[11px]">{ko?'이 Worker의 정확한 모델':'Exact Worker model'}
-      <TextInput disabled={!task.providerId} value={task.model}
-       onChange={e=>change(index,'model',e.target.value)}
-       placeholder={ko?'등록된 제공자의 모델 ID':'Registered provider model ID'}/>
-     </label>
+     <div className="text-[11px]"><span className="block">{ko?'이 Worker의 정확한 모델':'Exact Worker model'}</span>
+      <WorkerModelField providerId={task.providerId} model={task.model} ko={ko}
+       onChange={value=>change(index,'model',value)}/>
+     </div>
     </div>
     <p className="mt-1 text-[10px] text-[#8A8176]">{ko?
      '라우팅 선택은 팀 생성 전에 고정되며 Worker의 독립 실행 기록에 남습니다.':
