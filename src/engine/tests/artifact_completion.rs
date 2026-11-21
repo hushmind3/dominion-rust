@@ -4,8 +4,8 @@ use super::*;
 use axum::{extract::State,routing::post,Json,Router};
 use std::sync::atomic::{AtomicUsize,Ordering};
 
-type ModelState=(Arc<AtomicUsize>,bool);
-async fn false_then_repair_model(State((steps,repair)):State<ModelState>,
+type ModelState=(Arc<AtomicUsize>,bool,bool);
+async fn false_then_repair_model(State((steps,repair,execute_tests)):State<ModelState>,
     Json(input):Json<Value>)->Json<Value>{
     let step=steps.fetch_add(1,Ordering::SeqCst);
     let correction_seen=input["messages"].as_array().is_some_and(|messages|
@@ -28,6 +28,11 @@ async fn false_then_repair_model(State((steps,repair)):State<ModelState>,
                     "path":"sum.py","old_text":"range(1, 5)",
                     "new_text":"range(1, 6)"}).to_string()
             }}]})
+    }else if execute_tests&&step==3{
+        json!({"role":"assistant","content":null,"tool_calls":[{
+            "id":"approved-test-1","type":"function","function":{
+                "name":"shell","arguments":json!({"command":"python3 -m unittest discover"}).to_string()
+            }}]})
     }else{
         json!({"role":"assistant","content":"The Python task is complete."})
     };
@@ -41,12 +46,12 @@ async fn git(dir:&std::path::Path,args:&[&str]){
     assert!(output.status.success(),"git: {}",
         String::from_utf8_lossy(&output.stderr));
 }
-async fn completion_scenario(repair:bool,run_tests:bool)->(Run,String,usize){
+async fn completion_scenario(repair:bool,run_tests:bool,execute_tests:bool)->(Run,String,usize){
     let port=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address=port.local_addr().unwrap();
     let count=Arc::new(AtomicUsize::new(0));
     let server=tokio::spawn({
-        let state=(count.clone(),repair);
+        let state=(count.clone(),repair,execute_tests);
         async move{axum::serve(port,Router::new()
             .route("/chat/completions",post(false_then_repair_model))
             .with_state(state)).await.unwrap();}
@@ -55,6 +60,7 @@ async fn completion_scenario(repair:bool,run_tests:bool)->(Run,String,usize){
     let mut settings=Settings::from_env().unwrap();
     settings.separate_plan_model_call=false;
     settings.separate_model_audit_enabled=false;
+    settings.shell_enabled=execute_tests;
     settings.data_dir=root.join("data");
     settings.workspace_dir=root.join("workspace");
     settings.main.base_url=format!("http://{address}");
@@ -67,7 +73,7 @@ async fn completion_scenario(repair:bool,run_tests:bool)->(Run,String,usize){
     let mut run=Run::new(CreateRun{
         instruction:if run_tests{"Change sum.py to print 15 instead of 10 and run tests"}else{
             "Change sum.py to print 15 instead of 10"}.into(),
-        budget_krw:Some(500.0),max_steps:Some(if repair&&run_tests{4}else if repair{5}else{2})
+        budget_krw:Some(500.0),max_steps:Some(if repair&&run_tests&&execute_tests{5}else if repair&&run_tests{4}else if repair{5}else{2})
     },5).unwrap();
     run.plan=Some(String::new());
     run.repository=Some("fixture".into());
@@ -81,7 +87,18 @@ async fn completion_scenario(repair:bool,run_tests:bool)->(Run,String,usize){
     tokio::fs::create_dir_all(&dir).await.unwrap();
     git(&dir,&["init","-q"]).await;
     tokio::fs::write(dir.join("sum.py"),"print(sum(range(1, 5)))\n").await.unwrap();
-    git(&dir,&["add","sum.py"]).await;
+    if run_tests {
+        // The original file fails this checked-in test, the edited one passes.
+        tokio::fs::write(dir.join("test_sum.py"),r#"import subprocess
+import sys
+import unittest
+class SumTest(unittest.TestCase):
+    def test_sum(self):
+        actual = subprocess.check_output([sys.executable, "sum.py"], text=True).strip()
+        self.assertEqual(actual, "15")
+"#).await.unwrap();
+    }
+    git(&dir,&["add","."]).await;
     git(&dir,&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid",
         "commit","-qm","baseline"]).await;
     store.put(run).await.unwrap();
@@ -90,6 +107,11 @@ async fn completion_scenario(repair:bool,run_tests:bool)->(Run,String,usize){
         loop{
             let state=store.get(id).await.unwrap();
             if state.terminal(){break state;}
+            if execute_tests&&state.status==RunStatus::AwaitingApproval
+                &&state.pending_approval.as_ref().is_some_and(|call|call.name=="shell")
+                &&state.approval_decision.is_none(){
+                engine.approve(id,true).await.unwrap();
+            }
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
     }).await.expect("native Rust Run did not become terminal");
@@ -106,7 +128,7 @@ async fn completion_scenario(repair:bool,run_tests:bool)->(Run,String,usize){
 }
 #[tokio::test]
 async fn unmodified_sum_py_cannot_complete_without_actual_artifact_receipt(){
-    let (run,file,requests)=completion_scenario(false,false).await;
+    let (run,file,requests)=completion_scenario(false,false,false).await;
     assert_eq!(run.status,RunStatus::Failed,"events: {:?}",run.events);
     assert_eq!(file,"print(sum(range(1, 5)))\n");
     assert_eq!(requests,2);
@@ -116,7 +138,7 @@ async fn unmodified_sum_py_cannot_complete_without_actual_artifact_receipt(){
 }
 #[tokio::test]
 async fn false_completion_is_repaired_by_edit_file_and_only_then_completed(){
-    let (run,file,requests)=completion_scenario(true,false).await;
+    let (run,file,requests)=completion_scenario(true,false,false).await;
     assert_eq!(run.status,RunStatus::Completed,"events: {:?}",run.events);
     assert_eq!(file,"print(sum(range(1, 6)))\n");
     assert_eq!(requests,3);
@@ -132,7 +154,7 @@ async fn false_completion_is_repaired_by_edit_file_and_only_then_completed(){
 
 #[tokio::test]
 async fn completed_edit_cannot_skip_explicit_owner_test_requirement(){
-    let (run,file,requests)=completion_scenario(true,true).await;
+    let (run,file,requests)=completion_scenario(true,true,false).await;
     assert_eq!(run.status,RunStatus::Failed,
         "a model assertion alone must not satisfy explicitly requested tests");
     assert_eq!(file,"print(sum(range(1, 6)))\n");
@@ -140,4 +162,24 @@ async fn completed_edit_cannot_skip_explicit_owner_test_requirement(){
     assert!(run.events.iter().any(|e|e.kind=="artifact_evidence_checked"));
     assert!(run.events.iter().any(|e|e.kind=="test_evidence_missing"));
     assert!(run.events.iter().all(|e|e.kind!="completed"));
+}
+
+
+#[tokio::test]
+async fn approved_real_unittest_receipt_after_edit_allows_completion(){
+    let (run,file,requests)=completion_scenario(true,true,true).await;
+    assert_eq!(run.status,RunStatus::Completed,"events: {:?}",run.events);
+    assert_eq!(file,"print(sum(range(1, 6)))\n");
+    assert_eq!(requests,5);
+    assert!(run.events.iter().any(|e|e.kind=="test_evidence_missing"));
+    assert!(run.events.iter().any(|e|e.kind=="approval_required"
+        &&e.message.contains("Shell command")));
+    assert!(run.events.iter().any(|e|e.kind=="decision"
+        &&e.message=="User approved tool"));
+    assert!(run.events.iter().any(|e|e.kind=="tool_result"
+        &&e.detail.as_ref().is_some_and(|d|d["name"]=="shell"
+            &&d["succeeded"]==true
+            &&d["result"].as_str().is_some_and(|text|text.contains("exit status: 0")))));
+    assert!(run.events.iter().any(|e|e.kind=="test_evidence_checked"));
+    assert!(run.events.iter().any(|e|e.kind=="completed"));
 }
