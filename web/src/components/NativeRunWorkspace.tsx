@@ -19,7 +19,7 @@ type NativeRun={
  repository?:string|null;read_only?:boolean;reserved_budget_krw?:number;
 }
 type TeamTask={id:string;run_id:string;role:'investigator'|'writer'|'reviewer';
- workspace:string;depends_on:string[];status:string;unmet_acceptance?:string[]}
+ workspace:string;depends_on:string[];status:string;patch_review_ready?:boolean;unmet_acceptance?:string[]}
 type TeamView={root_run_id:string;tasks:TeamTask[];completed:number;all_complete:boolean;failed:boolean}
 type Patch={source_run_id:string;sha256:string;changed_paths:string[];patch_bytes:number;diff:string;can_apply:boolean;conflict?:string|null}
 const money=(n:number|undefined)=>new Intl.NumberFormat('ko-KR',{maximumFractionDigits:2}).format(n||0)+'원'
@@ -96,8 +96,10 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const visualStatus=isTeam&&run.status==='paused'
   ?teamTasks.some(task=>task.status==='active')
    ?(ko?'팀 실행 중':'Team running')
-   :teamTasks.some(task=>task.status==='approval_required')
+   :teamTasks.some(task=>task.patch_review_ready)
     ?(ko?'패치 승인 대기':'Patch approval needed')
+    :teamTasks.some(task=>task.status==='approval_required')
+     ?(ko?'Worker 도구 승인 대기':'Worker tool approval needed')
     :!teamStarted?(ko?'팀 초안':'Team draft')
      :teamTasks.some(task=>task.status==='ready')
       ?(ko?'다음 작업 준비':'Next task ready')
@@ -174,7 +176,7 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
      {!!task.unmet_acceptance?.length&&<p className="mt-2 text-[11px] text-rose-700">{task.unmet_acceptance.join(', ')}</p>}
      <div className="mt-2 flex flex-wrap gap-2">
       <Button size="sm" variant="ghost" onClick={()=>onSelect(task.run_id)}>{ko?'Worker 기록':'Worker run'}</Button>
-      {task.role==='writer'&&task.status==='approval_required'&&run.repository&&
+      {task.role==='writer'&&task.patch_review_ready&&run.repository&&
        <Button size="sm" variant="secondary" disabled={busy} onClick={()=>void preview(task.id)}><FileDiff size={13}/>{ko?'패치 검토':'Review patch'}</Button>}
      </div>
     </li>)}
