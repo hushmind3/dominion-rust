@@ -3,6 +3,47 @@ use super::*;
     use crate::domain::CreateRun;
 
 
+
+    #[tokio::test]
+    async fn readonly_remote_creation_is_once_only_across_concurrency_and_sqlite_restart(){
+        let root=std::env::temp_dir().join(format!(
+            "dominion-remote-once-{}",Uuid::new_v4()));
+        let storage=root.join("runs");
+        let store=Arc::new(Store::open_sqlite(storage.clone()).await.unwrap());
+        let mut run=Run::new(CreateRun{instruction:"inspect artifacts".into(),
+            budget_krw:Some(30.0),max_steps:Some(2)},2).unwrap();
+        run.read_only=true;
+        run.delegation_profile="inspection".into();
+        run.event("remote_worker_admitted","remote read-only",None);
+        let id=run.id;
+        let a=Arc::clone(&store);let b=Arc::clone(&store);
+        let first=run.clone();let second=run.clone();
+        let left=tokio::spawn(async move{a.put_if_absent(first).await.unwrap()});
+        let right=tokio::spawn(async move{b.put_if_absent(second).await.unwrap()});
+        let (_,left_created)=left.await.unwrap();
+        let (_,right_created)=right.await.unwrap();
+        assert_ne!(left_created,right_created,
+            "exactly one persisted run wins duplicate remote admission");
+        assert_eq!(store.stats().await.total,1);
+        store.mutate(id,|saved|{
+            saved.status=RunStatus::Completed;
+            saved.answer=Some("observed source".into());
+            saved.event("completed","remote result",None);Ok(())
+        }).await.unwrap();
+        let stale=run.clone();
+        let (existing,inserted)=store.put_if_absent(stale).await.unwrap();
+        assert!(!inserted);
+        assert_eq!(existing.answer.as_deref(),Some("observed source"));
+        drop(store);
+        let restored=Store::open_sqlite(storage).await.unwrap();
+        let (durable,inserted)=restored.put_if_absent(run).await.unwrap();
+        assert!(!inserted);
+        assert_eq!(durable.answer.as_deref(),Some("observed source"));
+        assert_eq!(durable.events.last().unwrap().kind,"completed");
+        drop(restored);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn indexed_lineage_tracks_reparent_replace_and_durable_restart(){
         let root=std::env::temp_dir().join(format!("dominion-lineage-index-{}",Uuid::new_v4()));
