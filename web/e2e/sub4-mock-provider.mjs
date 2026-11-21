@@ -36,7 +36,7 @@ const server=createServer(async(req,res)=>{
   // real Rust Run while its provider call is still outstanding. No live API.
   if(input.messages.some(message=>typeof message.content==='string'
       &&message.content.includes('DOMINION_E2E_BACKGROUND_TURN'))){
-   await new Promise(resolve=>setTimeout(resolve,2400))
+   await new Promise(resolve=>setTimeout(resolve,4500))
   }
   return send(res,200,{id:'dominion-e2e-chat-'+index,model:input.model,
    choices:[{index:0,message:{role:'assistant',content:'Verified native mock answer '+index},
