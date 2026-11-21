@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 mod delegation;
 mod task_team;
+pub use task_team::WorkerModelRoute;
 #[cfg(test)]
 mod task_team_tests;
 #[cfg(test)]
