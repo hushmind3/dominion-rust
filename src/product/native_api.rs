@@ -347,13 +347,24 @@ async fn read_skill(State(engine):State<Arc<Engine>>,Path((id,name)):Path<(Uuid,
     Ok(Json(json!({"name":name,"content":content})))
 }
 
-async fn list_files(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Result<Json<Value>,ApiError> {
+#[derive(Default,Deserialize)]
+struct FilePageQuery {offset:Option<usize>,limit:Option<usize>}
+async fn list_files(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
+    Query(query):Query<FilePageQuery>) -> Result<Json<Value>,ApiError> {
     if engine.store.get(id).await.is_none(){return Err(not_found());}
+    // The underlying tool has stable lexical ordering and bounded paging.
+    // Read one extra entry to prove there is a next page; do not hide every
+    // file after the first 100 in a larger checkout.
+    let offset=query.offset.unwrap_or(0).min(10_000);
+    let limit=query.limit.unwrap_or(100).clamp(1,200);
     let data=tools::execute(&engine.settings,id,&crate::domain::ToolCall{
-        id:"api-list".into(),name:"list_files".into(),arguments:json!({"path":""})
+        id:"api-list".into(),name:"list_files".into(),
+        arguments:json!({"path":"","offset":offset,"limit":limit+1})
     }).await.map_err(bad)?;
-    let items:Value=serde_json::from_str(&data).map_err(|e| bad(e.to_string()))?;
-    Ok(Json(json!({"files":items})))
+    let mut items:Vec<String>=serde_json::from_str(&data).map_err(|e|bad(e.to_string()))?;
+    let has_more=items.len()>limit;
+    items.truncate(limit);
+    Ok(Json(json!({"files":items,"offset":offset,"limit":limit,"hasMore":has_more})))
 }
 async fn read_file(State(engine):State<Arc<Engine>>,Path((id,path)):Path<(Uuid,String)>) -> Result<Json<Value>,ApiError> {
     if engine.store.get(id).await.is_none(){return Err(not_found());}
