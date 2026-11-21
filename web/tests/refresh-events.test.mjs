@@ -41,3 +41,16 @@ test('merge collapses rapid SSE bursts while unknown events do not cause full re
  assert.deepEqual(classifyRefreshEvent({type:'audit'}).targets,['/api/audit/*','/api/audit'])
  assert.deepEqual(classifyRefreshEvent({type:'unrecognized'}).targets,[])
 })
+
+test('native Run SSE refreshes the matching execution inspector and team board',()=>{
+ const change=classifyRefreshEvent({type:'job_event',id:'run-123',status:'running'})
+ assert.ok(matchesRefreshTarget('/api/jobs',change.targets))
+ assert.ok(matchesRefreshTarget('/api/executions?limit=100',change.targets))
+ assert.ok(matchesRefreshTarget('/api/v1/runs/run-123',change.targets))
+ assert.ok(matchesRefreshTarget('/api/executions/run-123/operations',change.targets))
+ assert.ok(matchesRefreshTarget('/api/v1/task-teams/team-1',change.targets))
+ assert.equal(matchesRefreshTarget('/api/v1/runs/run-999',change.targets),false)
+ assert.equal(matchesRefreshTarget('/api/providers',change.targets),false)
+ const legacy=classifyRefreshEvent({type:'job_event',jobId:'legacy'})
+ assert.ok(matchesRefreshTarget('/api/jobs/legacy',legacy.targets))
+})
