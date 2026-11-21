@@ -110,6 +110,9 @@ pub struct Run {
     #[serde(default)]pub cache_unreported_requests:usize,
     pub output_tokens: u64,
     pub cost_krw: f64,
+    /// Separately metered remote native workers, never counted as local model fees.
+    #[serde(default)]
+    pub remote_cost_krw:f64,
     pub budget_krw: f64,
     /// Child budgets are durably reserved before workers can start.
     #[serde(default)]
@@ -185,7 +188,7 @@ impl Run {
             messages: Vec::new(), room_binding:None, chat_context:Vec::new(), events: Vec::new(), queued_calls: Vec::new(), advertised_tools: Vec::new(), discovered_tools:Vec::new(), read_batch_in_flight:Vec::new(), program_session:None,
             pending_approval: None, approval_decision: None, in_flight: None, cancel_after_tool: false, supersede_after_tool:false, parent_run_id: None, team:None, delegation_profile:String::new(), context_chars_avoided: 0, repository: None, base_commit: None, required_changed_paths:Vec::new(), steps: 0,
             input_tokens: 0, cached_input_tokens: 0, cache_write_tokens:0,
-            cache_unreported_requests:0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
+            cache_unreported_requests:0, output_tokens: 0, cost_krw: 0.0, remote_cost_krw:0.0, budget_krw: budget,
             reserved_budget_krw:0.0, delegated_spent_krw:0.0, settled_child_ids:Vec::new(), waiting_for_children:false, read_only:false, tool_schema_chars_avoided:0,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             strategy_learning:false,model_only:false,

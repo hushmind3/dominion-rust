@@ -4,7 +4,7 @@ use crate::domain::Run;
 use serde_json::Value;
 
 pub fn effective_budget_krw(run:&Run)->f64{
-    (run.budget_krw-run.reserved_budget_krw-run.delegated_spent_krw).max(0.0)
+    (run.budget_krw-run.reserved_budget_krw-run.delegated_spent_krw-run.remote_cost_krw).max(0.0)
 }
 
 pub fn allowed_tool(run:&Run,name:&str)->bool{
@@ -177,6 +177,8 @@ mod tests{
         assert!(run.cost_krw<=effective_budget_krw(&run));
         run.cost_krw=41.0;
         assert!(run.cost_krw>effective_budget_krw(&run));
+        run.remote_cost_krw=10.0;
+        assert_eq!(effective_budget_krw(&run),30.0);
     }
     #[test]
     fn persisted_tool_calls_must_obey_current_operator_policy(){

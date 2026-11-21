@@ -103,6 +103,12 @@ impl RemoteWorker{
             return Ok(ToolEffectOutcome::Settled(Err(
                 "a Room peer cannot authorize a remote worker".into())));
         }
+        let remaining=(crate::policy::effective_budget_krw(&origin)-origin.cost_krw)
+            .max(0.0).min(10000.0);
+        if remaining==0.0{
+            return Ok(ToolEffectOutcome::Settled(Err(
+                "remote worker KRW reservation exhausted before dispatch".into())));
+        }
         let remote_id=self.remote_id(id,&call.id);
         store.mutate(id,|run|{
             run.event("remote_worker_unmetered",
@@ -115,7 +121,7 @@ impl RemoteWorker{
             let response=self.client.post(self.url(None))
                 .header(AUTH_HEADER,&self.token)
                 .json(&json!({"runId":remote_id,"instruction":instruction,
-                    "budgetKrw":origin.budget_krw.min(10000.0).max(0.0),
+                    "budgetKrw":remaining,
                     "maxSteps":origin.max_steps.min(20).max(1)}))
                 .send().await;
             let response=match response{
@@ -156,6 +162,36 @@ impl RemoteWorker{
                         let Some(answer)=view["answer"].as_str().filter(|v|!v.trim().is_empty())else{
                             return ToolEffectOutcome::Uncertain("remote worker completed without an answer receipt".into());
                         };
+                        let Some(charged)=view["costKrw"].as_f64()
+                            .filter(|v|v.is_finite()&&*v>=0.0)else{
+                            return ToolEffectOutcome::Uncertain(
+                                "remote worker omitted verified KRW usage".into());
+                        };
+                        let input_tokens=view["inputTokens"].as_u64().unwrap_or(0);
+                        let output_tokens=view["outputTokens"].as_u64().unwrap_or(0);
+                        // The provider invoice belongs to the remote node,
+                        // but the coordinator reserves the measured amount in
+                        // its own hierarchical budget once per remote Run.
+                        let settled=store.mutate(id,|run|{
+                            if run.events.iter().any(|event|
+                                event.kind=="remote_worker_metered"&&
+                                event.detail.as_ref().is_some_and(|detail|
+                                    detail["remoteRunId"]==remote_id.to_string())){
+                                return Ok(());
+                            }
+                            run.remote_cost_krw+=charged;
+                            run.event("remote_worker_metered",
+                                "Remote native worker provider usage reconciled",
+                                Some(json!({"remoteRunId":remote_id,"callId":call.id,
+                                    "costKrw":charged,"inputTokens":input_tokens,
+                                    "outputTokens":output_tokens,"budgetExhausted":
+                                        run.remote_cost_krw+run.cost_krw>run.budget_krw})));
+                            Ok(())
+                        }).await;
+                        if let Err(error)=settled{
+                            return ToolEffectOutcome::Uncertain(format!(
+                                "remote cost receipt could not be journalled: {error}"));
+                        }
                         return ToolEffectOutcome::Settled(Ok(json!({
                             "source":"dominion_remote_worker","remoteRunId":remote_id,
                             "answer":answer.chars().take(20000).collect::<String>(),
@@ -242,6 +278,7 @@ mod tests{
         }
         assert_eq!(count.load(Ordering::SeqCst),1,
             "one journalled call must emit only one remote submission");
+        assert_eq!(store.get(origin_id).await.unwrap().remote_cost_krw,2.5);
         assert!(store.get(origin_id).await.unwrap().events.iter()
             .any(|e|e.kind=="remote_worker_unmetered"));
         server.abort();
