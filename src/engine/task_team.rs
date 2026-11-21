@@ -94,7 +94,11 @@ impl Engine{
                 }
             }
         }
-        Ok(graph.view_with_acceptance(id,&states,&unmet))
+        // Logical workspace labels do not guarantee disjoint file edits:
+        // repository-bound Writers share the same accepted Git patch target.
+        // Keep the one-writer lease until owner approval actually integrates
+        // the prior patch (task_team marks unintegrated completions as pending).
+        Ok(graph.view_with_repository_lease(id,&states,&unmet,root.repository.is_some()))
     }
     /// Idempotent tick: schedule only prepared dependency-ready workers.
     /// Repeated ticks/restarts use each task's preassigned Run UUID, never a
