@@ -16,6 +16,7 @@ import {ReasoningSelect} from '../components/ReasoningSelect'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {useTranscriptScroll} from '../hooks/useTranscriptScroll'
 import {useScopedChatDraft} from '../hooks/useScopedChatDraft'
+import {chatRoute} from '../utils/chatRoute'
 import {useAnchoredPanel} from '../hooks/useAnchoredPanel'
 import {useJob,jobFinished,type JobState} from '../hooks/useJob'
 import {t,useLocale,type LocaleKey} from '../i18n'
@@ -55,11 +56,8 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const manual=override&&override.scope===current?override:
   !current&&initialProvider?{providerId:initialProvider,model:initialModel??''}:undefined;
  const enabledProviders=providers.value.filter(provider=>provider.enabled!==false);
- const sessionProvider=enabledProviders.find(provider=>provider.id===selectedSession?.providerId);
- const providerId=manual?.providerId??(activeAgent?.providerId||sessionProvider?.id||enabledProviders[0]?.id||'');
+ const {providerId,model}=chatRoute(selectedSession,agentId,activeAgent,manual,enabledProviders);
  const selectedProvider=enabledProviders.find(provider=>provider.id===providerId);
- const model=manual?.model||((activeAgent?.providerId===providerId?activeAgent.model:'')||
-  (selectedSession?.providerId===providerId&&selectedSession.agentId===agentId?selectedSession.model:'')||selectedProvider?.model||'');
  const catalogue=useProviderModels(providerId);
  const {value:models,error:modelError}=catalogue;
  const selectedModel=models.find(item=>item.id===model);
