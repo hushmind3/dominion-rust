@@ -259,6 +259,7 @@ test('mobile Run can locate an old test receipt and search the entire durable jo
   await evidence.getByRole('button',{name:/원본 실행 영수증 보기|Show original execution receipts/}).click()
   const journal=dialog.getByRole('region',{name:/실행 기록 탐색|Browse execution events/})
   await expect(journal.locator('#run-event-3')).toBeVisible()
+  await expect(journal.locator('#run-event-3')).toBeInViewport()
   await expect(journal.getByText('EARLIEST_RECOVERY_RECEIPT')).toBeVisible()
   await expect(journal.locator('li')).toHaveCount(16)
   await journal.getByRole('textbox',{name:/실행 기록 검색|Search execution events/}).fill('call-47')

@@ -1,4 +1,4 @@
-import {useState} from 'react'
+import {useEffect,useRef,useState} from 'react'
 import {AlertTriangle,Check,ChevronDown,ChevronUp,Clock3,FileDiff,Play,RefreshCw,ShieldCheck,Square,Workflow} from 'lucide-react'
 import {get,post} from '../api'
 import {Button,TextArea,TextInput} from './Primitives'
@@ -65,6 +65,16 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const [eventQuery,setEventQuery]=useState('')
  const [eventPage,setEventPage]=useState(0)
  const [focusedEventSeq,setFocusedEventSeq]=useState<number|null>(null)
+ const journalRef=useRef<HTMLOListElement>(null)
+ useEffect(()=>{
+  setEventQuery('');setEventPage(0);setFocusedEventSeq(null);setEventsOpen(false)
+ },[id])
+ useEffect(()=>{
+  if(eventsOpen&&focusedEventSeq!==null){
+   journalRef.current?.querySelector<HTMLElement>('[data-seq="'+focusedEventSeq+'"]')
+    ?.scrollIntoView({block:'nearest'})
+  }
+ },[eventsOpen,focusedEventSeq,eventPage])
  const reload=async()=>{
   await Promise.all([current.reload(),team.reload()])
   refresh('/api/executions','/api/jobs')
@@ -323,8 +333,8 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
          onClick={()=>{setEventPage(p=>p+1);setFocusedEventSeq(null)}}>{ko?'이전 기록':'Older'}</Button>
        </div>
       </div>
-      <ol className="mt-2 max-h-96 space-y-2 overflow-auto">
-       {visibleEvents.map(ev=><li key={ev.seq} id={'run-event-'+ev.seq}
+      <ol ref={journalRef} className="mt-2 max-h-96 space-y-2 overflow-auto">
+       {visibleEvents.map(ev=><li key={ev.seq} data-seq={ev.seq} id={'run-event-'+ev.seq}
         className={'rounded-lg border p-2 text-[11px] '+(focusedEventSeq===ev.seq?
           'border-[#A94E30] bg-[#FFF5EB]':'border-transparent bg-[#FAF7F1]')}>
          <div className="flex flex-wrap justify-between gap-1"><strong>{ev.kind}</strong><span className="text-[#9C9388]">#{ev.seq} · {eventTime(ev.at_ms)}</span></div>
