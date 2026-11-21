@@ -665,6 +665,11 @@ test('a failed native model call remains inspectable after refreshing the chat',
     typeof messages[0].metadata?.executionId==='string'
   },{timeout:30000}).toBe(true)
   await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(0)
+  // The failed Run has an authoritative owner receipt. Never pre-fill a
+  // duplicate of the potentially billable turn for another Send click.
+  await expect(page.locator('button.conversation-composer-send[type="submit"]'))
+   .toBeVisible({timeout:30000})
+  await expect(page.locator('textarea.conversation-composer-input')).toHaveValue('')
   await expect.poll(async()=>{
    const result=await request.get('/api/sessions/'+session.id)
    const latest=await result.json() as {pendingRun?:string|null}
@@ -680,6 +685,36 @@ test('a failed native model call remains inspectable after refreshing the chat',
   const saved=await userMessages()
   expect(saved.map(message=>message.role)).toEqual(['user'])
   expect(saved[0].metadata?.executionId).toMatch(/^[0-9a-f-]{36}$/)
+ }finally{
+  await request.delete('/api/sessions/'+session.id)
+ }
+})
+
+
+test('rejected chat admission restores unsent text without creating a Run',async({page,request})=>{
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Rejected request draft preservation'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json() as {id:string}
+ try{
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  let rejected=0
+  await page.route('**/api/chat',route=>{
+   if(route.request().method()!=='POST')return route.continue()
+   rejected++
+   return route.fulfill({status:400,contentType:'application/json',
+    body:JSON.stringify({error:'fixture rejected chat before run admission'})})
+  })
+  const composer=page.locator('textarea.conversation-composer-input')
+  const input='A draft rejected before any native Run is created'
+  await composer.fill(input)
+  await page.locator('button.conversation-composer-send').click()
+  await expect.poll(()=>rejected).toBe(1)
+  await expect(page.getByRole('button',{name:/최근 실행 기록 열기|Inspect last agent run/}))
+   .toHaveCount(0)
+  await expect(composer).toHaveValue(input)
+  const messages=await (await request.get('/api/sessions/'+session.id+'/messages')).json()
+  expect(messages).toHaveLength(0)
  }finally{
   await request.delete('/api/sessions/'+session.id)
  }
