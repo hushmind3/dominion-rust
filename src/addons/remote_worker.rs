@@ -188,6 +188,48 @@ impl RemoteWorker{
         serde_json::from_slice::<Value>(&bytes)
             .map_err(|e|format!("invalid remote worker protocol: {e}"))
     }
+    /// Record the highest provider-observed remote invoice, not merely
+    /// successful answers. Failed/cancelled/approval-held workers may have
+    /// already consumed billable tokens. Later observations add only deltas.
+    async fn record_remote_charge(store:&Arc<RunStorePort>,origin:Uuid,
+        call:&ToolCall,remote_id:Uuid,view:&Value)->Result<f64,String>{
+        let billed=view["costKrw"].as_f64()
+            .filter(|v|v.is_finite()&&*v>=0.0)
+            .ok_or("remote worker omitted valid KRW usage")?;
+        let observed=store.get(origin).await.ok_or("origin Run unavailable")?;
+        let prior=|run:&crate::domain::Run|run.events.iter().rev()
+            .find(|event|event.kind=="remote_worker_metered"
+                &&event.detail.as_ref().is_some_and(|detail|
+                    detail["remoteRunId"]==remote_id.to_string()))
+            .and_then(|event|event.detail.as_ref())
+            .and_then(|detail|detail["observedCostKrw"].as_f64()
+                .or_else(||detail["costKrw"].as_f64()))
+            .unwrap_or(0.0);
+        if billed+0.000001<prior(&observed){
+            return Err("remote provider usage decreased after durable receipt".into());
+        }
+        if billed<=prior(&observed){return Ok(billed);}
+        let input=view["inputTokens"].as_u64().unwrap_or(0);
+        let output=view["outputTokens"].as_u64().unwrap_or(0);
+        store.mutate(origin,|run|{
+            let already=prior(run);
+            if billed+0.000001<already{
+                return Err("remote usage changed during reconciliation".into());
+            }
+            let delta=(billed-already).max(0.0);
+            if delta==0.0{return Ok(());}
+            run.remote_cost_krw+=delta;
+            run.event("remote_worker_metered",
+                "Verified remote model usage reserved in KRW hierarchy",
+                Some(json!({"remoteRunId":remote_id,"callId":call.id,
+                    "costKrw":delta,"observedCostKrw":billed,
+                    "inputTokens":input,"outputTokens":output,
+                    "budgetExhausted":
+                        run.remote_cost_krw+run.cost_krw>run.budget_krw})));
+            Ok(())
+        }).await?;
+        Ok(billed)
+    }
     pub async fn execute(&self,settings:&crate::config::Settings,
         store:&Arc<RunStorePort>,id:Uuid,
         call:&ToolCall,mut cancellation:watch::Receiver<bool>)
@@ -318,41 +360,18 @@ impl RemoteWorker{
                 if view["id"]!=remote_id.to_string(){
                     return ToolEffectOutcome::Uncertain("remote worker status identity mismatch".into());
                 }
+                // Reconcile positive spend even if the remote model fails,
+                // pauses for approval, or is cancelled before producing text.
+                if let Err(error)=Self::record_remote_charge(store,id,call,
+                    remote_id,&view).await{
+                    return ToolEffectOutcome::Uncertain(format!(
+                        "remote model cost reconciliation failed: {error}"));
+                }
                 match view["status"].as_str(){
                     Some("completed")=>{
                         let Some(answer)=view["answer"].as_str().filter(|v|!v.trim().is_empty())else{
                             return ToolEffectOutcome::Uncertain("remote worker completed without an answer receipt".into());
                         };
-                        let Some(charged)=view["costKrw"].as_f64()
-                            .filter(|v|v.is_finite()&&*v>=0.0)else{
-                            return ToolEffectOutcome::Uncertain(
-                                "remote worker omitted verified KRW usage".into());
-                        };
-                        let input_tokens=view["inputTokens"].as_u64().unwrap_or(0);
-                        let output_tokens=view["outputTokens"].as_u64().unwrap_or(0);
-                        // The provider invoice belongs to the remote node,
-                        // but the coordinator reserves the measured amount in
-                        // its own hierarchical budget once per remote Run.
-                        let settled=store.mutate(id,|run|{
-                            if run.events.iter().any(|event|
-                                event.kind=="remote_worker_metered"&&
-                                event.detail.as_ref().is_some_and(|detail|
-                                    detail["remoteRunId"]==remote_id.to_string())){
-                                return Ok(());
-                            }
-                            run.remote_cost_krw+=charged;
-                            run.event("remote_worker_metered",
-                                "Remote native worker provider usage reconciled",
-                                Some(json!({"remoteRunId":remote_id,"callId":call.id,
-                                    "costKrw":charged,"inputTokens":input_tokens,
-                                    "outputTokens":output_tokens,"budgetExhausted":
-                                        run.remote_cost_krw+run.cost_krw>run.budget_krw})));
-                            Ok(())
-                        }).await;
-                        if let Err(error)=settled{
-                            return ToolEffectOutcome::Uncertain(format!(
-                                "remote cost receipt could not be journalled: {error}"));
-                        }
                         let mut patch_meta=Value::Null;
                         if let Some((parent_id,ref parent_sha,ref child_sha,
                             _,_,_))=writer_context{
