@@ -383,3 +383,31 @@ async fn uncertain_team_patch_requires_reverse_git_witness_and_is_not_auto_repla
     }
     tokio::fs::remove_dir_all(path).await.unwrap();
 }
+
+#[tokio::test]
+async fn uncertain_team_patch_cannot_be_marked_success_by_generic_reconcile(){
+    let (engine,store,path)=mock_engine().await;
+    let coordinator=engine.create_task_team("Do not forge Git integration".into(),
+        vec![spec("writer",&[],TeamRole::Writer)],30.0,
+        RunOptions::default()).await.unwrap();
+    let id=coordinator.id;
+    engine.store.mutate(id,|run|{
+        run.in_flight=Some(ToolCall{
+            id:"team-patch-test".into(),
+            name:"team_patch_integrate".into(),
+            arguments:json!({"task_id":"writer","patch_sha256":"a".repeat(64)})
+        });
+        run.event("team_patch_apply_intent","Uncertain Git integration",None);
+        Ok(())
+    }).await.unwrap();
+    let result=engine.reconcile(id,ReconcileTool{
+        succeeded:true,result:"Pretend it applied".into()
+    }).await;
+    assert!(result.unwrap_err().contains("Team patch reconciliation"),
+        "ordinary reconciliation must not bypass SHA-256 and Git proof");
+    let current=engine.store.get(id).await.unwrap();
+    assert!(current.in_flight.is_some());
+    assert!(!current.events.iter().any(|e|e.kind=="team_patch_integrated"));
+    drop(engine);drop(store);
+    tokio::fs::remove_dir_all(path).await.unwrap();
+}
