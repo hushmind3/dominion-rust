@@ -4,6 +4,7 @@ import {get,post} from '../api'
 import {Button,TextArea} from './Primitives'
 import {Notice,Panel,refresh,useRemote} from './UI'
 import {useLocale} from '../i18n'
+import {RunEvidenceAssets} from './RunEvidenceAssets'
 
 type RunStatus='queued'|'running'|'awaiting_approval'|'paused'|'completed'|'failed'|'cancelled'
 type NativeEvent={seq:number;kind:string;message:string;at_ms:number;detail?:unknown}
@@ -154,6 +155,7 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
   </div>}
   {run.plan&&<details className="mt-4 border-t border-[#E7E0D5] pt-3"><summary className="cursor-pointer text-xs font-semibold">{ko?'실행 계획':'Execution plan'}</summary><p className="mt-2 whitespace-pre-wrap break-words text-xs text-[#5C544A]">{run.plan}</p></details>}
   {run.answer&&<div className="mt-4 rounded-xl border border-[#D5E6D5] bg-[#F5FAF4] p-3"><strong className="text-xs text-[#28663E]">{ko?'최종 결과':'Final result'}</strong><p className="mt-2 whitespace-pre-wrap break-words text-xs">{run.answer}</p></div>}
+  <RunEvidenceAssets runId={id}/>
   <div className="mt-4 border-t border-[#E7E0D5] pt-3">
    <button type="button" onClick={()=>setEventsOpen(v=>!v)} aria-expanded={eventsOpen} className="flex w-full items-center justify-between text-left text-xs font-semibold"><span><Clock3 size={14} className="mr-1 inline"/>{ko?'실행 증거 · 이벤트 기록':'Durable execution events'} ({run.events.length})</span>{eventsOpen?<ChevronUp size={15}/>:<ChevronDown size={15}/>}</button>
    {eventsOpen&&<ol className="mt-3 max-h-96 space-y-2 overflow-auto">{run.events.slice(-35).reverse().map(ev=><li key={ev.seq} className="rounded-lg bg-[#FAF7F1] p-2 text-[11px]"><div className="flex flex-wrap justify-between gap-1"><strong>{ev.kind}</strong><span className="text-[#9C9388]">#{ev.seq} · {eventTime(ev.at_ms)}</span></div><p className="mt-1 whitespace-pre-wrap break-words">{ev.message}</p>{ev.detail!=null&&<details className="mt-1"><summary className="cursor-pointer text-[#7C7469]">{ko?'기록 세부정보':'Receipt detail'}</summary><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(ev.detail,null,2)}</pre></details>}</li>)}</ol>}
