@@ -479,8 +479,8 @@ test('a late failed Run receipt is never shown in a different chat session',
    intercepted++
    await gate
    await route.fulfill({status:200,contentType:'text/event-stream',
-    body:'data: {"type":"error","message":"late owner A failure","runId":"foreign-run-receipt","status":"paused"}\\n\\n'+
-     'data: {"type":"done"}\\n\\n'})
+    body:'data: {"type":"error","message":"late owner A failure","runId":"foreign-run-receipt","status":"paused"}\n\n'+
+     'data: {"type":"done"}\n\n'})
   })
   await page.locator('textarea.conversation-composer-input').fill('First owner request')
   await page.locator('button.conversation-composer-send').click()
