@@ -3,7 +3,7 @@
 use super::*;
 use crate::{domain::team::{TaskSpec,TeamGraph,TeamView,TeamRole,TeamTaskState},
     sdk::RunOptions};
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 
 impl Engine{
     /// Coordinator is a paused native Run with a versioned, owner-authored DAG.
@@ -64,6 +64,7 @@ impl Engine{
         if graph.schema_version!=1{return Err("unsupported Task Team schema version".into());}
         let mut states=HashMap::new();
         let mut unmet=HashMap::new();
+        let mut patch_ready=HashSet::new();
         for task in &graph.tasks{
             if let Some(child)=self.store.get(task.run_id).await{
                 if child.parent_run_id!=Some(id)||child.team.is_some(){
@@ -89,6 +90,7 @@ impl Engine{
                     // Owner approval must be persisted before dependencies
                     // may use the Writer's changes.
                     states.insert(child.id,RunStatus::AwaitingApproval);
+                    patch_ready.insert(child.id);
                 }else{
                     states.insert(child.id,child.status);
                 }
@@ -98,7 +100,11 @@ impl Engine{
         // repository-bound Writers share the same accepted Git patch target.
         // Keep the one-writer lease until owner approval actually integrates
         // the prior patch (task_team marks unintegrated completions as pending).
-        Ok(graph.view_with_repository_lease(id,&states,&unmet,root.repository.is_some()))
+        let mut view=graph.view_with_repository_lease(id,&states,&unmet,root.repository.is_some());
+        for (task,projected) in graph.tasks.iter().zip(view.tasks.iter_mut()){
+            projected.patch_review_ready=patch_ready.contains(&task.run_id);
+        }
+        Ok(view)
     }
     /// Idempotent tick: schedule only prepared dependency-ready workers.
     /// Repeated ticks/restarts use each task's preassigned Run UUID, never a
