@@ -505,6 +505,7 @@ mod tests{
         for query in [
             r#"번역해 "README.md""#,
             r#"번역해: 'notes.txt'"#,
+            r#"번역해 "meeting notes.md""#,
             r#"translate this "https://example.org/report""#,
             r#"번역해 "C:\\docs\\report.md""#,
             "번역해: ./docs/specification.md",
