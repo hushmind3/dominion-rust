@@ -25,16 +25,18 @@ fn one_header<'a>(headers:&'a HeaderMap,name:header::HeaderName)
 }
 fn authority(raw:&str)->Result<Authority,&'static str>{
     // HTTP Host is an authority, never an arbitrary URL or userinfo.
-    if raw.contains(['@','/','\\','?','#',',','%',' ']) ||
+    if raw.chars().any(|ch|matches!(ch,'@'|'/'|'\\'|'?'|'#'|','|'%'|' ')) ||
         raw.bytes().any(|byte|byte.is_ascii_control()){
         return Err("invalid Host authority");
     }
     let parsed=Authority::from_str(raw).map_err(|_|"invalid Host authority")?;
     if let Some(port)=parsed.port_u16(){
         if port==0{return Err("invalid Host port");}
-    }else if parsed.as_str().rsplit_once(':')
-        .is_some_and(|(_,tail)|tail.chars().all(|c|c.is_ascii_digit())
-            &&!tail.is_empty()) &&!parsed.host().starts_with('['){
+    }else if raw.starts_with('['){
+        if let Some((_,suffix))=raw.split_once(']'){
+            if !suffix.is_empty(){return Err("invalid Host port");}
+        }else{return Err("invalid IPv6 Host");}
+    }else if raw.contains(':'){
         return Err("invalid Host port");
     }
     Ok(parsed)
