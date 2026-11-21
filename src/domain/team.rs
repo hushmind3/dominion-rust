@@ -183,6 +183,16 @@ impl TeamGraph{
     }
     pub fn view_with_acceptance(&self,root:Uuid,states:&HashMap<Uuid,RunStatus>,
         unmet:&HashMap<Uuid,Vec<String>>)->TeamView{
+        self.view_with_repository_lease(root,states,unmet,false)
+    }
+    /// A repository-bound Team shares ONE integration target even when
+    /// writers declare distinct logical workspace labels. Until an earlier
+    /// patch is accepted or rejected, running another writer from the same
+    /// base commit creates needless merge conflicts and stale evidence.
+    /// Read-only investigators and reviewers remain parallelizable.
+    pub fn view_with_repository_lease(&self,root:Uuid,
+        states:&HashMap<Uuid,RunStatus>,unmet:&HashMap<Uuid,Vec<String>>,
+        shared_repository:bool)->TeamView{
         let by_id=self.tasks.iter().map(|t|(t.spec.id.as_str(),t.run_id))
             .collect::<HashMap<_,_>>();
         let mut active_writers=HashSet::new();
@@ -190,7 +200,9 @@ impl TeamGraph{
             if task.spec.role==TeamRole::Writer &&
                 states.get(&task.run_id).is_some_and(|s|!matches!(s,
                     RunStatus::Completed|RunStatus::Failed|RunStatus::Cancelled)){
-                active_writers.insert(task.spec.workspace.as_str());
+                let lease=if shared_repository{"__shared_git_repository__"}
+                    else{task.spec.workspace.as_str()};
+                active_writers.insert(lease);
             }
         }
         let mut claimed=active_writers;
@@ -211,7 +223,8 @@ impl TeamGraph{
                 None if failed_dependency=>TeamTaskState::Blocked,
                 None if !done=>TeamTaskState::Pending,
                 None if task.spec.role==TeamRole::Writer &&
-                    !claimed.insert(task.spec.workspace.as_str())=>TeamTaskState::Pending,
+                    !claimed.insert(if shared_repository{"__shared_git_repository__"}
+                        else{task.spec.workspace.as_str()})=>TeamTaskState::Pending,
                 None=>TeamTaskState::Ready,
             };
             tasks.push(TeamTaskView{
@@ -268,6 +281,32 @@ mod tests{
         assert_eq!(b.tasks[2].status,TeamTaskState::Ready);
         states.insert(graph.tasks[2].run_id,RunStatus::Failed);
         assert_eq!(graph.view(root,&states).tasks[3].status,TeamTaskState::Blocked);
+    }
+    #[test]fn repository_writer_lease_serializes_distinct_labels_until_patch_adoption(){
+        let mut first=item("writer_a",&[],TeamRole::Writer);
+        let mut second=item("writer_b",&[],TeamRole::Writer);
+        first.workspace="frontend".into();
+        second.workspace="backend".into();
+        let graph=TeamGraph::new(vec![
+            first,second,item("research",&[],TeamRole::Investigator)],300.0).unwrap();
+        let root=Uuid::new_v4();
+        let mut states=HashMap::new();
+        let empty=HashMap::new();
+        // An unbound Team can schedule independent named workspaces.
+        let independent=graph.view_with_acceptance(root,&states,&empty);
+        assert_eq!(independent.tasks[0].status,TeamTaskState::Ready);
+        assert_eq!(independent.tasks[1].status,TeamTaskState::Ready);
+        // A single Git repository has one shared patch-integration lease.
+        let initial=graph.view_with_repository_lease(root,&states,&empty,true);
+        assert_eq!(initial.tasks[0].status,TeamTaskState::Ready);
+        assert_eq!(initial.tasks[1].status,TeamTaskState::Pending);
+        assert_eq!(initial.tasks[2].status,TeamTaskState::Ready);
+        states.insert(graph.tasks[0].run_id,RunStatus::AwaitingApproval);
+        let pending=graph.view_with_repository_lease(root,&states,&empty,true);
+        assert_eq!(pending.tasks[1].status,TeamTaskState::Pending);
+        states.insert(graph.tasks[0].run_id,RunStatus::Completed);
+        let released=graph.view_with_repository_lease(root,&states,&empty,true);
+        assert_eq!(released.tasks[1].status,TeamTaskState::Ready);
     }
     #[test]fn acceptance_requires_actual_successful_receipt_and_explicit_audit(){
         let mut spec=item("research",&[],TeamRole::Investigator);
