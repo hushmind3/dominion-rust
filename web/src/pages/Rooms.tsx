@@ -148,7 +148,7 @@ function RoomModelPicker({value,onChange,providers,disabled=false}:{value:RoomMo
 }
 
 function RoomConversation({room,agents,providers,openList,showList,openSession,onSaved,onRemoved,switchMode,visibleView,openSettings}:{openSettings:()=>void;switchMode:(mode:'chat'|'rooms')=>void;visibleView:boolean;room:RoomConfig;agents:Agent[];providers:Provider[];openList:()=>void;showList:boolean;openSession:(id:string)=>void;onSaved:()=>Promise<void>;onRemoved:()=>Promise<void>}){
- useLocale()
+ const ko=useLocale()==='ko'
  const [messages,setMessages]=useState<ChatMessage[]>([]),[feed,setFeed]=useState<FeedState>(initialFeed)
  const messageUsageTotal=useMemo(()=>messages.reduce((sum,message)=>sum+(Number(message.metadata?.usage?.totalTokens)||0),0),[messages])
  const usageTotal=feed.usage?.totalTokens||messageUsageTotal
@@ -345,15 +345,16 @@ function RoomConversation({room,agents,providers,openList,showList,openSession,o
     {loading?<div className="room-feed-loading"><LoaderCircle size={20} className="animate-spin"/> {t('rooms.loading')}</div>:!visible.length?<div className="room-first-message"><div className="room-empty-avatars"><Avatar owner/>{roster.slice(0,3).map((agent,index)=><Avatar key={agent.id} agent={agent} index={index}/>)}</div><h2>{t('rooms.firstTitle')}</h2><p>{t('rooms.firstDesc')}<br/>{t('rooms.firstDesc2')}</p><div><span><AtSign size={14}/> {t('rooms.mentionOne')}</span><span><BookOpenText size={14}/> {t('rooms.roomContinues')}</span></div></div>:<><div className="room-transcript-start"><span>{t('rooms.records')}</span></div>{visible.map(message=>{const owner=message.role==='user';const shared=message.metadata?.kind==='learning_report'&&(message.metadata?.learningScope==='room'||message.metadata?.source==='knowledge');const agent=shared?undefined:agents.find(item=>item.id===message.agent_id);return <TranscriptMessage key={message.id} message={message} showReasoning={showReasoning} agent={agent} name={shared?t('rooms.sharedKnowledge'):owner?(current.ownerName||t('rooms.me')):(agent?.name||message.agent_id||t('rooms.agentFallback'))} owner={owner} index={Math.max(0,current.agentIds.indexOf(message.agent_id||''))} onInspectRun={setInspectRunId}/>})}</>}
     {live&&<div className="room-message room-message-agent room-message-live"><Avatar agent={agents.find(agent=>agent.id===live.agentId)}/><div className="room-message-main"><div className="room-message-byline"><strong>{agents.find(agent=>agent.id===live.agentId)?.name||live.agentId}</strong><span className="room-live-label">{!live.done&&<i/>}{live.error?t('rooms.live.stopped'):live.done?t('rooms.live.saving'):t('rooms.live.responding')}</span></div>{showReasoning&&live.reasoning&&<details className="room-reasoning"><summary>{t('rooms.live.showReasoning')}</summary><pre>{live.reasoning}</pre></details>}{live.text?<MessageBody text={live.text}/>:!live.error&&<span className="room-typing"><i/><i/><i/></span>}{live.tool&&<div className="room-tool-live"><TerminalSquare size={13}/>{t('rooms.live.toolRunning',{tool:live.tool})}</div>}{live.error&&<p className="room-message-error">{translateError(live.error)}</p>}</div></div>}
     {roomFailure&&<div className="room-message-error" role="alert">
-     <strong>{'원본 대화의 모델 응답 실패 · '+roomFailure.participant}</strong>
-     <p className="mt-1 text-xs">{'모델: '+roomFailure.model+' · '+roomFailure.category+
+     <strong>{(ko?'원본 대화의 모델 응답 실패':'Model reply failed for source turn')+' · '+roomFailure.participant}</strong>
+     <p className="mt-1 text-xs">{(ko?'모델: ':'Model: ')+roomFailure.model+' · '+roomFailure.category+
       (roomFailure.http_status?' · HTTP '+roomFailure.http_status:'')}</p>
-     <p className="mt-1 text-xs">{'이미 완료된 응답: '+roomFailure.completed_messages+
-      ' · 실패한 참가자의 원래 실행을 확인한 뒤 재개하세요.'}</p>
+     <p className="mt-1 text-xs">{(ko?'이미 완료된 응답: ':'Replies completed: ')+roomFailure.completed_messages+
+      (ko?' · 실패한 참가자의 원래 실행을 확인한 뒤 재개하세요.':
+       ' · Inspect the failed participant and original Run before resuming.')}</p>
      {lastOwnerMessage&&<Button size="sm" variant="ghost" className="mt-2"
       onClick={()=>document.getElementById('room-message-'+lastOwnerMessage.id)
        ?.scrollIntoView({block:'center',behavior:'smooth'})}>
-       <MessageCircle size={13}/> 원본 사용자 발언 보기
+       <MessageCircle size={13}/>{ko?'원본 사용자 발언 보기':'Jump to original owner message'}
      </Button>}
     </div>}
     {running&&!live&&<div className="room-message room-message-agent room-message-live"><Avatar agent={speaker}/><div className="room-message-main"><div className="room-message-byline"><strong>{speaker?.name||t('rooms.waitingSpeaker')}</strong><span className="room-live-label">{speaker?t('rooms.preparing'):t('rooms.queuedWait')}</span></div>{speaker&&<span className="room-typing"><i/><i/><i/></span>}</div></div>}
