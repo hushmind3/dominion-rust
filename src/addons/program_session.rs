@@ -43,7 +43,7 @@ pub struct ProgramSession{
 fn proof(raw:&str)->String{format!("{:x}",Sha256::digest(raw.as_bytes()))}
 fn native_allowed(name:&str,shell_enabled:bool)->bool{
     matches!(name,"list_files"|"read_file"|"search_files"|"git_status"
-        |"git_diff"|"read_program"|"write_file"|"edit_file")
+        |"git_diff"|"read_program"|"write_file"|"edit_file"|"run_tests")
         || (shell_enabled&&name=="shell")
 }
 fn dependencies(predicate:&Value,prior:&HashSet<String>,depth:usize)->Result<(),String>{
@@ -119,6 +119,10 @@ pub fn validate(run:&Run,request:&Value,settings:&Settings)->Result<ProgramSessi
             let call=ToolCall{id:format!("validation:{}",step.id),
                 name:step.tool.clone(),arguments:step.arguments.clone()};
             tool_schema::admit(&call,&catalog).map_err(|e|format!("step {}: {}",step.id,e.reason))?;
+            if step.tool=="run_tests" && !crate::acceptance::test_command(
+                step.arguments["command"].as_str().unwrap_or("")){
+                return Err(format!("step {}: run_tests requires a single recognized test command",step.id));
+            }
         }
         steps.push(step);
     }
@@ -359,6 +363,13 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
             run.event("program_step_invalid",message,None);
             return Ok(());
         }
+        if call.name=="run_tests"&&!crate::acceptance::test_command(
+            call.arguments["command"].as_str().unwrap_or("")){
+            let message=format!("Program step {} rejected: invalid test command after binding",step.id);
+            run.messages.push(json!({"role":"user","content":message.clone()}));
+            run.event("program_step_invalid",message,None);
+            return Ok(());
+        }
         if !policy::admitted_tool(run,&call.name,&settings.denied_tools){
             let message=format!("Program step {} denied by current operator policy",step.id);
             run.messages.push(json!({"role":"user","content":message.clone()}));
@@ -483,6 +494,82 @@ mod tests{
         assert!(run.messages.last().unwrap()["content"].as_str()
             .unwrap().contains("1 failed"));
     }
+    #[test]
+    fn scoped_test_steps_use_durable_program_queue_without_general_shell(){
+        let mut run=run();
+        run.repository=Some("fixture".into());
+        let mut settings=Settings::from_env().unwrap();
+        settings.shell_enabled=false;
+        let request=json!({"steps":[
+            {"id":"inspect","tool":"read_file",
+                "arguments":{"path":"sum.py"}},
+            {"id":"edit","tool":"edit_file",
+                "arguments":{"path":"sum.py","old_text":"range(1, 5)",
+                    "new_text":"range(1, 6)"}},
+            {"id":"verify","tool":"run_tests",
+                "arguments":{"command":"python3 -m unittest discover"}}
+        ]});
+        let plan=validate(&run,&request,&settings).unwrap();
+        assert_eq!(plan.steps.len(),3);
+        let names=tools::definitions(false).into_iter()
+            .filter_map(|tool|tool.pointer("/function/name")
+                .and_then(Value::as_str).map(str::to_owned)).collect::<Vec<_>>();
+        assert!(names.contains(&"run_tests".into()));
+        assert!(!names.contains(&"shell".into()));
+        let outer=ToolCall{id:"p".into(),name:"run_program".into(),arguments:request};
+        run.queued_calls.push(outer.clone());
+        crate::journal::begin(&mut run,&outer).unwrap();
+        install(&mut run,&outer,&settings).unwrap();
+        crate::journal::finish(&mut run,&outer,&Ok("scheduled".into()),false).unwrap();
+        for (name,outcome) in [
+            ("read_file","print(sum(range(1, 5)))"),
+            ("edit_file","edited sum.py"),
+        ]{
+            advance(&mut run,&settings).unwrap();
+            let step=run.queued_calls[0].clone();
+            assert_eq!(step.name,name);
+            crate::journal::begin(&mut run,&step).unwrap();
+            crate::journal::finish(&mut run,&step,&Ok(outcome.into()),false).unwrap();
+        }
+        advance(&mut run,&settings).unwrap();
+        let test=run.queued_calls[0].clone();
+        assert_eq!(test.name,"run_tests");
+        assert_eq!(test.arguments["command"],"python3 -m unittest discover");
+        assert!(run.advertised_tools.iter().any(|schema|
+            schema.pointer("/function/name").and_then(Value::as_str)==Some("run_tests")));
+        assert!(crate::policy::admitted_tool(&run,"run_tests",&settings.denied_tools));
+        assert!(run.events.iter().any(|event|event.kind=="program_step_ready"
+            &&event.detail.as_ref().is_some_and(|v|v["tool"]=="run_tests")));
+    }
+    #[test]
+    fn scoped_program_test_cannot_be_unapproved_or_masquerade_as_shell(){
+        let mut run=run();
+        run.repository=Some("fixture".into());
+        let mut settings=Settings::from_env().unwrap();
+        settings.shell_enabled=false;
+        let request=json!({"steps":[{"id":"verify","tool":"run_tests",
+            "arguments":{"command":"python3 -m unittest discover"}}]});
+        assert!(validate(&run,&request,&settings).is_ok());
+        settings.denied_tools.push("run_tests".into());
+        assert!(validate(&run,&request,&settings).is_err());
+        settings.denied_tools.clear();
+        for command in ["cargo test && echo hacked","echo cargo test",
+            "python3 -m unittest discover --help"]{
+            assert!(validate(&run,&json!({"steps":[{"id":"bad",
+                "tool":"run_tests","arguments":{"command":command}}]}),&settings).is_err());
+        }
+        run.repository=None;
+        assert!(validate(&run,&request,&settings).is_err());
+        run.repository=Some("fixture".into());
+        run.read_only=true;
+        assert!(validate(&run,&request,&settings).is_err());
+        run.read_only=false;
+        let shell=json!({"steps":[{"id":"bad",
+            "tool":"shell","arguments":{"command":"cargo test"}}]});
+        assert!(validate(&run,&shell,&settings).is_err(),
+            "general shell remains disabled even though scoped tests are available");
+    }
+
     #[test]
     fn native_parallel_inspection_can_be_nested_in_original_journal_program(){
         let settings=Settings::from_env().unwrap();
