@@ -96,6 +96,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
                 "launchNonce":launch_nonce}))}
         }))
         .route("/config",get(config))
+        .route("/integrations/status",get(integrations_status))
         .route("/profile",get(get_owner_profile).post(save_owner_profile))
         .route("/memory",get(list_memory).post(save_memory))
         .route("/memory/all",get(all_memory))
@@ -219,6 +220,30 @@ async fn config(State(engine): State<Arc<Engine>>) -> Json<PublicSettings> {
         denied_tools:engine.settings.denied_tools.clone(),
         tool_result_max_chars:engine.settings.tool_result_max_chars,
     })
+}
+/// This is an authenticated *observation* endpoint, never a tool-dispatch
+/// shortcut. It reports no API keys, CLI executable paths or worker tokens.
+#[derive(Default,Deserialize)]
+struct IntegrationStatusQuery{probe:Option<bool>}
+async fn integrations_status(State(engine):State<Arc<Engine>>,
+    Query(query):Query<IntegrationStatusQuery>)->Json<Value>{
+    let bridge_tools=engine.addons.bridge.definitions();
+    let bridge_providers=bridge_tools.iter().find(|tool|
+        tool["function"]["name"]=="external_agent_consult")
+        .and_then(|tool|tool["function"]["parameters"]["properties"]["provider"]["enum"].as_array())
+        .cloned().unwrap_or_default();
+    let bridge_writer=bridge_tools.iter().any(|tool|
+        tool["function"]["name"]=="external_agent_edit");
+    let remote=if let Some(transport)=engine.addons.remote_worker.as_ref(){
+        transport.operator_topology(query.probe.unwrap_or(false)).await
+    }else{json!({"configured":false,"probed":false,"nodes":[]})};
+    Json(json!({
+        "addonsEnabled":engine.addons.enabled,
+        "bridge":{"configured":!bridge_providers.is_empty(),
+            "providers":bridge_providers,"writerEnabled":bridge_writer,
+            "consultTool":"external_agent_consult","writerTool":"external_agent_edit"},
+        "remote":remote
+    }))
 }
 async fn list_runs(State(engine): State<Arc<Engine>>) -> Json<Vec<Run>> { Json(engine.store.list().await) }
 async fn create_run(State(engine): State<Arc<Engine>>, Json(req): Json<CreateRun>) -> Result<(StatusCode,Json<Run>), ApiError> {
