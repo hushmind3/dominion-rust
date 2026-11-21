@@ -28,6 +28,7 @@ fn not_found() -> ApiError {
 fn is_remote_worker_path(method:&axum::http::Method,path:&str)->bool{
     use axum::http::Method;
     if *method==Method::POST && path=="/api/v1/remote-worker/runs"{return true;}
+    if *method==Method::GET && path=="/api/v1/remote-worker/capabilities"{return true;}
     *method==Method::GET && path.strip_prefix("/api/v1/remote-worker/runs/")
         .is_some_and(|id|Uuid::parse_str(id).is_ok())
 }
