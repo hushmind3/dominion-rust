@@ -2,6 +2,7 @@ import {useEffect, useState} from 'react'
 import {Check, Play, RefreshCw, ShieldAlert, Square, Sparkles} from 'lucide-react'
 import {get, post, type Provider} from '../api'
 import {useLocale} from '../i18n'
+import {RunInspectorDialog} from './RunInspectorDialog'
 
 type SdkState = {state: string; detail?: {call_id?: string; tool?: string}}
 type SdkRun = {
@@ -28,11 +29,12 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
  const en=locale==='en'
  const [instruction,setInstruction]=useState('')
  const [providerId,setProviderId]=useState('')
- const [verification,setVerification]=useState('')
+ const [maxRounds,setMaxRounds]=useState('30')
  const [observation,setObservation]=useState('')
  const [run,setRun]=useState<SdkRun|null>(null)
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState('')
+ const [inspected,setInspected]=useState(false)
  useEffect(()=>{
   let alive=true
   get<SdkRun[]>('/api/sdk/runs').then(list=>{if(alive&&list.length)setRun(list[0])}).catch(()=>{})
@@ -49,12 +51,12 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
   return()=>{alive=false;clearInterval(timer)}
  },[run?.id,run?.status])
  const start=async()=>{
-  if(!instruction.trim()||busy)return
+  if(!instruction.trim()||busy||!Number.isInteger(Number(maxRounds))||Number(maxRounds)<1||Number(maxRounds)>100)return
   setBusy(true);setError('')
   try{
    const created=await post<SdkRun>('/api/sdk/runs',{
     instruction:instruction.trim(),providerId:providerId||undefined,
-    verifyCommand:verification.trim()||undefined
+    maxRounds:Number(maxRounds)
    })
    setRun(created)
   }catch(e){setError((e as Error).message)}
@@ -68,7 +70,7 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
    if(kind==='approve'&&!call?.id)throw Error(en?'Missing approval details':'승인할 도구 정보를 찾지 못했습니다.')
    await post(`/api/sdk/runs/${encodeURIComponent(run.id)}/${kind}`,
     kind==='approve'?{callId:call!.id}:{})
-   setRun({...run,status:kind==='cancel'?'cancelled':'running'})
+   setRun(await get<SdkRun>('/api/sdk/runs/'+encodeURIComponent(run.id)))
   }catch(e){setError((e as Error).message)}
   finally{setBusy(false)}
  }
@@ -115,13 +117,11 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
     </button>
    </div>
    <details className="text-[11px] text-[#746A5F]">
-    <summary className="cursor-pointer select-none">{en?'Optional: verify the result with a command':'선택 사항: 명령어로 결과 검증'}</summary>
-    <label className="mt-2 block" htmlFor="sdk-verify">
-     {en?'Verification command (runs after the agent finishes)':'검증 명령어 (작업 결과를 확인할 때 실행)'}
+    <summary className="cursor-pointer select-none">{en?'Maximum task steps':'최대 실행 단계'}</summary>
+    <label className="mt-2 block" htmlFor="sdk-max-rounds">{en?'Step limit (1–100)':'실행 단계 제한 (1~100)'}
+     <input id="sdk-max-rounds" type="number" min={1} max={100} step={1} value={maxRounds} onChange={e=>setMaxRounds(e.target.value)}
+      className="mt-1 h-9 w-full rounded-lg border border-[#E7E0D5] px-3 text-[12px]"/>
     </label>
-    <input id="sdk-verify" value={verification} onChange={e=>setVerification(e.target.value)}
-     maxLength={2048} placeholder="cargo test"
-     className="mt-1 h-9 w-full rounded-lg border border-[#E7E0D5] px-3 text-[12px]"/>
    </details>
    {error&&<p role="alert" className="rounded-lg bg-[#FFF3EE] p-3 text-[11px] text-[#A54027]">{error}</p>}
    {run&&<div className="rounded-xl border border-[#E7E0D5] bg-[#FCFBF9] p-3">
@@ -150,6 +150,10 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
       className="mt-3 flex items-center gap-2 rounded-lg bg-[#A4583E] px-3 py-2 text-[11px] font-semibold text-white">
       <Check size={14}/>{en?'Approve this action only':'이 작업 1회 승인'}
      </button>
+     <button type="button" disabled={busy} onClick={()=>void post('/api/v1/runs/'+encodeURIComponent(run.id)+'/approval',{allow:false})
+      .then(()=>get<SdkRun>('/api/sdk/runs/'+encodeURIComponent(run.id))).then(setRun)
+      .catch(e=>setError((e as Error).message))}
+      className="ml-2 rounded-lg border border-[#E7E0D5] px-3 py-2 text-[11px] font-semibold">{en?'Deny':'거절'}</button>
     </div>}
     {run.answer||run.checkpoint?.answer?<div className="mt-3 whitespace-pre-wrap break-words border-t border-[#E7E0D5] pt-3 text-[12px]">{run.answer||run.checkpoint?.answer}</div>:null}
     {run.error&&<p className="mt-2 text-[11px] text-[#A54027]">{run.error}</p>}
@@ -161,6 +165,7 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
       <RefreshCw size={13}/>{en?'Resume':'재개'}
      </button>}
     </div>
+    <button type="button" className="mt-3 rounded-lg border border-[#E7E0D5] px-3 py-2 text-[11px] font-semibold" onClick={()=>setInspected(true)}>{en?'Open full Run evidence':'실행 기록 · 승인 · 복구 보기'}</button>
     {status==='in_doubt'&&<div className="mt-3 rounded-lg border border-[#E5C4AB] bg-white p-3">
      <p className="text-[11px] text-[#A54027]">
       {en?'The interrupted tool may have changed files. Inspect the workspace before continuing.':'중단 직전 도구가 파일을 변경했을 수 있습니다. 실제 상태를 확인한 뒤 기록하세요.'}
@@ -185,5 +190,6 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
     </div>}
    </div>}
   </div>
+  {inspected&&run?.id&&<RunInspectorDialog id={run.id} onClose={()=>setInspected(false)}/>}
  </section>
 }
