@@ -7,7 +7,7 @@
 //! acceptance checks and independent benchmark verifiers.
 use crate::{config::Settings,domain::Run};
 use serde_json::{json,Value};
-use std::{collections::HashSet,path::{Component,Path}};
+use std::{collections::{HashMap,HashSet},path::{Component,Path}};
 use tokio::{process::Command,time::{timeout,Duration}};
 
 #[derive(Debug,Clone)]
@@ -94,12 +94,81 @@ fn porcelain_changed(output:&[u8])->Result<Vec<String>,String>{
     names.sort();
     Ok(names)
 }
+/// Only a successfully settled, exact workspace writer is evidence of an
+/// artifact. Model assertions, failed tool calls, and merely pre-existing
+/// files are not completion receipts.
+fn successful_workspace_writes(run:&Run)->HashSet<String>{
+    let mut pending=HashMap::<String,(String,String)>::new();
+    let mut written=HashSet::new();
+    for event in &run.events{
+        let Some(detail)=event.detail.as_ref()else{continue};
+        if event.kind=="tool_started"{
+            let name=detail["name"].as_str().unwrap_or("");
+            let call_id=detail["id"].as_str().unwrap_or("");
+            let path=detail["arguments"]["path"].as_str().unwrap_or("");
+            if matches!(name,"write_file"|"edit_file")&&!call_id.is_empty()
+                &&validate_paths(&[path.to_owned()]).is_ok(){
+                pending.insert(call_id.to_owned(),(name.to_owned(),path.to_owned()));
+            }
+        }else if matches!(event.kind.as_str(),"tool_result"|"tool_error"){
+            let call_id=detail["call_id"].as_str().unwrap_or("");
+            if let Some((name,path))=pending.remove(call_id){
+                if event.kind=="tool_result"&&detail["succeeded"]==true
+                    &&detail["name"]==name{
+                    written.insert(path);
+                }
+            }
+        }
+    }
+    written
+}
+async fn inspect_workspace_artifacts(settings:&Settings,run:&Run,
+    required:Vec<String>)->Result<Evidence,String>{
+    let root=settings.workspace_dir.join(run.id.to_string());
+    let canonical_root=tokio::fs::canonicalize(&root).await.ok();
+    let receipts=successful_workspace_writes(run);
+    let mut changed=Vec::new();
+    for path in &required{
+        // Verify the real on-disk file is inside this Run, not a symlinked
+        // directory/leaf. Never run tools or create artifacts while verifying.
+        if !receipts.contains(path){continue}
+        let candidate=root.join(path);
+        let safe=match (&canonical_root,tokio::fs::canonicalize(&candidate).await){
+            (Some(root),Ok(real))=>real.starts_with(root),
+            _=>false
+        };
+        let regular=tokio::fs::symlink_metadata(&candidate).await
+            .is_ok_and(|m|m.is_file()&&!m.file_type().is_symlink());
+        if safe&&regular{changed.push(path.clone());}
+    }
+    let missing=required.iter().filter(|path|!changed.contains(path))
+        .cloned().collect::<Vec<_>>();
+    let satisfied=missing.is_empty();
+    let summary=if satisfied{
+        "Observed exact successful workspace write receipts and existing regular output files; semantic correctness still needs verification.".to_owned()
+    }else{
+        format!("Required output files are absent or have no settled write receipt: {}. Use write_file or edit_file in this Run; a model claim is not evidence.",missing.join(", "))
+    };
+    Ok(Evidence{inspected:true,satisfied,changed,required,missing,summary})
+}
+
 pub async fn inspect(settings:&Settings,run:&Run)->Result<Evidence,String>{
     validate_paths(&run.required_changed_paths)?;
-    if run.repository.is_none() || run.read_only ||
+    if run.read_only ||
         (!mutation_intent(&run.instruction) && run.required_changed_paths.is_empty()){
         return Ok(Evidence{inspected:false,satisfied:true,changed:vec![],
-            required:vec![],missing:vec![],summary:"non-mutating or non-repository run".into()});
+            required:vec![],missing:vec![],summary:"non-mutating or read-only run".into()});
+    }
+    if run.repository.is_none(){
+        let required=if run.required_changed_paths.is_empty(){
+            one_named_target(&run.instruction)
+        }else{run.required_changed_paths.clone()};
+        if required.is_empty(){
+            return Ok(Evidence{inspected:false,satisfied:true,changed:vec![],
+                required:vec![],missing:vec![],
+                summary:"no unambiguous workspace artifact target named".into()});
+        }
+        return inspect_workspace_artifacts(settings,run,required).await;
     }
     let root=settings.workspace_dir.join(run.id.to_string());
     let child=timeout(Duration::from_secs(12),Command::new("git")
@@ -490,6 +559,65 @@ mod tests{
         run.messages.clear();
         run.instruction="Fix main.py and do not run tests".into();
         assert!(requested_test_evidence(&run).is_none());
+    }
+
+    #[tokio::test]
+    async fn standalone_named_file_task_requires_real_write_receipt_and_regular_file(){
+        use serde_json::json;
+        let root=std::env::temp_dir().join(
+            format!("dominion-file-completion-{}",uuid::Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.workspace_dir=root.clone();
+        let mut run=Run::new(crate::domain::CreateRun{
+            instruction:"Create REPORT.md in the isolated workspace".into(),
+            budget_krw:Some(10.0),max_steps:Some(5)
+        },5).unwrap();
+        assert!(run.repository.is_none());
+        let worktree=root.join(run.id.to_string());
+        tokio::fs::create_dir_all(&worktree).await.unwrap();
+        assert_eq!(inspect(&settings,&run).await.unwrap().missing,vec!["REPORT.md"]);
+        tokio::fs::write(worktree.join("REPORT.md"),"pretend generated").await.unwrap();
+        assert!(!inspect(&settings,&run).await.unwrap().satisfied,
+            "pre-existing files without an approved tool receipt are not model work");
+        run.event("tool_started","write intent",Some(json!({
+            "id":"w1","name":"write_file","arguments":{"path":"REPORT.md"}
+        })));
+        run.event("tool_error","failed writer",Some(json!({
+            "call_id":"w1","name":"write_file","succeeded":false
+        })));
+        assert!(!inspect(&settings,&run).await.unwrap().satisfied);
+        run.event("tool_started","real write intent",Some(json!({
+            "id":"w2","name":"write_file","arguments":{"path":"WRONG.md"}
+        })));
+        run.event("tool_result","successful wrong file",Some(json!({
+            "call_id":"w2","name":"write_file","succeeded":true
+        })));
+        assert!(!inspect(&settings,&run).await.unwrap().satisfied);
+        run.event("tool_started","real write intent",Some(json!({
+            "id":"w3","name":"write_file","arguments":{"path":"REPORT.md"}
+        })));
+        assert!(!inspect(&settings,&run).await.unwrap().satisfied,
+            "an unsettled write intent cannot count as a completed effect");
+        run.event("tool_result","successful correct write",Some(json!({
+            "call_id":"w3","name":"write_file","succeeded":true
+        })));
+        let checked=inspect(&settings,&run).await.unwrap();
+        assert!(checked.inspected&&checked.satisfied);
+        assert_eq!(checked.changed,vec!["REPORT.md"]);
+        tokio::fs::remove_file(worktree.join("REPORT.md")).await.unwrap();
+        assert!(!inspect(&settings,&run).await.unwrap().satisfied,
+            "a vanished output file must not be marked completed");
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[test]
+    fn ordinary_standalone_explanations_do_not_require_a_file(){
+        let run=Run::new(crate::domain::CreateRun{
+            instruction:"Explain the Rust ownership model".into(),
+            budget_krw:None,max_steps:Some(4)
+        },4).unwrap();
+        assert!(!mutation_intent(&run.instruction));
+        assert!(one_named_target(&run.instruction).is_empty());
     }
 
     #[tokio::test]
