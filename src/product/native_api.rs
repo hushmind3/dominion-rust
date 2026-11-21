@@ -37,7 +37,7 @@ fn is_remote_worker_path(method:&axum::http::Method,path:&str)->bool{
     *method==Method::GET && path.strip_prefix("/api/v1/remote-worker/runs/")
         .is_some_and(|id|Uuid::parse_str(id).is_ok())
 }
-fn is_oauth_callback(method:&axum::http::Method,path:&str)->bool{
+pub(super) fn is_oauth_callback(method:&axum::http::Method,path:&str)->bool{
     if method!=axum::http::Method::GET{return false;}
     let path=path.strip_prefix("/api").unwrap_or(path);
     matches!(path,
