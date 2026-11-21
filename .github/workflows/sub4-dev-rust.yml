@@ -78,6 +78,10 @@ jobs:
           PY
       - name: All Rust targets compile
         run: cargo check --locked --all-targets
+      - name: Strict Clippy correctness lints across the Rust workspace
+        run: |
+          rustup component add clippy
+          cargo clippy --locked --workspace --all-targets -- -D clippy::correctness
       - name: Real backend unit/integration-path regressions
         run: cargo test --locked --workspace --lib
       - name: Independent kernel/algorithm crate contracts
