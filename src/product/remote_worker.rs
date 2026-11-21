@@ -214,6 +214,9 @@ async fn read(State(engine):State<Arc<Engine>>,headers:HeaderMap,
     if !run.events.iter().any(|e|e.kind=="remote_worker_admitted"){
         return Err((StatusCode::NOT_FOUND,Json(json!({"error":"remote execution not found"}))));
     }
+    let writer=run.events.iter().any(|e|e.kind=="remote_worker_admitted"
+        &&e.detail.as_ref().is_some_and(|v|v["writer"]==true));
+    if writer{writer_authorized(&headers)?;}
     Ok(Json(reply(&engine,&run).await?))
 }
 async fn cancel(State(engine):State<Arc<Engine>>,headers:HeaderMap,

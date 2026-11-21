@@ -292,8 +292,14 @@ impl RemoteWorker{
                 return ToolEffectOutcome::Uncertain("remote worker returned a mismatched Run ID".into());
             }
             for _ in 0..180 {
-                let response=self.client.get(Self::url_for(&endpoint,Some(remote_id)))
-                    .header(AUTH_HEADER,&worker_token).send().await;
+                let mut inspect=self.client.get(Self::url_for(&endpoint,Some(remote_id)))
+                    .header(AUTH_HEADER,&worker_token);
+                if editing{
+                    if let Some(secret)=writer_token.as_ref(){
+                        inspect=inspect.header("x-dominion-worker-writer-token",secret);
+                    }
+                }
+                let response=inspect.send().await;
                 let result=match response{
                     Ok(value)=>value,
                     Err(error)=>return ToolEffectOutcome::Uncertain(format!(
