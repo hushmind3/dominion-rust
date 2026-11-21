@@ -69,6 +69,20 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const canStop=['queued','running','awaiting_approval','paused'].includes(run.status)
  const totalCost=(run.cost_krw||0)+(run.remote_cost_krw||0)+(run.delegated_spent_krw||0)
  const usedSteps=Math.min(100,run.max_steps>0?Math.round(run.steps/run.max_steps*100):0)
+ // The coordinator is intentionally stored as Paused while its children run.
+ // Do not display "paused" as if active work had stopped.
+ const teamTasks=team.value?.tasks||[]
+ const teamStarted=run.events.some(event=>event.kind==='team_started')
+ const visualStatus=isTeam&&run.status==='paused'
+  ?teamTasks.some(task=>task.status==='active')
+   ?(ko?'팀 실행 중':'Team running')
+   :teamTasks.some(task=>task.status==='approval_required')
+    ?(ko?'패치 승인 대기':'Patch approval needed')
+    :!teamStarted?(ko?'팀 초안':'Team draft')
+     :teamTasks.some(task=>task.status==='ready')
+      ?(ko?'다음 작업 준비':'Next task ready')
+      :(ko?'팀 작업 대기':'Team waiting')
+  :statusName(run.status,ko)
  return <Panel className="mt-4 p-4 sm:p-5" aria-label={ko?'실행 상세 및 제어':'Execution details and controls'}>
   <div className="flex flex-wrap items-start justify-between gap-3">
    <div className="min-w-0 flex-1">
@@ -78,7 +92,7 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
     <p className="mt-1 break-all font-mono text-[10px] text-[#9C9388]">{run.id}</p>
    </div>
    <div className="flex flex-wrap items-center gap-2">
-    <span className="rounded-lg bg-[#F3EEE5] px-2 py-1 text-xs font-semibold">{statusName(run.status,ko)}</span>
+    <span className="rounded-lg bg-[#F3EEE5] px-2 py-1 text-xs font-semibold">{visualStatus}</span>
     <Button size="sm" variant="ghost" disabled={busy} onClick={()=>void reload()}><RefreshCw size={13}/>{ko?'새로고침':'Refresh'}</Button>
    </div>
   </div>
