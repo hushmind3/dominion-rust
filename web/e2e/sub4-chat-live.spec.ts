@@ -95,3 +95,79 @@ test('older chat evidence survives native context selection and manual compactio
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+
+// Both cases use the same mock model, machine and empty-session conditions.
+// The real local-model cold/warm prefill and paid-provider TTFT are NOT
+// measured by this deterministic browser/API integration fixture.
+test('fresh_ko_greeting_matched_fixture records request characters and response latency',
+ async({request})=>{
+ const results:{input:string;requestChars:number;responseDoneMs:number;
+   toolSchemas:number;promptTokens:number}[]=[]
+ for(const input of ['안녕','안녕하세요 반가워요']){
+  const created=await request.post('/api/sessions',{
+   data:{agentId:'general',title:'Sub4 matched greeting E2E'}})
+  expect(created.status()).toBe(201)
+  const session=await created.json()
+  try{
+   const before=(await (await request.get('http://127.0.0.1:4876/_calls')).json()).requests.length
+   const started=Date.now()
+   const response=await request.post('/api/chat',{
+    data:{sessionId:session.id,agentId:'general',input,
+     toolsEnabled:true,toolsExecutionEnabled:true,autoLearning:false,
+     reasoningLanguage:'ko'},timeout:30_000
+   })
+   const wire=await response.text()
+   const elapsed=Date.now()-started
+   expect(response.ok(),input).toBeTruthy()
+   expect(wire).toContain('Verified native mock answer')
+   const calls=(await (await request.get('http://127.0.0.1:4876/_calls')).json()).requests
+   const emitted=calls.slice(before)
+   expect(emitted).toHaveLength(1)
+   expect(emitted[0].toolNames).toEqual([])
+   expect(emitted[0].messages.at(-1).content).toBe(input)
+   const usage=await (await request.get('/api/sessions/'+session.id+'/usage')).json()
+   expect(usage.modelRequests).toBe(1)
+   results.push({input,requestChars:JSON.stringify(emitted[0].messages).length,
+    responseDoneMs:elapsed,toolSchemas:emitted[0].toolNames.length,
+    promptTokens:usage.promptTokens})
+  }finally{
+   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+  }
+ }
+ expect(results[0].toolSchemas).toBe(0)
+ expect(results[1].toolSchemas).toBe(0)
+ expect(results[1].requestChars).toBeLessThan(results[0].requestChars*2)
+ console.log('SUB4_MATCHED_GREETING_FIXTURE '+JSON.stringify({
+  metric:'request_chars_and_complete_response_ms_not_real_TTFT',
+  environment:'deterministic_mock_provider_not_local_model',
+  results
+ }))
+})
+
+test('unsupported per-run reasoning leaves the original chat draft and session unchanged',
+ async({request})=>{
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Sub4 unsupported reasoning E2E'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json()
+ try{
+  const before=(await (await request.get('http://127.0.0.1:4876/_calls')).json()).requests.length
+  const response=await request.post('/api/chat',{
+   data:{sessionId:session.id,agentId:'general',
+    input:'Explain what a cache is',toolsEnabled:false,
+    reasoningEffort:'completely-unsupported-level',
+    toolsExecutionEnabled:false,autoLearning:false}
+  })
+  expect(response.ok()).toBeFalsy()
+  expect(response.headers()['content-type']||'').toContain('application/json')
+  const payload=await response.json()
+  expect(payload.error).toBeTruthy()
+  const messages=await (await request.get('/api/sessions/'+session.id+'/messages')).json()
+  expect(messages).toEqual([])
+  const after=(await (await request.get('http://127.0.0.1:4876/_calls')).json()).requests.length
+  expect(after).toBe(before)
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
