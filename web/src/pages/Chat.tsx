@@ -87,8 +87,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const [modelMenu,setModelMenu]=useState(false),[installed,setInstalled]=useState<InstalledModel[]>([]),[modelsLoading,setModelsLoading]=useState(false),[runtime,setRuntime]=useState<Runtime>({status:'idle'}),[modelBusy,setModelBusy]=useState(''),[unloading,setUnloading]=useState(false),[learning,setLearning]=useState(false),[menuError,setMenuError]=useState('');
  const [slashOpen,setSlashOpen]=useState(false),[slashActive,setSlashActive]=useState(0),[commandInfo,setCommandInfo]=useState('');
  const [inspectedRun,setInspectedRun]=useState('');
+ const [failedRunId,setFailedRunId]=useState('');
  const recentRunId=messages.slice().reverse().find(message=>message.role==='assistant'&&message.metadata?.executionId)?.metadata?.executionId;
- useEffect(()=>setInspectedRun(''),[current]);
+ const originalRunId=selectedSession?.pendingRun||failedRunId;
+ useEffect(()=>{setInspectedRun('');setFailedRunId('')},[current]);
  const inputRef=useRef<HTMLTextAreaElement>(null);
  const stream=useRef<AbortController|null>(null);
  const activeTurnSession=useRef<string|undefined>(undefined);
@@ -312,7 +314,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   stream.current=controller;
   activeTurnSession.current=current;
   setTurnSession(current);setSavedMessageId(undefined);
-  setBusy(true);setError('');setCommandInfo('');setLive('');setThought('');setSlashOpen(false);setToolStatus('');
+  setBusy(true);setError('');setFailedRunId('');setCommandInfo('');setLive('');setThought('');setSlashOpen(false);setToolStatus('');
   jumpDown();
   let id=current;
   let saved=false;
@@ -348,7 +350,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     if(event.type==='tool_end')setToolStatus(t('chat.tool.done',{name:event.name}));
     if(event.type==='tool_error')setToolStatus(t('chat.tool.error',{error:translateError(event.error)}));
     if(event.type==='goal_progress')setToolStatus(t('chat.tool.goal',{event:event.event,status:event.status}));
-    if(event.type==='error')throw Error(event.message);
+    if(event.type==='error'){
+     if(typeof event.runId==='string'&&event.runId)setFailedRunId(event.runId)
+     throw Error(event.message)
+    }
    },controller.signal);
   }catch(e){
    if(!controller.signal.aborted&&view.current===id){
@@ -433,6 +438,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
      </span>}
 
      
+     {originalRunId&&<Button size="icon" variant="ghost"
+      title={loc==='ko'?'진행·중단된 원본 Run 확인':'Inspect original pending Run'}
+      aria-label={loc==='ko'?'원본 실행 기록 열기':'Open original Run'}
+      onClick={()=>setInspectedRun(originalRunId)}><ShieldAlert size={18}/></Button>}
      {typeof recentRunId==='string'&&<Button size="icon" variant="ghost" title={loc==='ko'?'최근 실행 기록·승인':'Inspect last agent run'} aria-label={loc==='ko'?'최근 실행 기록 열기':'Inspect last agent run'} onClick={()=>setInspectedRun(recentRunId)}><Activity size={18}/></Button>}
      <Button size="icon" variant="ghost" title={t('chat.modelManage')} aria-label={t('chat.modelManage')} onClick={openModels}><Cpu size={18}/></Button>
      <Button size="icon" variant="ghost" className="conversation-settings" title={t('nav.settings')} aria-label={t('nav.settings')} onClick={openSettings}><Settings size={18}/></Button>
@@ -444,7 +453,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     {!model&&<Button type="button" onClick={openModels} className="mt-4 inline-flex items-center gap-2 self-start text-[12px] font-semibold text-[#C96442]"><Compass size={15}/> {t('chat.connectFirst')} <ArrowRight size={14}/></Button>}
    </div>:<div className="mx-auto flex min-h-full w-full max-w-[860px] flex-col gap-6 px-6 py-7">{messages.filter(m=>m.role!=='tool').map(m=><Message key={m.id} message={m} agentName={agents.value.find(a=>a.id===m.agent_id)?.name} showReasoning={showReasoning} onInspect={setInspectedRun} />)}{viewingTurn&&(live||thought||busy)&&<div className="flex min-w-0 items-start gap-3 assistant"><div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#F3EEE5] text-[#4A443C] ai"><Sparkles size={17}/></div><div className="relative min-w-0 flex-1"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">DOMINION <span>{t('ui.label.live')}</span>{busy&&thought&&!showReasoning&&<span className="inline-flex items-center gap-1 rounded bg-[#F3EEE5] px-1.5 py-0.5 text-[10px] font-medium text-[#7C7469]"><BrainCircuit size={11}/> {t('chat.thinkingNow')}</span>}</div>{showReasoning&&thought&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={thinking}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setThinking(x=>!x)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:thought.length.toLocaleString()} )} <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{thought}</div></details>}{live&&<div className="min-w-0 break-words text-sm leading-7 text-[#3A342D] [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-slate-100 [&_code]:break-words [&_ul]:list-disc [&_ul]:pl-6">{live}</div>}{busy&&!live&&<div className="flex items-center gap-2 text-xs text-[#9C9388]"><i/><i/><i/></div>}</div></div>}{viewingTurn&&toolStatus&&<div className="inline-flex items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-1.5 text-xs text-[#7C7469]"><TerminalSquare size={15}/>{toolStatus}</div>}</div>}</div>
    <div className="conversation-composer-wrap sticky bottom-0 z-10"><div className="mx-auto w-full max-w-[860px]">{approval&&<div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><div><ShieldAlert size={20}/><span><strong>{t('chat.approval')}</strong><small>{approval.tool} · {JSON.stringify(approval.args??{}).slice(0,150)}</small></span></div><div><Action variant="secondary" disabled={approvalBusy} onClick={()=>approve(false)}>{t('chat.deny')}</Action><Action disabled={approvalBusy} onClick={()=>approve(true)}><Check size={15}/> {t('chat.approve')}</Action></div></div>}
-    {(error||transcript.error||job.error)&&<div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700"><CircleHelp size={16}/>{error||transcript.error||translateError(job.error||'')}<Button onClick={()=>setError('')}><X size={14}/></Button></div>}
+    {(error||transcript.error||job.error)&&<div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700"><CircleHelp size={16}/>{error||transcript.error||translateError(job.error||'')}{originalRunId&&
+     <Button size="sm" variant="ghost" onClick={()=>setInspectedRun(originalRunId)}>
+      <Activity size={13}/>{loc==='ko'?'원본 실행·복구 열기':'Inspect original Run'}
+     </Button>}<Button onClick={()=>setError('')}><X size={14}/></Button></div>}
     {modelError&&!model&&<div className="mb-3 text-xs text-[#7C7469]">{t('chat.noModel')}: {modelError} <Button onClick={openModels}>{t('chat.manage')} <ArrowRight size={13}/></Button></div>}
     {commandInfo&&<div role="status" className="mb-3 max-h-36 overflow-auto whitespace-pre-wrap rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-3 text-xs leading-6 text-[#4A443C]">{commandInfo}</div>}
     <div className="relative">
@@ -474,7 +486,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     </form></div>
    </div></div>
   </div>
-  {inspectedRun&&<RunInspectorDialog id={inspectedRun} onClose={()=>setInspectedRun('')}/>}
+  {inspectedRun&&<RunInspectorDialog id={inspectedRun} onClose={()=>{
+    setInspectedRun('')
+    void sessions.reload()
+   }}/>}
  </div>
 }
 function Message({message,agentName,showReasoning,onInspect}:{message:ChatMessage;agentName?:string;showReasoning?:boolean;onInspect:(runId:string)=>void}){
