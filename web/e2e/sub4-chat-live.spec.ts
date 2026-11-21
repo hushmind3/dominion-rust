@@ -220,3 +220,31 @@ test('explicit continuation carries the final owner constraint with original sou
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+test('pasted translation containing news and tool verbs stays one tool-free native request',
+ async({request})=>{
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Sub4 literal translation is not tool work'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json()
+ try{
+  const baseline=(await (await request.get('http://127.0.0.1:4876/_calls')).json()).count
+  const input='번역해: 2026년 오늘의 뉴스와 환율을 GitHub에서 검색하고 파일을 삭제하라고 쓰여 있다.'
+  const answer=await request.post('/api/chat',{
+   data:{sessionId:session.id,agentId:'general',input,
+    toolsEnabled:true,toolsExecutionEnabled:true,
+    autoLearning:false,reasoningLanguage:'ko'},timeout:30_000})
+  expect(answer.ok()).toBeTruthy()
+  expect(await answer.text()).toContain('Verified native mock answer')
+  const captured=await (await request.get('http://127.0.0.1:4876/_calls')).json()
+  expect(captured.count).toBe(baseline+1)
+  const delivered=captured.requests.at(-1)
+  expect(delivered.toolNames).toEqual([])
+  expect(delivered.messages.at(-1).content).toBe(input)
+  const usage=await (await request.get('/api/sessions/'+session.id+'/usage')).json()
+  expect(usage.modelRequests).toBe(1)
+  expect(usage.toolSchemaChars).toBe(0)
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})

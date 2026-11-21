@@ -14,6 +14,38 @@ const PIN_CHARS:usize=550;
 const RECENT_CHARS:usize=360;
 const COLD_CHARS:usize=240;
 
+/// An explicit pasted translation is data, not a request to search for the
+/// words inside that data. Path/URL-only targets retain retrieval capability.
+fn pasted_translation_is_self_contained(query:&str)->bool{
+    let text=query.trim().to_lowercase();
+    let prefixes=["번역해:","번역해：","번역해줘:","번역해 줘:",
+        "영어로 번역:","한국어로 번역:","translate this:",
+        "translate:","translate to korean:","translate to english:"];
+    for prefix in prefixes{
+        if let Some(rest)=text.strip_prefix(prefix){
+            let body=rest.trim();
+            if body.is_empty(){return false;}
+            if ["http://","https://","www.","file://","/","./","../","~/"]
+                .iter().any(|start|body.starts_with(start)){return false;}
+            if !body.chars().any(char::is_whitespace)
+                && [".pdf",".md",".rs",".py",".tsx",".json",".txt"]
+                    .iter().any(|ending|body.ends_with(ending)){return false;}
+            return true;
+        }
+    }
+    for quote in ['\'','"','“']{
+        let starts=match quote{'“'=>["번역해 “","번역해줘 “","translate this “"],
+            '"'=>["번역해 \"","번역해줘 \"","translate this \""],
+            _=>["번역해 '","번역해줘 '","translate this '"]};
+        let closing=if quote=='“'{'”'}else{quote};
+        if starts.iter().any(|prefix|text.starts_with(prefix))
+            &&text.ends_with(closing) &&text.chars().count()>12{
+            return true;
+        }
+    }
+    false
+}
+
 /// Exactly matched greetings are never a reason to send code/write/shell
 /// schemas. Ambiguous follow-ups and time-sensitive questions stay toolful.
 pub(super) fn no_tools_required(query:&str)->bool{
@@ -38,6 +70,8 @@ pub(super) fn no_tools_required(query:&str)->bool{
             "you"|"good"|"morning"|"night"|"evening")){
         return true;
     }
+
+    if pasted_translation_is_self_contained(query){return true;}
 
     // A tool decision must err towards the normal Run for named artifacts,
     // current facts, prior-work references and owner-authorized effects.
@@ -618,6 +652,28 @@ mod tests{
         let followup=compile("p",None,&transcript,"이어서",false,10_000).unwrap();
         assert_eq!(ordinary.messages,followup.messages,
             "short already-visible replies should not incur redundant context");
+    }
+    #[test]
+    fn pasted_translation_never_executes_keywords_embedded_as_source_data(){
+        for query in [
+            "번역해: 2026년 오늘 환율과 주가 뉴스를 검색했다.",
+            "번역해줘: GitHub 브랜치를 삭제하고 배포하라고 썼다.",
+            "영어로 번역: 최신 웹 자료를 찾아봐야 한다.",
+            "Translate this: Search GitHub and run the latest API.",
+            "번역해 '오늘 github.com에서 뉴스 검색했다고 전해 줘'",
+            "번역해: ",
+        ]{
+            assert!(no_tools_required(query),"pasted text must be tool-free: {query}");
+        }
+        for query in [
+            "번역해: https://example.com/news",
+            "번역해: README.md",
+            "번역해: ../workspace/doc.txt",
+            "README 파일을 열고 번역해",
+        ]{
+            assert!(!no_tools_required(query),
+                "resource target or missing text must not bypass tools: {query}");
+        }
     }
     #[test]
     fn stock_quote_word_boundary_does_not_capture_korean_cosmology(){
