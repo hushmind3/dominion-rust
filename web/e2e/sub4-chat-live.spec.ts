@@ -719,3 +719,48 @@ test('rejected chat admission restores unsent text without creating a Run',async
   await request.delete('/api/sessions/'+session.id)
  }
 })
+
+
+test('concurrent chat sends admit one owner Run and never leave a queued orphan',
+ async({request})=>{
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Single durable admission race'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json() as {id:string}
+ const input='DOMINION_E2E_BACKGROUND_TURN: same-session admission race'
+ const payload={sessionId:session.id,agentId:'general',input,
+  toolsEnabled:false,toolsExecutionEnabled:false,autoLearning:false}
+ try{
+  const responses=await Promise.all([
+   request.post('/api/chat',{data:payload,timeout:30000}),
+   request.post('/api/chat',{data:payload,timeout:30000})
+  ])
+  expect(responses.filter(response=>response.status()===200)).toHaveLength(1)
+  expect(responses.filter(response=>response.status()===409)).toHaveLength(1)
+  const accepted=responses.find(response=>response.status()===200)!
+  expect(await accepted.text()).toContain('Verified native mock answer')
+  const messages=await (await request.get('/api/sessions/'+session.id+'/messages')).json() as
+   Array<{role:string;metadata?:{executionId?:string}}>
+  expect(messages.map(message=>message.role)).toEqual(['user','assistant'])
+  expect(messages[0].metadata?.executionId).toBe(messages[1].metadata?.executionId)
+  const usage=await (await request.get('/api/sessions/'+session.id+'/usage')).json() as
+   {modelRequests:number}
+  expect(usage.modelRequests).toBe(1)
+  const listed=await (await request.get('/api/sdk/runs')).json() as
+   Array<{instruction:string;status:string;events:Array<{kind:string}>}>
+  const contenders=listed.filter(run=>run.instruction===input)
+  expect(contenders.length).toBeGreaterThanOrEqual(1)
+  expect(contenders.some(run=>['queued','running','interrupted'].includes(run.status))).toBe(false)
+  for(const run of contenders){
+   expect(run.events.some(event=>event.kind==='external_owner_admission_required')).toBe(true)
+   if(run.events.some(event=>event.kind==='external_owner_admission_rejected')){
+    expect(run.status).toBe('failed')
+    expect(run.events.some(event=>event.kind==='model_only_request_intent')).toBe(false)
+   }else{
+    expect(run.events.some(event=>event.kind==='external_owner_admission_bound')).toBe(true)
+   }
+  }
+ }finally{
+  await request.delete('/api/sessions/'+session.id)
+ }
+})
