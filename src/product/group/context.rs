@@ -1,4 +1,25 @@
 use super::*;
+/// An idempotent owner message binds the exact original recipient selection.
+/// Legacy snapshots stored only a numeric index; keep that wire format
+/// readable without silently modifying old user records on load.
+#[derive(Clone,Debug,Serialize,Deserialize)]
+#[serde(untagged)]
+pub enum ClientMessageReceipt {
+    Legacy(usize),
+    Bound { index:usize, requested_agents:Vec<String> },
+}
+impl ClientMessageReceipt {
+    pub(crate) fn index(&self)->usize {
+        match self {Self::Legacy(index)|Self::Bound{index,..}=>*index}
+    }
+    pub(crate) fn matches_agents(&self,requested:&[String])->bool{
+        match self {
+            Self::Legacy(_)=>true, // Historical snapshots did not store targets.
+            Self::Bound{requested_agents,..}=>requested_agents==requested,
+        }
+    }
+}
+
 /// Deterministic append-only projection for provider caching. The durable
 /// Room transcript is never compacted or used as model-authored "memory".
 /// Checkpoints are reconstructed from indexed original evidence, so restart
