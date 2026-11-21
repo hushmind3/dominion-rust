@@ -438,10 +438,6 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
      </span>}
 
      
-     {originalRunId&&<Button size="icon" variant="ghost"
-      title={loc==='ko'?'진행·중단된 원본 Run 확인':'Inspect original pending Run'}
-      aria-label={loc==='ko'?'원본 실행 기록 열기':'Open original Run'}
-      onClick={()=>setInspectedRun(originalRunId)}><ShieldAlert size={18}/></Button>}
      {typeof recentRunId==='string'&&<Button size="icon" variant="ghost" title={loc==='ko'?'최근 실행 기록·승인':'Inspect last agent run'} aria-label={loc==='ko'?'최근 실행 기록 열기':'Inspect last agent run'} onClick={()=>setInspectedRun(recentRunId)}><Activity size={18}/></Button>}
      <Button size="icon" variant="ghost" title={t('chat.modelManage')} aria-label={t('chat.modelManage')} onClick={openModels}><Cpu size={18}/></Button>
      <Button size="icon" variant="ghost" className="conversation-settings" title={t('nav.settings')} aria-label={t('nav.settings')} onClick={openSettings}><Settings size={18}/></Button>
@@ -453,6 +449,16 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     {!model&&<Button type="button" onClick={openModels} className="mt-4 inline-flex items-center gap-2 self-start text-[12px] font-semibold text-[#C96442]"><Compass size={15}/> {t('chat.connectFirst')} <ArrowRight size={14}/></Button>}
    </div>:<div className="mx-auto flex min-h-full w-full max-w-[860px] flex-col gap-6 px-6 py-7">{messages.filter(m=>m.role!=='tool').map(m=><Message key={m.id} message={m} agentName={agents.value.find(a=>a.id===m.agent_id)?.name} showReasoning={showReasoning} onInspect={setInspectedRun} />)}{viewingTurn&&(live||thought||busy)&&<div className="flex min-w-0 items-start gap-3 assistant"><div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#F3EEE5] text-[#4A443C] ai"><Sparkles size={17}/></div><div className="relative min-w-0 flex-1"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">DOMINION <span>{t('ui.label.live')}</span>{busy&&thought&&!showReasoning&&<span className="inline-flex items-center gap-1 rounded bg-[#F3EEE5] px-1.5 py-0.5 text-[10px] font-medium text-[#7C7469]"><BrainCircuit size={11}/> {t('chat.thinkingNow')}</span>}</div>{showReasoning&&thought&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={thinking}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setThinking(x=>!x)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:thought.length.toLocaleString()} )} <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{thought}</div></details>}{live&&<div className="min-w-0 break-words text-sm leading-7 text-[#3A342D] [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-slate-100 [&_code]:break-words [&_ul]:list-disc [&_ul]:pl-6">{live}</div>}{busy&&!live&&<div className="flex items-center gap-2 text-xs text-[#9C9388]"><i/><i/><i/></div>}</div></div>}{viewingTurn&&toolStatus&&<div className="inline-flex items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-1.5 text-xs text-[#7C7469]"><TerminalSquare size={15}/>{toolStatus}</div>}</div>}</div>
    <div className="conversation-composer-wrap sticky bottom-0 z-10"><div className="mx-auto w-full max-w-[860px]">{approval&&<div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><div><ShieldAlert size={20}/><span><strong>{t('chat.approval')}</strong><small>{approval.tool} · {JSON.stringify(approval.args??{}).slice(0,150)}</small></span></div><div><Action variant="secondary" disabled={approvalBusy} onClick={()=>approve(false)}>{t('chat.deny')}</Action><Action disabled={approvalBusy} onClick={()=>approve(true)}><Check size={15}/> {t('chat.approve')}</Action></div></div>}
+    {originalRunId&&<div role="status"
+     className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+     <span className="min-w-0 break-words">{loc==='ko'?
+      '이 대화에 연결된 원본 Run이 있습니다. 실행 상태와 승인·복구 기록을 확인하세요.':
+      'This conversation has an original Run. Inspect its status, approval and recovery record.'}</span>
+     <Button type="button" size="sm" variant="secondary"
+      onClick={()=>setInspectedRun(originalRunId)}>
+      <Activity size={13}/>{loc==='ko'?'원본 실행·복구 열기':'Inspect original Run'}
+     </Button>
+    </div>}
     {(error||transcript.error||job.error)&&<div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700"><CircleHelp size={16}/>{error||transcript.error||translateError(job.error||'')}{originalRunId&&
      <Button size="sm" variant="ghost" onClick={()=>setInspectedRun(originalRunId)}>
       <Activity size={13}/>{loc==='ko'?'원본 실행·복구 열기':'Inspect original Run'}
