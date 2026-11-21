@@ -151,3 +151,76 @@ async fn model_only_uncertain_request_is_never_replayed_after_restart(){
  assert!(persisted.events.iter().any(|e|e.kind=="model_only_request_intent"));
  server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+async fn refusing_agent_provider(
+    State(fixture):State<Arc<Fixture>>,
+    Json(_request):Json<Value>
+)->axum::http::StatusCode{
+    fixture.requests.fetch_add(1,Ordering::SeqCst);
+    axum::http::StatusCode::SERVICE_UNAVAILABLE
+}
+
+#[tokio::test]
+async fn agent_http_503_durable_intent_blocks_duplicate_billable_retry(){
+    let root=std::env::temp_dir()
+        .join(format!("dominion-agent-uncertain-{}",Uuid::new_v4()));
+    let observed=Arc::new(Fixture{
+        requests:AtomicUsize::new(0),delay_ms:0
+    });
+    let app=Router::new()
+        .route("/v1/chat/completions",post(refusing_agent_provider))
+        .with_state(Arc::clone(&observed));
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await.unwrap();
+    let addr=listener.local_addr().unwrap();
+    let server=tokio::spawn(async move {
+        axum::serve(listener,app).await.unwrap();
+    });
+    let mut settings=Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    settings.main.name="mock-agent-model".into();
+    settings.main.base_url=format!("http://{addr}/v1");
+    settings.main.api_key.clear();
+    settings.economy=settings.main.clone();
+    settings.separate_plan_model_call=false;
+    settings.separate_model_audit_enabled=false;
+    let store=Arc::new(Store::open(settings.data_dir.join("runs"))
+        .await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(
+        settings.data_dir.join("groups")).await.unwrap());
+    let engine=Engine::new(settings,Arc::clone(&store),groups).unwrap();
+    let run=Run::new(CreateRun{
+        instruction:"one paid agent inference; do not retry unknown outcome".into(),
+        budget_krw:Some(500.0),max_steps:Some(3)
+    },3).unwrap();
+    let id=run.id;
+    store.put(run).await.unwrap();
+    engine.launch(id).await.unwrap();
+    let mut changes=store.subscribe();
+    let paused=timeout(Duration::from_secs(8),async {
+        loop{
+            let run=store.get(id).await.unwrap();
+            if run.status==RunStatus::Paused{break run;}
+            assert!(store.changed(id,&mut changes).await);
+        }
+    }).await.unwrap();
+    assert_eq!(observed.requests.load(Ordering::SeqCst),1);
+    assert!(crate::journal::unsettled_model_request(&paused).is_some());
+    assert_eq!(paused.events.iter()
+        .filter(|e|e.kind=="model_request_intent").count(),1);
+    assert!(!paused.events.iter()
+        .any(|e|e.kind=="model_request_settled"));
+    assert!(engine.launch(id).await.is_err(),
+        "failed upstream response does not prove the provider was unbilled");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(observed.requests.load(Ordering::SeqCst),1,
+        "the same billable agent request must never be submitted twice");
+    let reloaded=Store::open(root.join("data/runs")).await.unwrap();
+    let recovered=reloaded.get(id).await.unwrap();
+    assert_eq!(recovered.status,RunStatus::Paused);
+    assert!(crate::journal::unsettled_model_request(&recovered).is_some());
+    drop(reloaded);
+    server.abort();drop(engine);drop(store);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
