@@ -1,5 +1,5 @@
 import {useState} from 'react'
-import {AlertTriangle,Check,ChevronDown,ChevronUp,Clock3,FileDiff,Pause,Play,RefreshCw,ShieldCheck,Square,Workflow} from 'lucide-react'
+import {AlertTriangle,Check,ChevronDown,ChevronUp,Clock3,FileDiff,Play,RefreshCw,ShieldCheck,Square,Workflow} from 'lucide-react'
 import {get,post} from '../api'
 import {Button,TextArea} from './Primitives'
 import {Notice,Panel,refresh,useRemote} from './UI'
@@ -87,6 +87,7 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
    <div className="rounded-lg bg-[#FAF7F1] p-3"><p className="text-[11px] text-[#7C7469]">{ko?'지출 기록':'Observed spend'}</p><strong>{money(totalCost)}</strong><p className="text-[10px] text-[#8A8176]">{ko?'최대 예산':'Budget'} {money(run.budget_krw)}</p></div>
    <div className="rounded-lg bg-[#FAF7F1] p-3"><p className="text-[11px] text-[#7C7469]">{ko?'입력 / 출력 토큰':'Input / output tokens'}</p><strong>{run.input_tokens.toLocaleString()} / {run.output_tokens.toLocaleString()}</strong><p className="text-[10px] text-[#8A8176]">{ko?'입력 중 캐시 기록':'Cached input'} {(run.cached_input_tokens||0).toLocaleString()}</p></div>
   </div>
+  {run.parent_run_id&&<Button size="sm" variant="ghost" onClick={()=>onSelect(run.parent_run_id!)} className="mt-2">{ko?'상위 팀 / 실행으로 돌아가기':'Back to parent run'}</Button>}
   {run.repository&&<p className="mt-3 break-all text-xs text-[#7C7469]">{ko?'작업 저장소':'Repository'}: {run.repository}</p>}
   {approval&&<div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
    <div className="flex items-center gap-2 font-semibold text-amber-900"><ShieldCheck size={17}/>{ko?'도구 실행 승인 대기':'Tool approval required'}</div>
