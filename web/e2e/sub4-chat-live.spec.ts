@@ -591,3 +591,54 @@ test('unsent drafts remain isolated when switching between conversations',
   await request.delete('/api/sessions/'+second.id)
  }
 })
+
+
+test('late cancellation acknowledgement is not displayed as another conversation status',
+ async({page,request})=>{
+ const responseA=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Cancel notice owner A'}})
+ const responseB=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Cancel notice owner B'}})
+ expect(responseA.status()).toBe(201)
+ expect(responseB.status()).toBe(201)
+ const ownerA=await responseA.json() as {id:string}
+ const ownerB=await responseB.json() as {id:string}
+ let release!:()=>void
+ const gate=new Promise<void>(resolve=>{release=resolve})
+ let held=0
+ try{
+  await page.setViewportSize({width:1200,height:850})
+  await page.goto('/#/chat?session='+encodeURIComponent(ownerA.id))
+  await page.route('**/api/sessions/'+ownerA.id+'/cancel',async route=>{
+   if(route.request().method()!=='POST')return route.continue()
+   held++
+   await gate
+   return route.continue()
+  })
+  await page.locator('textarea.conversation-composer-input')
+   .fill('DOMINION_E2E_BACKGROUND_TURN: cancel original request')
+  await page.locator('button.conversation-composer-send').click()
+  await expect.poll(async()=>{
+   const result=await request.get('http://127.0.0.1:4876/_calls')
+   const state=await result.json() as {requests:Array<{messages:Array<{content:string}>}>}
+   return state.requests.some(call=>call.messages.some(message=>
+    message.content?.includes('DOMINION_E2E_BACKGROUND_TURN: cancel original request')))
+  }).toBe(true)
+  await page.locator('button.conversation-composer-send[type="button"]').click()
+  await expect.poll(()=>held).toBe(1)
+  await page.getByRole('button',{name:'Cancel notice owner B'}).click()
+  await expect(page).toHaveURL(new RegExp('session='+ownerB.id))
+  release()
+  const composer=page.locator('textarea.conversation-composer-input')
+  await composer.fill('Independent chat after cancel')
+  await expect(page.locator('button.conversation-composer-send[type="submit"]')).toBeEnabled()
+  await expect(page.getByRole('status').filter({hasText:/중지했습니다|stopped/i})).toHaveCount(0)
+  await page.locator('button.conversation-composer-send').click()
+  await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(1,{timeout:30000})
+ }finally{
+  release()
+  await request.post('/api/sessions/'+ownerA.id+'/cancel',{}).catch(()=>{})
+  await request.delete('/api/sessions/'+ownerA.id)
+  await request.delete('/api/sessions/'+ownerB.id)
+ }
+})
