@@ -80,6 +80,8 @@ async fn model_only_chat_uses_native_worker_once_and_records_usage(){
  assert_eq!(result.output_tokens,4);
  assert!((result.cost_krw-20.0).abs()<0.00001);
  assert_eq!(requests.requests.load(Ordering::SeqCst),1);
+ assert_eq!(result.events.iter().filter(|e|
+   e.kind=="model_only_request_intent").count(),1);
  assert!(!result.events.iter().any(|e|e.kind=="tool_started"));
  server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
 }
