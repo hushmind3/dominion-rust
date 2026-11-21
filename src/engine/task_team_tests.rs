@@ -243,6 +243,9 @@ async fn repository_team_requires_review_and_digest_approval_before_reviewer_see
     sdk.advance_task_team(root.id).await.unwrap();
     let view=sdk.task_team(root.id).await.unwrap();
     assert_eq!(view.tasks[0].status,TeamTaskState::ApprovalRequired);
+    assert!(view.tasks[0].patch_review_ready,
+        "only completed verified Writer patches may show the merge review action");
+    assert!(!view.tasks[1].patch_review_ready);
     assert_eq!(view.tasks[1].status,TeamTaskState::Pending);
     assert!(store.get(reviewer_id).await.is_none());
 
