@@ -165,6 +165,11 @@ impl Engine {
                 event.kind=="model_only_request_intent"){
                 return Err("model-only request may already have been billed; reconcile the original Run instead of reissuing inference".into());
             }
+            if let Some(intent_seq)=journal::unsettled_model_request(run){
+                return Err(format!(
+                    "agent model request #{intent_seq} may already have been billed; inspect original Run before any fresh inference"
+                ));
+            }
             if run.team.is_some(){
                 return Err("team coordinator is not an agent; use the Task Team scheduler".into());
             }
