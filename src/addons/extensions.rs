@@ -3,7 +3,7 @@
 //! commands or pretend that an unsupported stdio server was installed.
 use crate::{engine::Engine,mcp::{Mcp,Server}};
 use axum::{
-    extract::{Path,State},
+    extract::{Path,Query,State},
     http::{header,StatusCode},response::IntoResponse,routing::get,Json,Router
 };
 use serde::{Deserialize,Serialize};
@@ -163,6 +163,7 @@ pub fn routes()->Router<Arc<Engine>>{
     Router::new()
         .route("/mcp",get(mcp_list).post(mcp_save))
         .route("/mcp/discover",get(mcp_discover))
+        .route("/mcp/status",get(mcp_status))
         .route("/mcp/{id}",axum::routing::delete(mcp_delete))
         .route("/skills",get(skill_list).post(skill_save))
         .route("/skills/{id}",axum::routing::delete(skill_delete))
@@ -178,6 +179,51 @@ async fn mcp_list(State(engine):State<Arc<Engine>>)->Json<Value>{
 fn managed_mcp_owner<'a>(name:&str,registered:&'a [(String,String)])->Option<&'a str>{
     registered.iter().find(|(prefix,_)|name.starts_with(prefix))
         .map(|(_,id)|id.as_str())
+}
+#[derive(Default,Deserialize)]
+struct McpStatusQuery{probe:Option<bool>}
+/// Registered MCP endpoints remain owner-configured. An explicit probe uses
+/// the exact native paginated MCP discovery routine; never invokes tools.
+async fn mcp_status(State(engine):State<Arc<Engine>>,
+    Query(query):Query<McpStatusQuery>)->Json<Value>{
+    let registered=engine.addons.extensions.mcp_list().await;
+    if query.probe!=Some(true){
+        return Json(json!(registered.into_iter().map(|server|json!({
+            "id":server.id,"name":server.name,
+            "state":if server.enabled{"not_probed"}else{"disabled"}
+        })).collect::<Vec<_>>()));
+    }
+    let gate=Arc::new(tokio::sync::Semaphore::new(4));
+    let mut pending=tokio::task::JoinSet::new();
+    for server in registered{
+        let mcp=Arc::clone(&engine.addons.mcp);
+        let gate=Arc::clone(&gate);
+        pending.spawn(async move{
+            if !server.enabled{
+                return json!({"id":server.id,"name":server.name,"state":"disabled"});
+            }
+            let _permit=match gate.acquire_owned().await{
+                Ok(permit)=>permit,
+                Err(_)=>return json!({"id":server.id,"name":server.name,"state":"unavailable"})
+            };
+            let result=tokio::time::timeout(std::time::Duration::from_secs(8),
+                mcp.operator_tool_count(&server_key(&server.id))).await;
+            match result{
+                Ok(Ok(count))=>json!({"id":server.id,"name":server.name,
+                    "state":"ready","toolCount":count}),
+                Ok(Err(error))=>json!({"id":server.id,"name":server.name,
+                    "state":"failed","error":error.chars().take(320).collect::<String>()}),
+                Err(_)=>json!({"id":server.id,"name":server.name,
+                    "state":"timeout","error":"MCP tools/list timeout"})
+            }
+        });
+    }
+    let mut observed=Vec::new();
+    while let Some(result)=pending.join_next().await{
+        if let Ok(row)=result{observed.push(row);}
+    }
+    observed.sort_by(|a,b|a["id"].as_str().cmp(&b["id"].as_str()));
+    Json(json!(observed))
 }
 async fn mcp_discover(State(engine):State<Arc<Engine>>)->Json<Value>{
     // The model uses mcp__<server_key>__<tool>, while the UI stores a UUID.
