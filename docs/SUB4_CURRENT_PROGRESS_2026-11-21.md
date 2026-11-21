@@ -43,3 +43,39 @@ These are fixture values in freshly created sessions, **not real-model TTFT**, n
 - Existing Qwen3.5 real-GGUF CI probe: conditional and **skipped** on this run. A browser with a narrow viewport is not a physical Android/iOS device.
 
 **Remaining measurement-only scope:** Fresh controlled real-model old/new A/B on identical model/hardware/scripts, physical-device test and independently metered paid-provider cache/TTFT receipts. These cannot be marked completed from fixture results. No production rollout was performed.
+
+
+## 2026-11-21: industry-practice hardening after branch comparison
+
+External branch assessment: `main` was provisionally rated 85/100, `dominion-sub4` 82/100. These are comparative reviewer scores, not official certifications and **not automatically recalculated** by this change. All implementation below was made **only** to `dominion-sub4`.
+
+### Added durable, at-most-once agent inference gate
+
+Previously the native model-only chat had a send-intent fence, but agent planning, ordinary model turns and optional verification did not have the same persisted charge boundary. Each stage now saves a `model_request_intent` before dispatching a potentially billed provider request, then records `model_request_settled` (exact `intent_seq`), supplier receipt tokens and cost in one atomic Run store update. On interrupted/disconnected requests the original Run stays paused and cannot auto-replay that unresolved upstream billing. **This is not provider-side exactly-once billing**, nor evidence that any absent receipt was free.
+
+- `src/journal.rs`: `unsettled_model_request`; recovery retains unresolved source intent and emits `model_outcome_unknown`.
+- `src/engine.rs`: `Engine::launch` rejects replay of a Run with an unresolved paid agent request.
+- `src/harness/runner.rs`: applies the same intent/settlement contract to planning, agent turns and independent verifier.
+- `src/engine/task_team_tests.rs`: checks exact receipt linkage and restart recovery.
+- `src/engine/model_only_tests.rs`: loopback HTTP 503 received *after server accepts the request* tests that resume does not submit a second paid agent request.
+- `src/product/frontend_api/chat.rs` and existing React Chat/Run inspector: preserve original Run ID in failure events, show paused uncertain provider request, provide source-linked Run inspection in the existing chat composer, and suppress unsafe Resume.
+- Mobile regression specifically checks the existing recovery action can be clicked on 360px layout without overlaps; the first run exposed an overlapping header button, then the action was moved to the composer and the regression passed.
+
+### MCP, CI and source quality
+
+- Existing `2026-07-28` stateless Streamable HTTP MCP remains in place. The HTTP transport tests now require version headers, `Mcp-Method`, `Mcp-Name` only for named calls, request-local `_meta`, and no old `initialize` call or `Mcp-Session-Id`.
+- CI enforces Clippy **correctness** lint group on Rust workspace/all targets. This is deliberately *not* represented as an all-Clippy-warnings-clean or `cargo fmt --check` pass.
+- Every source-scoped push now builds the React production bundle and executes real Rust HTTP + Vite + Chromium E2E automatically following frontend/Rust checks, without deploying.
+- Historical source-size gate remains enforced: executable modules 900 lines max.
+
+### Verified result
+
+**[GitHub Actions run 44897981841 — success](https://github.com/hushmind3/dominion-rust/actions/runs/44897981841)**, code commit `33f143cb023c7823853b389af90e2147ec2160cb`:
+- `cargo check --locked --all-targets`: successful.
+- `cargo clippy --locked --workspace --all-targets -- -D clippy::correctness`: successful.
+- `cargo test --locked --workspace --lib`: 370 native Dominion tests passing, 3 ignored, plus separate package suites passing.
+- Strict TypeScript, SDK contracts, product build, source-size and architecture checks: successful.
+- **Real Chromium E2E: 15 of 15 passing**, including a 360px recovery/approval accessibility path. Mock-provider fixture is explicitly not real paid-model performance measurement.
+- The existing optional Qwen3.5 cold/warm GGUF job was not run in this workflow.
+
+Outstanding independent targets: rustfmt baseline migration and a possible enforced `cargo fmt --check` gate; real stdio/legacy MCP interoperability; physical Android/iOS browser testing; newly controlled actual paid-provider/cache and local GPU throughput receipts. No upstream `main` merge or production deployment was performed.
