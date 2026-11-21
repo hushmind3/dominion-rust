@@ -9,7 +9,7 @@ export type TeamDraftIssue={
  taskId?:string;dependency?:string
 }
 export type TeamDraftAnalysis={issue:TeamDraftIssue|null;waves:string[][];usedBudget:number}
-export function analyzeTeamDraft(nodes:readonly TeamDraftNode[],totalText:string):TeamDraftAnalysis{
+export function analyzeTeamDraft(nodes:readonly TeamDraftNode[],totalText:string,goal=''):TeamDraftAnalysis{
  let usedBudget=0
  const fail=(code:TeamDraftIssue['code'],taskId?:string,dependency?:string):TeamDraftAnalysis=>
   ({issue:{code,taskId,dependency},waves:[],usedBudget})
@@ -24,7 +24,8 @@ export function analyzeTeamDraft(nodes:readonly TeamDraftNode[],totalText:string
   if(!/^[A-Za-z0-9_-]{1,64}$/.test(id))return fail('invalid_id',id)
   if(names.has(id))return fail('duplicate_id',id)
   names.add(id);order.push(id)
-  if(!task.instruction.trim()||bytes(task.instruction)>20_000)return fail('invalid_instruction',id)
+  const fullInstruction='Team objective:\n'+goal.trim()+'\n\nWorker assignment:\n'+task.instruction.trim()
+  if(!task.instruction.trim()||bytes(fullInstruction)>20_000)return fail('invalid_instruction',id)
   const workspace=task.workspace.trim()||'project'
   if(bytes(workspace)>160||workspace.includes('..')||workspace.includes('\0'))
    return fail('invalid_workspace',id)

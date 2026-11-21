@@ -26,6 +26,12 @@ test('unique IDs and exact dependencies are rejected before any HTTP write',()=>
  assert.equal(check([task('a','b'),task('b','a')]).issue.code,'cycle')
 })
 
+test('worker instruction includes the owner goal and wire framing before the Rust 20KB limit',()=>{
+ const almostFull='a'.repeat(19_990)
+ assert.equal(check([{...task('a'),instruction:almostFull}]).issue.code,'invalid_instruction')
+ assert.equal(analyzeTeamDraft([task('a')],'3000','Goal '.repeat(5000)).issue.code,'invalid_instruction')
+})
+
 test('backend budget, workspace, instruction and step constraints are preflighted',()=>{
  assert.equal(check([task('a','', '4000')]).issue.code,'budget_exceeded')
  assert.equal(check([task('a')],'1000001').issue.code,'invalid_total_budget')

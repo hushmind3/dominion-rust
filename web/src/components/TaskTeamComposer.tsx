@@ -68,7 +68,7 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
  const enabledProviders=providers.value.filter(provider=>provider.enabled!==false)
  const [steps,setSteps]=useState<Draft[]>(()=>initial.map(x=>({...x})))
  const [busy,setBusy]=useState(false),[error,setError]=useState('')
- const graph=analyzeTeamDraft(steps,budget)
+ const graph=analyzeTeamDraft(steps,budget,goal)
  const change=(index:number,key:Exclude<keyof Draft,'auditor'>,value:string)=>setSteps(old=>old.map((task,i)=>
   i===index?{...task,[key]:value}:task))
  const submit=async()=>{
