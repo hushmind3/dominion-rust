@@ -18,9 +18,9 @@ pub async fn invoke(host:&Host,settings:&Settings,store:&Arc<RunStorePort>,
     if matches!(call.name.as_str(),agent_bridge::TOOL|agent_bridge::EDIT_TOOL){
         return host.bridge.execute(settings,store,id,call,cancellation).await;
     }
-    if call.name==remote_worker::TOOL{
+    if matches!(call.name.as_str(),remote_worker::TOOL|remote_worker::EDIT_TOOL){
         return match host.remote_worker.as_ref(){
-            Some(remote)=>remote.execute(store,id,call,cancellation).await,
+            Some(remote)=>remote.execute(settings,store,id,call,cancellation).await,
             None=>Ok(ToolEffectOutcome::Settled(Err(
                 "remote worker is not configured by the operator".into())))
         };

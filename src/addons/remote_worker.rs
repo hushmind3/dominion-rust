@@ -9,6 +9,7 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 pub const TOOL:&str="remote_worker_consult";
+pub const EDIT_TOOL:&str="remote_worker_edit";
 const AUTH_HEADER:&str="x-dominion-worker-token";
 const MAX_REMOTE_BODY:u64=256*1024;
 
@@ -18,12 +19,14 @@ struct RegistryNode{
     id:String,
     url:String,
     token:String,
+    #[serde(default)]writer_token:Option<String>,
     #[serde(default="default_weight")]weight:u8,
 }
 fn default_weight()->u8{1}
 pub struct RemoteWorker{
     endpoint:String,
     token:String,
+    writer_token:Option<String>,
     nodes:Vec<RegistryNode>,
     client:reqwest::Client,
 }
@@ -45,6 +48,10 @@ impl RemoteWorker{
                         return Err("remote worker IDs/weights must be unique and bounded".into());
                     }
                     let node=Self::configured(&entry.url,entry.token.clone())?;
+                    if entry.writer_token.as_ref().is_some_and(|v|
+                        v.len()<32||v.len()>2048||v.bytes().any(|b|b==10||b==13)){
+                        return Err("remote Writer token must be 32..2048 bytes".into());
+                    }
                     if !unique.insert(node.endpoint.clone()){
                         return Err("duplicate remote worker endpoint".into());
                     }
@@ -81,7 +88,20 @@ impl RemoteWorker{
             .timeout(Duration::from_secs(15))
             .build().map_err(|e|e.to_string())?;
         Ok(Self{endpoint:base.trim_end_matches('/').to_owned(),token,
+            writer_token:std::env::var("DOMINION_REMOTE_WORKER_WRITER_TOKEN")
+                .ok().filter(|s|s.len()>=32),
             nodes:Vec::new(),client})
+    }
+    pub fn writer_definition(&self)->Option<Value>{
+        if self.writer_token.is_none() &&
+            !self.nodes.iter().any(|n|n.writer_token.is_some()){return None;}
+        Some(json!({"type":"function","function":{
+            "name":EDIT_TOOL,
+            "description":"Owner-approved remote Team Writer edits an isolated, exact-revision Git worktree. The reviewed SHA-256 patch returns to the local Team child and still requires separate Team merge approval. External billing and unsafe remote outcomes are journalled.",
+            "parameters":{"type":"object","properties":{
+                "instruction":{"type":"string","minLength":1,"maxLength":12000}
+            },"required":["instruction"],"additionalProperties":false}
+        }}))
     }
     pub fn definition(&self)->Value{
         json!({"type":"function","function":{
@@ -113,18 +133,25 @@ impl RemoteWorker{
     /// Nodes that fail health/capacity checks are excluded BEFORE any POST.
     /// Once chosen the binding is journalled; transport errors never fan-out
     /// the same potentially billable instruction to a second machine.
-    async fn select_node(&self,origin:Uuid,call_id:&str)->Result<(String,String,String),String>{
+    async fn select_node(&self,origin:Uuid,call_id:&str,writer:bool)
+        ->Result<(String,String,String,Option<String>),String>{
         if self.nodes.is_empty(){
-            return Ok(("legacy".into(),self.endpoint.clone(),self.token.clone()));
+            if writer&&self.writer_token.is_none(){
+                return Err("remote writer token is not configured".into());
+            }
+            return Ok(("legacy".into(),self.endpoint.clone(),self.token.clone(),
+                self.writer_token.clone()));
         }
         let mut candidates=Vec::<(f64,&RegistryNode)>::new();
         for entry in &self.nodes{
+            if writer&&entry.writer_token.is_none(){continue;}
             let status=self.client.get(format!("{}/api/v1/remote-worker/capabilities",
                 entry.url.trim_end_matches('/')))
                 .header(AUTH_HEADER,&entry.token).send().await;
             let Ok(reply)=status else{continue};
             let Ok(capabilities)=Self::response_json(reply).await else{continue};
-            if capabilities["schemaVersion"]!=1 || capabilities["readOnly"]!=true{continue;}
+            if capabilities["schemaVersion"]!=1 || capabilities["readOnly"]!=true
+                ||(writer&&capabilities["writer"]!=true){continue;}
             let active=capabilities["active"].as_u64().unwrap_or(u64::MAX);
             let slots=capabilities["slots"].as_u64().unwrap_or(0);
             if slots==0||active>=slots{continue;}
@@ -142,7 +169,8 @@ impl RemoteWorker{
         }
         candidates.sort_by(|a,b|a.0.total_cmp(&b.0));
         candidates.first().map(|(_,node)|(
-            node.id.clone(),node.url.trim_end_matches('/').to_owned(),node.token.clone()))
+            node.id.clone(),node.url.trim_end_matches('/').to_owned(),
+            node.token.clone(),node.writer_token.clone()))
             .ok_or("no authenticated remote workers have capacity".into())
     }
     async fn response_json(response:reqwest::Response)->Result<Value,String>{
@@ -156,10 +184,12 @@ impl RemoteWorker{
         serde_json::from_slice::<Value>(&bytes)
             .map_err(|e|format!("invalid remote worker protocol: {e}"))
     }
-    pub async fn execute(&self,store:&Arc<RunStorePort>,id:Uuid,
+    pub async fn execute(&self,settings:&crate::config::Settings,
+        store:&Arc<RunStorePort>,id:Uuid,
         call:&ToolCall,mut cancellation:watch::Receiver<bool>)
         ->Result<ToolEffectOutcome,String>{
-        if call.name!=TOOL{return Ok(ToolEffectOutcome::Settled(Err(
+        let editing=call.name==EDIT_TOOL;
+        if call.name!=TOOL&&!editing{return Ok(ToolEffectOutcome::Settled(Err(
             "wrong remote worker tool".into())));}
         let Some(instruction)=call.arguments.as_object().filter(|v|v.len()==1)
             .and_then(|v|v.get("instruction")).and_then(Value::as_str)
@@ -185,7 +215,8 @@ impl RemoteWorker{
             return Ok(ToolEffectOutcome::Settled(Err(
                 "remote worker KRW reservation exhausted before dispatch".into())));
         }
-        let (node_id,endpoint,worker_token)=match self.select_node(id,&call.id).await{
+        let (node_id,endpoint,worker_token,writer_token)=match self.select_node(
+            id,&call.id,editing).await{
             Ok(node)=>node,Err(error)=>return Ok(ToolEffectOutcome::Settled(Err(error))),
         };
         let remote_id=self.remote_id_for(&endpoint,id,&call.id);
@@ -194,16 +225,21 @@ impl RemoteWorker{
                 "Remote model charges are metered by the remote worker, not by the local Run",
                 Some(json!({"remoteRunId":remote_id,"callId":call.id,
                     "nodeId":node_id,"endpoint":endpoint,
-                    "billing":"remote_separately_metered","readOnly":true})));
+                    "billing":"remote_separately_metered","readOnly":!editing,
+                    "writer":editing})));
             Ok(())
         }).await?;
         let execute=async {
-            let response=self.client.post(Self::url_for(&endpoint,None))
-                .header(AUTH_HEADER,&worker_token)
-                .json(&json!({"runId":remote_id,"instruction":instruction,
-                    "budgetKrw":remaining,
-                    "maxSteps":origin.max_steps.min(20).max(1)}))
-                .send().await;
+            let request=json!({"runId":remote_id,"instruction":instruction,
+                "budgetKrw":remaining,
+                "maxSteps":origin.max_steps.min(20).max(1),
+                "writer":editing});
+            let mut post=self.client.post(Self::url_for(&endpoint,None))
+                .header(AUTH_HEADER,&worker_token);
+            if let Some(secret)=writer_token.as_ref(){
+                if editing{post=post.header("x-dominion-worker-writer-token",secret);}
+            }
+            let response=post.json(&request).send().await;
             let response=match response{
                 Ok(resp)=>resp,
                 Err(error)=>return ToolEffectOutcome::Uncertain(format!(
@@ -347,7 +383,9 @@ mod tests{
         store.put(origin).await.unwrap();
         let worker=RemoteWorker::configured(&format!("http://{addr}"),"x".repeat(40)).unwrap();
         let (_cancel_tx,cancel_rx)=watch::channel(false);
-        let output=worker.execute(&store,origin_id,&call,cancel_rx).await.unwrap();
+        let mut settings=crate::config::Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        let output=worker.execute(&settings,&store,origin_id,&call,cancel_rx).await.unwrap();
         match output{
             ToolEffectOutcome::Settled(Ok(content))=>{
                 let receipt:Value=serde_json::from_str(&content).unwrap();
