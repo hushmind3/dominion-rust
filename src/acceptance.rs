@@ -234,7 +234,12 @@ pub fn requested_test_evidence(run:&Run)->Option<TestEvidence> {
         }
     }
     if run.repository.is_none()||!explicitly_requested{return None;}
-    let mut starts=std::collections::HashMap::<String,(u64,String,Value)>::new();
+    let mut starts=std::collections::HashMap::<String,(u64,String)>::new();
+    // One successful earlier suite cannot mask a later failed or still-running
+    // suite. A later successful invocation of the SAME command replaces its
+    // prior verdict; results from an older overlapping invocation cannot do so.
+    let mut attempts=std::collections::HashMap::<String,(u64,Option<bool>)>::new();
+    let mut running=std::collections::HashMap::<String,String>::new();
     let mut last_mutation=None::<u64>;
     let mut last_test=None::<u64>;
     for event in &run.events {
@@ -244,31 +249,43 @@ pub fn requested_test_evidence(run:&Run)->Option<TestEvidence> {
                 let call_id=detail["id"].as_str().unwrap_or("");
                 let arguments=detail.get("arguments").cloned().unwrap_or(Value::Null);
                 if !call_id.is_empty(){
-                    starts.insert(call_id.to_owned(),(event.seq,name.to_owned(),arguments.clone()));
+                    starts.insert(call_id.to_owned(),(event.seq,name.to_owned()));
+                    if matches!(name,"shell"|"run_tests"){
+                        let command=arguments["command"].as_str().unwrap_or("");
+                        if test_command(command){
+                            attempts.insert(command.to_owned(),(event.seq,None));
+                            running.insert(call_id.to_owned(),command.to_owned());
+                        }
+                    }
                 }
                 if !name.is_empty()&&potential_mutation(name,&arguments){
                     last_mutation=Some(event.seq);
                 }
             }
-        } else if event.kind=="tool_result" {
+        } else if matches!(event.kind.as_str(),"tool_result"|"tool_error") {
             if let Some(detail)=event.detail.as_ref(){
                 let call_id=detail["call_id"].as_str().unwrap_or("");
-                if (detail["name"]=="shell"||detail["name"]=="run_tests")
-                    &&detail["succeeded"]==true{
-                    if let Some((start,name,arguments))=starts.get(call_id){
-                        if (name=="shell"||name=="run_tests")
-                            &&test_command(arguments["command"].as_str().unwrap_or(""))
-                            &&*start>latest_test_directive_seq
-                            &&last_mutation.is_none_or(|mutation|mutation<*start){
-                            last_test=Some(event.seq);
+                if let Some(command)=running.remove(call_id){
+                    if let Some((started,name))=starts.get(call_id){
+                        if let Some((latest,passed))=attempts.get_mut(&command){
+                            // The latest attempt must own its result.
+                            if *latest==*started{
+                                let success=event.kind=="tool_result"
+                                    &&detail["succeeded"]==true
+                                    &&detail["name"]==name.as_str();
+                                *passed=Some(success);
+                                if success{last_test=Some(event.seq);}
+                            }
                         }
                     }
                 }
             }
         }
     }
-    let satisfied=last_test.is_some_and(|test|
-        last_mutation.is_none_or(|mutation|mutation<test));
+    let satisfied=!attempts.is_empty()&&running.is_empty()
+        &&attempts.values().all(|(started,passed)|
+            *passed==Some(true)&&*started>latest_test_directive_seq
+            &&last_mutation.is_none_or(|mutation|mutation<*started));
     let summary=if satisfied {
         "An approved test command succeeded after the last possible repository edit. This is executed-test evidence, not semantic proof.".to_string()
     }else{
@@ -337,6 +354,51 @@ mod tests{
         finished(&mut run,"compound",true);
         assert!(!requested_test_evidence(&run).unwrap().satisfied);
     }
+    #[test]
+    fn latest_test_suite_failure_or_inflight_result_prevents_false_completion(){
+        use serde_json::json;
+        let mut run=Run::new(crate::domain::CreateRun{
+            instruction:"Repair the project and run tests".into(),
+            budget_krw:None,max_steps:Some(8)
+        },8).unwrap();
+        run.repository=Some("fixture".into());
+        let start=|run:&mut Run,id:&str,command:&str|{
+            run.event("tool_started","test scheduled",Some(json!({
+                "id":id,"name":"run_tests","arguments":{"command":command}
+            })));
+        };
+        let settle=|run:&mut Run,id:&str,pass:bool|{
+            run.event(if pass{"tool_result"}else{"tool_error"},"test receipt",
+                Some(json!({"call_id":id,"name":"run_tests","succeeded":pass})));
+        };
+        start(&mut run,"cargo1","cargo test");
+        settle(&mut run,"cargo1",true);
+        assert!(requested_test_evidence(&run).unwrap().satisfied);
+        start(&mut run,"pytest1","python3 -m pytest -q");
+        assert!(!requested_test_evidence(&run).unwrap().satisfied,
+            "an unfinished newer test must invalidate an old success");
+        settle(&mut run,"pytest1",false);
+        assert!(!requested_test_evidence(&run).unwrap().satisfied,
+            "a failed additional test suite cannot be hidden by older success");
+        start(&mut run,"cargo2","cargo test");
+        settle(&mut run,"cargo2",true);
+        assert!(!requested_test_evidence(&run).unwrap().satisfied,
+            "repeating only one of two suites cannot clear a different failed suite");
+        start(&mut run,"pytest2","python3 -m pytest -q");
+        settle(&mut run,"pytest2",true);
+        assert!(requested_test_evidence(&run).unwrap().satisfied);
+        // An older overlapping success cannot overwrite a newer failed
+        // invocation of exactly the same suite.
+        start(&mut run,"old","cargo test");
+        start(&mut run,"new","cargo test");
+        settle(&mut run,"new",false);
+        settle(&mut run,"old",true);
+        assert!(!requested_test_evidence(&run).unwrap().satisfied);
+        start(&mut run,"retry","cargo test");
+        settle(&mut run,"retry",true);
+        assert!(requested_test_evidence(&run).unwrap().satisfied);
+    }
+
     #[test]
     fn owner_can_cancel_or_renew_test_obligation_without_stale_success(){
         use serde_json::json;
