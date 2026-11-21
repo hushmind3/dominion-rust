@@ -78,8 +78,14 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  if(current.error&&!run)return <Notice message={current.error}/>
  if(!run)return null
  const approval=run.pending_approval&&run.approval_decision==null
- const uncertain=run.status==='paused'&&!!run.in_flight
  const isTeam=!!run.team
+ const uncertain=!isTeam&&run.status==='paused'&&!!run.in_flight
+ const teamPatchUncertain=isTeam&&run.status==='paused'&&run.in_flight?.name==='team_patch_integrate'
+ const patchArgs=run.in_flight?.arguments&&typeof run.in_flight.arguments==='object'
+  ?run.in_flight.arguments as Record<string,unknown>:{}
+ const pendingTask=typeof patchArgs.task_id==='string'?patchArgs.task_id:''
+ const pendingSha=typeof patchArgs.patch_sha256==='string'?patchArgs.patch_sha256:''
+ const canReconcileTeamPatch=teamPatchUncertain&&/^[0-9a-fA-F]{64}$/.test(pendingSha)&&!!pendingTask
  const canStop=['queued','running','awaiting_approval','paused'].includes(run.status)
  const totalCost=(run.cost_krw||0)+(run.remote_cost_krw||0)+(run.delegated_spent_krw||0)
  const usedSteps=Math.min(100,run.max_steps>0?Math.round(run.steps/run.max_steps*100):0)
@@ -126,6 +132,18 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
     <Button disabled={busy} variant="secondary" onClick={()=>void action(base+'/approval',{allow:false},ko?'도구 실행을 거절했습니다':'Tool denied')}>{ko?'거절':'Deny'}</Button>
    </div>
   </div>}
+  {teamPatchUncertain&&<div className="mt-4 rounded-xl border border-rose-300 bg-rose-50 p-4">
+   <strong className="flex items-center gap-2 text-sm text-rose-900"><AlertTriangle size={17}/>{ko?'Git 패치 적용 결과 미확정':'Git patch outcome uncertain'}</strong>
+   <p className="mt-2 text-xs text-rose-800">{ko?'패치 적용 도중 중단되었습니다. 다른 도구처럼 성공/실패를 임의로 기록할 수 없으며, 원래 승인한 SHA-256 패치가 Git에 존재하는지를 Rust가 역검증해야 합니다.':'Patch adoption was interrupted. The Rust engine must prove the exact originally approved SHA-256 patch is present in Git before clearing the uncertainty.'}</p>
+   <p className="mt-2 break-words text-[11px] text-rose-800">{ko?'작업':'Task'}: {pendingTask||'—'}</p>
+   <p className="mt-1 break-all font-mono text-[10px] text-rose-800">SHA-256: {pendingSha||'—'}</p>
+   <Button className="mt-3" variant="secondary" disabled={busy||!canReconcileTeamPatch}
+    onClick={()=>void action(teamBase+'/patches/'+encodeURIComponent(pendingTask)+'/reconcile',
+      {sha256:pendingSha},ko?'원본 Git 패치의 적용 결과를 검증했습니다':'Exact patch outcome verified')}>
+    <ShieldCheck size={14}/>{ko?'원본 패치 상태 검증·복구':'Verify & reconcile original patch'}
+   </Button>
+   {!canReconcileTeamPatch&&<Notice message={ko?'복구에 필요한 원본 패치 정보가 불완전합니다. 실행 이벤트 기록을 확인하세요.':'Original patch intent lacks verifiable task/hash fields.'}/>}
+  </div>}
   {uncertain&&<div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4">
    <div className="flex items-center gap-2 font-semibold text-rose-900"><AlertTriangle size={16}/>{ko?'외부 변경 결과 확인 필요':'Uncertain external effect'}</div>
    <p className="mt-2 text-xs text-rose-800">{run.in_flight?.name}: {ko?'이 작업은 자동 재실행되지 않습니다. 외부 시스템에서 실제 결과를 확인한 후 처리하세요.':'This operation will not auto-replay. Verify the real external outcome first.'}</p>
@@ -138,7 +156,7 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
   <div className="mt-4 flex flex-wrap gap-2">
    {!isTeam&&run.status==='paused'&&!run.in_flight&&!approval&&<Button disabled={busy} onClick={()=>void action(base+'/resume',{},ko?'실행을 다시 시작했습니다':'Run resumed')}><Play size={14}/>{ko?'이어 실행':'Resume'}</Button>}
    {isTeam&&run.status==='paused'&&!run.in_flight&&<Button disabled={busy} onClick={()=>void action(teamBase+'/advance',{},ko?'팀 작업을 진행했습니다':'Team advanced')}><Play size={14}/>{ko?'팀 시작 / 다음 단계':'Start / advance team'}</Button>}
-   {canStop&&<Button variant="secondary" disabled={busy} onClick={()=>{if(window.confirm(ko?'이 실행을 취소하시겠습니까?':'Cancel this run?'))void action(isTeam?teamBase+'/cancel':base+'/cancel',{},ko?'취소 요청을 기록했습니다':'Cancellation requested')}}><Square size={13}/>{ko?'취소':'Cancel'}</Button>}
+   {canStop&&<Button variant="secondary" disabled={busy||Boolean(teamPatchUncertain)} onClick={()=>{if(window.confirm(ko?'이 실행을 취소하시겠습니까?':'Cancel this run?'))void action(isTeam?teamBase+'/cancel':base+'/cancel',{},ko?'취소 요청을 기록했습니다':'Cancellation requested')}}><Square size={13}/>{ko?'취소':'Cancel'}</Button>}
   </div>
   {!isTeam&&run.status==='running'&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
     <strong className="text-xs">{ko?'실행 중 지시 변경':'Give the running agent new instructions'}</strong>
