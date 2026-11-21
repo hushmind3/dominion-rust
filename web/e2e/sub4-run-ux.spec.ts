@@ -99,7 +99,9 @@ test('mobile chat recovers source-linked paused agent Run without exposing autom
       at_ms:Date.now()}]})})
   })
   await page.goto('/#/chat?session='+encodeURIComponent(session.id))
-  const source=page.getByRole('button',{name:/원본 실행 기록 열기|Open original Run/})
+  // At narrow widths the model picker overlaps extra header controls.
+  // The source Run recovery action belongs in the composer, never the header.
+  const source=page.getByRole('button',{name:/원본 실행·복구 열기|Inspect original Run/}).first()
   await expect(source).toBeVisible()
   await source.click()
   const dialog=page.getByRole('dialog',{name:/에이전트 실행 증거|Agent execution evidence/})
