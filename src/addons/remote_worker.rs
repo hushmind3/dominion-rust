@@ -680,6 +680,30 @@ mod tests{
         down.abort();up.abort();
     }
     #[tokio::test]
+    async fn chunked_remote_response_is_capped_before_reading_entire_body(){
+        use axum::{body::{Body,Bytes},routing::get,Router};
+        async fn oversized()->Body{
+            Body::from_stream(async_stream::stream!{
+                yield Ok::<Bytes,std::io::Error>(Bytes::from(vec![b'a';180_000]));
+                yield Ok::<Bytes,std::io::Error>(Bytes::from(vec![b'b';180_000]));
+            })
+        }
+        let socket=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=socket.local_addr().unwrap();
+        let server=tokio::spawn(async move{
+            axum::serve(socket,Router::new().route("/oversized",get(oversized)))
+                .await.unwrap()
+        });
+        let worker=RemoteWorker::configured(&format!("http://{addr}"),"s".repeat(40)).unwrap();
+        let response=worker.client.get(format!("http://{addr}/oversized"))
+            .send().await.unwrap();
+        assert!(response.content_length().is_none(),
+            "test should exercise an HTTP stream without Content-Length");
+        assert!(RemoteWorker::response_json(response).await.unwrap_err()
+            .contains("too large"));
+        server.abort();
+    }
+    #[tokio::test]
     async fn passive_remote_topology_never_discloses_scoped_secrets(){
         let token="redacted-operator-credential-".repeat(2);
         let mut worker=RemoteWorker::configured(
