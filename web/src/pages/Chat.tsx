@@ -459,6 +459,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
 }
 function Message({message,agentName,showReasoning,onInspect}:{message:ChatMessage;agentName?:string;showReasoning?:boolean;onInspect:(runId:string)=>void}){
  const {profile}=useOwnerProfile()
+ const ko=useLocale()==='ko'
  const [open,setOpen]=useState(true);const human=message.role==='user';
  return <div className={'flex min-w-0 items-start gap-3 '+(human?'':'')} data-message>
   {human?<OwnerAvatar profile={profile}/>:<div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#A94E30]"><Sparkles size={17}/></div>}
@@ -466,7 +467,7 @@ function Message({message,agentName,showReasoning,onInspect}:{message:ChatMessag
    <div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">{human?t('ui.you'):agentName||'DOMINION'}{!human&&<TokenUsage usage={message.metadata?.usage} className="ml-auto rounded border border-[#E7DDCC] bg-[#F7F1E6] px-1.5 py-0.5 text-[9px] font-medium text-[#8A775F]"/>}</div>
    {showReasoning&&message.reasoning&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={open}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setOpen(v=>!v)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:message.reasoning.length.toLocaleString()})} <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{message.reasoning}</div></details>}
    <div className={"min-w-0 break-words text-sm leading-7 text-[#3A342D] [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-slate-100 [&_code]:break-words [&_ul]:list-disc [&_ul]:pl-6 "+(human?"rounded-xl bg-[#F3EEE5] px-4 py-3":"")}>{message.content||(!human&&message.tool_calls?.length?t('chat.toolRequest'):'' )}</div>
-   {!human&&message.content&&<Button className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-[#7C7469] hover:bg-[#F3EEE5]" onClick={()=>navigator.clipboard.writeText(message.content)} title={t('chat.copy')}><Copy size={14}/></Button>}{!human&&typeof message.metadata?.executionId==='string'&&<Button variant="ghost" size="sm" className="ml-1 !min-h-7" onClick={()=>onInspect(message.metadata!.executionId as string)}><Activity size={12}/>{useLocale.name==='useLocale'?'실행 기록':'실행 기록'}</Button>}
+   {!human&&message.content&&<Button className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-[#7C7469] hover:bg-[#F3EEE5]" onClick={()=>navigator.clipboard.writeText(message.content)} title={t('chat.copy')}><Copy size={14}/></Button>}{!human&&typeof message.metadata?.executionId==='string'&&<Button variant="ghost" size="sm" className="ml-1 !min-h-7" onClick={()=>onInspect(message.metadata!.executionId as string)}><Activity size={12}/>{ko?'실행 기록':'Run evidence'}</Button>}
   </div>
  </div>
 }
