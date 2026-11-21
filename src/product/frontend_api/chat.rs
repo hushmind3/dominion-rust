@@ -184,7 +184,8 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
                     let saved=json!({"type":"assistant_saved","messageId":message.id});
                     yield Ok(Event::default().json_data(saved).unwrap_or_else(|_|Event::default().data("{}")));
                 }else{
-                    let error=json!({"type":"error","message":format!("native run ended with {:?}",run.status)});
+                    let error=json!({"type":"error","message":format!("native run ended with {:?}",run.status),
+                        "runId":id_text,"status":run.status});
                     yield Ok(Event::default().json_data(error).unwrap_or_else(|_|Event::default().data("{}")));
                 }
                 yield Ok(Event::default().json_data(json!({"type":"done"})).unwrap_or_else(|_|Event::default().data("{}")));
