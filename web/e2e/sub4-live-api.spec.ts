@@ -107,3 +107,58 @@ test('model routes reject missing managed IDs as JSON errors, not SPA HTML',asyn
   expect((await response.json()).error).toBeTruthy();
  }
 });
+
+
+test('Room quick settings save through the Rust full-draft contract without resetting limits',
+ async({page,request})=>{
+ const roomDraft={
+  name:'Sub4 room option persistence',topic:'Preserve conversation policy and budget',
+  ownerName:'Owner',agentIds:['general'],routingMode:'discussion',
+  rounds:3,maxTurns:7,lifetimeMaxResponses:4,tokenBudget:1200,
+  contextBudgetTokens:1800,autoModels:true,toolsEnabled:true,autoLearning:true,
+  models:[],reasoningEffort:''
+ }
+ const response=await request.post('/api/rooms',{data:roomDraft})
+ expect(response.ok()).toBeTruthy()
+ const room=await response.json() as {id:string}
+ const sent:Array<Record<string,unknown>>=[]
+ try{
+  await page.route('**/api/rooms',route=>{
+   if(route.request().method()==='POST')
+    sent.push(route.request().postDataJSON() as Record<string,unknown>)
+   return route.continue()
+  })
+  await page.goto('/#/rooms')
+  const listEntry=page.locator('.room-list-item')
+   .filter({hasText:'Sub4 room option persistence'})
+  await expect(listEntry).toBeVisible()
+  await listEntry.click()
+  await page.getByRole('button',{name:'대화 설정'}).click()
+  const settings=page.getByRole('dialog',{name:'대화 설정'})
+  await expect(settings).toBeVisible()
+  const tools=settings.locator('label').filter({hasText:'도구 사용'}).locator('input[type="checkbox"]')
+  await expect(tools).toBeChecked()
+  await tools.uncheck()
+  await expect.poll(async()=>{
+   const result=await request.get('/api/rooms/'+room.id)
+   return (await result.json() as {toolsEnabled:boolean}).toolsEnabled
+  }).toBe(false)
+  expect(sent.length).toBeGreaterThan(0)
+  expect(sent.at(-1)).toMatchObject({...roomDraft,id:room.id,toolsEnabled:false})
+  let stored=await (await request.get('/api/rooms/'+room.id)).json()
+  expect(stored.lifetimeMaxResponses).toBe(4)
+  expect(stored.maxTurns).toBe(7)
+  expect(stored.tokenBudget).toBe(1200)
+  expect(stored.autoLearning).toBe(true)
+  await expect(tools).not.toBeChecked()
+  await tools.check()
+  await expect.poll(async()=>{
+   const result=await request.get('/api/rooms/'+room.id)
+   return (await result.json() as {toolsEnabled:boolean}).toolsEnabled
+  }).toBe(true)
+  stored=await (await request.get('/api/rooms/'+room.id)).json()
+  expect(stored.lifetimeMaxResponses).toBe(4)
+ }finally{
+  await request.delete('/api/rooms/'+room.id)
+ }
+})
