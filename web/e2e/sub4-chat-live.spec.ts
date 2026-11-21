@@ -424,7 +424,7 @@ test('changing agents from an existing conversation starts a correctly bound new
   const composer=page.locator('textarea.conversation-composer-input')
   await composer.fill('새 에이전트에게 전달할 작성 중인 초안')
   await chooser.selectOption(alternate.id)
-  await expect(page).toHaveURL(/#\\/chat$/)
+  await expect.poll(()=>page.evaluate(()=>location.hash)).toBe('#/chat')
   await expect(chooser).toHaveValue(alternate.id)
   await expect(composer).toHaveValue('새 에이전트에게 전달할 작성 중인 초안')
   await expect(page.getByRole('status').filter({hasText:/기존 대화는 보존|previous conversation is preserved/})).toBeVisible()
