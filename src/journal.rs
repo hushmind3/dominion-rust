@@ -335,6 +335,27 @@ pub fn finish(run:&mut Run,call:&ToolCall,outcome:&Result<String,String>,observe
 /// be retried without externally-visible duplicate side effects.
 /// Single authority for deciding whether startup recovery can change a
 /// snapshot. The Store uses this to avoid re-serializing settled history.
+/// A billed provider request is unresolved until its matching outcome and
+/// usage receipt are committed in the SAME Run mutation. A network failure
+/// cannot prove that the provider did not execute it. This is a durable
+/// at-most-once AUTO-dispatch fence, not a provider-side exactly-once promise.
+pub fn unsettled_model_request(run:&Run)->Option<u64>{
+    let mut pending=None;
+    for event in &run.events{
+        match event.kind.as_str(){
+            "model_request_intent"=>pending=Some(event.seq),
+            "model_request_settled"=>{
+                if event.detail.as_ref()
+                    .and_then(|data|data["intent_seq"].as_u64())==pending{
+                    pending=None;
+                }
+            }
+            _=>{}
+        }
+    }
+    pending
+}
+
 pub fn needs_recovery(run:&Run)->bool{
     matches!(run.status,RunStatus::Running|RunStatus::Queued)
         || (run.status==RunStatus::AwaitingApproval && run.approval_decision.is_some())
@@ -383,6 +404,14 @@ pub fn recover(run:&mut Run)->bool{
             format!("Outcome of {} ({}) cannot be established; manual reconciliation required",
                 call.name,call.id),
             Some(json!({"call_id":call.id,"name":call.name})));
+        return false;
+    }
+    if let Some(intent)=unsettled_model_request(run){
+        // Replaying a paid model step changes the downstream plan, model
+        // output and tool authorizations even when no tool was started.
+        run.event("model_outcome_unknown",
+            "Provider request may have been billed; original Run requires operator review",
+            Some(json!({"intent_seq":intent,"auto_retry":false})));
         return false;
     }
     if run.cancel_after_tool {
