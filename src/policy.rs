@@ -8,6 +8,9 @@ pub fn effective_budget_krw(run:&Run)->f64{
 }
 
 pub fn allowed_tool(run:&Run,name:&str)->bool{
+    // The current Run must still be anchored to a writable repository at
+    // dispatch/recovery time, not merely when a model saw the tool schema.
+    if name=="run_tests" && (run.repository.is_none()||run.read_only){return false;}
     // Room participants are lower-trust peers, not independent delegated
     // Worker owners. Even a corrupted read_only flag cannot grant a Room
     // shell, write, external MCP effect or spawn permission.
@@ -230,6 +233,35 @@ mod tests{
         run.remote_cost_krw=10.0;
         assert_eq!(effective_budget_krw(&run),30.0);
     }
+    #[test]
+    fn scoped_test_runner_requires_live_repository_authority(){
+        let mut run=Run::new(CreateRun{
+            instruction:"Fix code and run tests".into(),
+            budget_krw:Some(10.0),max_steps:Some(5)
+        },5).unwrap();
+        assert!(!admitted_tool(&run,"run_tests",&[]));
+        run.repository=Some("fixture".into());
+        assert!(admitted_tool(&run,"run_tests",&[]));
+        run.read_only=true;
+        assert!(!admitted_tool(&run,"run_tests",&[]));
+        run.read_only=false;
+        run.room_binding=Some(crate::domain::RoomRunBinding{
+            room_id:uuid::Uuid::new_v4(),
+            owner_message_index:0,owner_at_ms:1,participant:"peer".into()
+        });
+        assert!(!admitted_tool(&run,"run_tests",&[]));
+        run.room_binding=None;
+        run.parent_run_id=Some(uuid::Uuid::new_v4());
+        run.delegation_profile="inspection".into();
+        assert!(!admitted_tool(&run,"run_tests",&[]));
+        run.delegation_profile="verification".into();
+        assert!(admitted_tool(&run,"run_tests",&[]));
+        assert!(!admitted_tool(&run,"run_tests",&["run_tests".into()]));
+        run.repository=None;
+        assert!(!admitted_tool(&run,"run_tests",&[]),
+            "persisted approved call must be denied if repository was removed");
+    }
+
     #[test]
     fn persisted_tool_calls_must_obey_current_operator_policy(){
         let mut run=Run::new(CreateRun{instruction:"work".into(),
