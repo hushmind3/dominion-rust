@@ -48,7 +48,7 @@ pub(super) fn no_tools_required(query:&str)->bool{
         "2026","2027","today","tonight","tomorrow","yesterday","latest",
         "recent","this week","current","real-time","realtime","live",
         "weather","price","pricing","cost","quote","stock","rates",
-        "currency","exchange","near me","날씨","가격","시세","주가",
+        "currency","exchange","near me","날씨","가격","시세",
         "환율","요금","얼마","실시간","근처",
         "파일","첨부","업로드","readme","pdf","코드","레포","리포",
         "브랜치","커밋","깃허브","github","프로젝트","배포","실행",
@@ -61,7 +61,13 @@ pub(super) fn no_tools_required(query:&str)->bool{
         "search","browse","file","repository","deploy","run",
         "execute","install","commit","continue","resume",
     ];
-    if EXTERNAL_OR_CONTINUATION.iter().any(|word|cleaned.contains(word)){
+    // "주가" is a live stock-quote request only as its own Korean word.
+    // A substring check incorrectly classified "우주가 팽창하나요" as a
+    // stock-price lookup, sending eight tool schemas to ordinary questions.
+    let stock_query=cleaned.split(|c:char|!c.is_alphanumeric())
+        .any(|word|word.starts_with("주가"));
+    if stock_query ||
+        EXTERNAL_OR_CONTINUATION.iter().any(|word|cleaned.contains(word)){
         return false;
     }
     if [".rs",".tsx",".ts",".js",".py",".md",".json",".toml",
@@ -462,6 +468,17 @@ mod tests{
             evidence["content"].as_str().unwrap().split_once('\n').unwrap().1).unwrap();
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|r|r["source"]=="durable_chat_transcript"));
+    }
+    #[test]
+    fn stock_quote_word_boundary_does_not_capture_korean_cosmology(){
+        for question in ["왜 우주가 팽창하나요? 원리를 설명해주세요",
+            "우주가 커지는 원리를 설명해줘"]{
+            assert!(no_tools_required(question),"{question}");
+        }
+        for question in ["삼성전자 주가 알려줘","주가가 최근 왜 올랐지?",
+            "오늘 주가 찾아줘"]{
+            assert!(!no_tools_required(question),"{question}");
+        }
     }
     #[test]
     fn korean_social_variants_are_tool_free_without_losing_tasks(){
