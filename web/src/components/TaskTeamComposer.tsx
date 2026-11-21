@@ -7,12 +7,12 @@ import {useProviderModels} from '../hooks/useProviderModels'
 import {useLocale} from '../i18n'
 
 type Role='investigator'|'writer'|'reviewer'
-type Draft={id:string;role:Role;instruction:string;workspace:string;depends:string;budget:string;steps:string;successTools:string;auditor:boolean}
+type Draft={id:string;role:Role;instruction:string;workspace:string;depends:string;budget:string;steps:string;successTools:string;auditor:boolean;providerId:string;model:string}
 type Created={id:string}
 const initial:Draft[]=[
- {id:'research',role:'investigator',instruction:'Inspect the current source and gather verifiable implementation requirements and evidence.',workspace:'project',depends:'',budget:'1000',steps:'12',successTools:'',auditor:false},
- {id:'implement',role:'writer',instruction:'Implement the requested changes using the verified research and record actual artifact evidence.',workspace:'project',depends:'research',budget:'1000',steps:'20',successTools:'',auditor:false},
- {id:'verify',role:'reviewer',instruction:'Independently verify the resulting implementation and report test evidence and remaining issues.',workspace:'project',depends:'implement',budget:'1000',steps:'12',successTools:'',auditor:false}
+ {id:'research',role:'investigator',instruction:'Inspect the current source and gather verifiable implementation requirements and evidence.',workspace:'project',depends:'',budget:'1000',steps:'12',successTools:'',auditor:false,providerId:'',model:''},
+ {id:'implement',role:'writer',instruction:'Implement the requested changes using the verified research and record actual artifact evidence.',workspace:'project',depends:'research',budget:'1000',steps:'20',successTools:'',auditor:false,providerId:'',model:''},
+ {id:'verify',role:'reviewer',instruction:'Independently verify the resulting implementation and report test evidence and remaining issues.',workspace:'project',depends:'implement',budget:'1000',steps:'12',successTools:'',auditor:false,providerId:'',model:''}
 ]
 export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
  const ko=useLocale()==='ko'
@@ -43,6 +43,10 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
   if(providerId&&(!enabledProviders.some(provider=>provider.id===providerId)||!model.trim())){
    setError(ko?'모델 제공자를 선택한 경우 실제 모델도 선택하세요.':'Select a model when selecting a model provider.');return
   }
+  if(steps.some(task=>task.providerId&&
+    (!enabledProviders.some(provider=>provider.id===task.providerId)||!task.model.trim()))){
+   setError(ko?'Worker별 제공자와 모델을 함께 지정하세요.':'Select an exact model for each routed Worker.');return
+  }
   if(steps.some(task=>{
    const tools=task.successTools.split(',').map(item=>item.trim()).filter(Boolean)
    return tools.length+Number(task.auditor)>8||new Set(tools).size!==tools.length
@@ -55,6 +59,8 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
    const created=await post<Created>('/api/v1/task-teams',{
     instruction:goal.trim(),repository:repository.trim()||null,budgetKrw:total,
     providerId,model,
+    workerRoutes:Object.fromEntries(steps.filter(task=>task.providerId.trim())
+      .map(task=>[task.id.trim(),{providerId:task.providerId,model:task.model.trim()}])),
     tasks:steps.map((task,i)=>({
      id:task.id.trim(),instruction:'Team objective:\n'+goal.trim()+'\n\nWorker assignment:\n'+task.instruction.trim(),workspace:task.workspace.trim()||'project',
      role:task.role,depends_on:task.depends.split(',').map(x=>x.trim()).filter(Boolean),
@@ -106,6 +112,28 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
      <label className="text-[11px]">{ko?'역할':'Role'}<SelectInput value={task.role} onChange={e=>change(index,'role',e.target.value)}><option value="investigator">{ko?'조사':'Investigator'}</option><option value="writer">{ko?'구현':'Writer'}</option><option value="reviewer">{ko?'검증':'Reviewer'}</option></SelectInput></label>
     </div>
     <label className="mt-2 block text-[11px]">{ko?'작업 지시문':'Task instruction'}<TextArea rows={2} value={task.instruction} onChange={e=>change(index,'instruction',e.target.value)}/></label>
+    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+     <label className="text-[11px]">{ko?'이 Worker의 모델 제공자':'Provider for this Worker'}
+      <SelectInput value={task.providerId} onChange={e=>{
+       const id=e.target.value
+       const selected=enabledProviders.find(provider=>provider.id===id)
+       setSteps(old=>old.map((item,i)=>i===index?{
+        ...item,providerId:id,model:id?(selected?.model||''):''
+       }:item))
+      }}>
+       <option value="">{ko?'팀 기본 모델 상속':'Inherit team default'}</option>
+       {enabledProviders.map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}
+      </SelectInput>
+     </label>
+     <label className="text-[11px]">{ko?'이 Worker의 정확한 모델':'Exact Worker model'}
+      <TextInput disabled={!task.providerId} value={task.model}
+       onChange={e=>change(index,'model',e.target.value)}
+       placeholder={ko?'등록된 제공자의 모델 ID':'Registered provider model ID'}/>
+     </label>
+    </div>
+    <p className="mt-1 text-[10px] text-[#8A8176]">{ko?
+     '라우팅 선택은 팀 생성 전에 고정되며 Worker의 독립 실행 기록에 남습니다.':
+     'The route is frozen when the team is created and recorded on its Worker Run.'}</p>
     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
      <label className="text-[11px]">{ko?'선행 작업 ID (쉼표)':'Depends on (comma-separated)'}<TextInput value={task.depends} onChange={e=>change(index,'depends',e.target.value)}/></label>
      <label className="text-[11px]">{ko?'작업공간 구분':'Workspace label'}<TextInput value={task.workspace} onChange={e=>change(index,'workspace',e.target.value)}/></label>
@@ -127,7 +155,8 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
    <div className="flex flex-wrap gap-2">
     <Button variant="secondary" disabled={steps.length>=16} onClick={()=>setSteps(items=>[...items,{
      id:'task_'+(Math.max(0,...items.map(x=>Number(x.id.replace('task_',''))||0))+1),
-     role:'investigator',instruction:'',workspace:'project',depends:'',budget:'0',steps:'10',successTools:'',auditor:false}])}><Plus size={14}/>{ko?'작업 추가':'Add task'}</Button>
+     role:'investigator',instruction:'',workspace:'project',depends:'',budget:'0',steps:'10',successTools:'',auditor:false,
+     providerId:'',model:''}])}><Plus size={14}/>{ko?'작업 추가':'Add task'}</Button>
     <Button variant="primary" disabled={busy||!goal.trim()} onClick={()=>void submit()}>{ko?'팀 초안 생성':'Create team draft'}</Button>
    </div>
    {error&&<Notice message={error}/>}
