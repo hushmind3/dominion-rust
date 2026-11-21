@@ -79,3 +79,27 @@ Previously the native model-only chat had a send-intent fence, but agent plannin
 - The existing optional Qwen3.5 cold/warm GGUF job was not run in this workflow.
 
 Outstanding independent targets: rustfmt baseline migration and a possible enforced `cargo fmt --check` gate; real stdio/legacy MCP interoperability; physical Android/iOS browser testing; newly controlled actual paid-provider/cache and local GPU throughput receipts. No upstream `main` merge or production deployment was performed.
+
+
+## v6.1 P0 — loopback Host/Origin boundary (2026-11-21)
+
+**Instructions:** newest `DOMINION-INSTRUCTIONS-20261121-v6.1` (`공통지시문.md`, `서브4.md`). The historical source snapshot `83d80ee5` reported that owner GET on the `:4323` local app was reachable with an unrelated Host. That is the **starting observation**, not a claim to have retested the user's existing watcher build. The implementation below is independent of user operational data and other branches.
+
+- **Problem:** `src/product/native_api.rs::router` mounted separate `/api` and `/api/v1` owner routers under bearer middleware but no shared local Host/Origin admission. Loopback with an unset access token could accept a browser-rebound owner read.
+- **Changes:** `src/product/owner_access.rs::{guard,check_request}` validates Host (including explicit bound port and duplicate/malformed values), cross-origin and Fetch Metadata before serving the UI or either API namespace. Exact OAuth GET callback paths retain state-authenticated redirects. `src/product/native_api.rs::authorize` and remote Worker capability authorization remain separate; `Settings::from_env` still rejects tokenless remote bind.
+- **Compatibility:** ordinary `localhost`/`127.0.0.1`/IPv6 loopback, Vite `:5173`, native SDK requests without browser Origin, exact OAuth GET callback and token-authorized remote hosts are preserved. In-memory/offline integration fixture `src/addons/mod.rs` now pins its resolved ephemeral listener address into `Settings.bind` instead of bypassing the security gate.
+- **Reproduction:** `web/e2e/sub4-owner-origin.spec.ts` directly targets the real Rust listener at `http://127.0.0.1:4317` (not Vite's Host-rewriting proxy), checks actual 403 for malicious Host/Origin/Fetch Metadata, 200 for owner/Vite API and OAuth callback reaching its original state validation path. Unit tests cover ambiguous Host, local read/write, OAuth exception and remote token policy. Test fixtures use scratch data, not operator's `:4323`.
+- **Verified code SHA:** `a7ee03ecfe856b95f3ce9fca32fe2d51e25009df`. [GitHub Actions 44906901955](https://github.com/hushmind3/dominion-rust/actions/runs/44906901955): **success**. Source architecture and file-size gate (166 files), Rust compile, Clippy correctness, **374 Rust library tests passed / 3 ignored**, TypeScript/SDK/frontend build and **18 Rust HTTP + Chromium tests passed**. The optional real GGUF CPU probe was skipped. The user's existing `:4323` built binary SHA and operational model costs remain **not verified**.
+
+### First v6.1 execution responsibility map
+
+| Role | Actual file::type/function | Caller → decision → effect | Authority/budget/storage owner | Verification | SHA |
+|---|---|---|---|---|---|
+| Core | `crates/dominion-agent-core/src/lib.rs::TurnSnapshot::admit`; `src/engine.rs::Engine::launch`; `src/journal.rs::needs_recovery` | Native Run admission → scheduling and recovery fence → journaled state | `RunStorePort` and engine policy/ledger | Cargo workspace, recovery/unit tests | `a7ee03ec` |
+| Harness | `src/harness/runner.rs::Engine::drive`, `drive_model_only` | `Engine::launch` → model/tool/verify continuation → store mutations & receipts | Native Run status, tool approval, budget and billing intent ledger | 374 Rust regression tests and existing Chat/Run E2E | `a7ee03ec` |
+| Strategy | `src/algorithms/mod.rs::AgentAlgorithm`; `src/product/frontend_api/chat_context.rs::no_tools_required`; `src/product/group/context.rs::project_room_context` | Incoming text/history → model/tool context selection → no direct I/O effect | Host/Engine remain authority owner; strategy has no privileged dispatch | Korean Chat and 3/9 participant Room regressions | `a7ee03ec` |
+| Host | `src/runtime_services.rs::RuntimeServices`; `src/product/runtime_services.rs`; `src/product/owner_access.rs::guard`; `src/product/native_api.rs::authorize` | Chat/SDK/Room/Team → transport or tool port → provider, scoped I/O and owner API with access admission | Model credentials, remote worker scopes, DB adapter; Engine retains native journal | Explicit Host/Origin 4 unit tests + real Rust HTTP/Chromium 18 scenarios | `a7ee03ec` |
+
+**Entrypoints:** `src/product/frontend_api/chat.rs::chat` (Chat), `src/sdk.rs::Dominion::submit_selected` (SDK), `src/product/group.rs::Groups` (Room participation and continuation), `src/engine/task_team.rs::Engine::advance_task_team` (Team DAG). Room/Team orchestration is not claimed to share every line of the model-loop body. The native Engine owns the Run scheduler, budget and journal contract.
+
+**Next highest-leverage comparison:** same initial corpus/model/permissions and source-linked transcripts for follow-up file work and 3/9 participant Room, with actual `:4323` built SHA verified before treating any mock or CI fixture as local model performance. No additional port, daemon, production data modification or automatic merge was performed.
