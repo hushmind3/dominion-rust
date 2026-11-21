@@ -100,6 +100,24 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const [stopping,setStopping]=useState(false);
  const view=useRef(current);
  view.current=current;
+ const previousView=useRef(current);
+ useEffect(()=>{
+  const last=previousView.current;
+  previousView.current=current;
+  // Switching away detaches only the browser reader. The native Run keeps
+  // executing, settling its receipts and saving the answer independently.
+  // Never mistake a navigation for the owner's explicit Cancel action.
+  if(last===current||!stream.current||activeTurnSession.current===current)return;
+  const oldSession=activeTurnSession.current;
+  stream.current.abort();
+  stream.current=null;
+  activeTurnSession.current=undefined;
+  setBusy(false);setLive('');setThought('');setToolStatus('');
+  setTurnSession(undefined);setSavedMessageId(undefined);setPendingUser(undefined);
+  setLiveApproval(null);setError('');
+  if(oldSession)refresh('/api/sessions',
+   '/api/sessions/'+encodeURIComponent(oldSession)+'/messages');
+ },[current]);
  const viewingTurn=turnSession===current&&(!savedMessageId||!messages.some(message=>message.id===savedMessageId));
  const pendingVisible=Boolean(pendingUser&&pendingUser.scope===current
   &&!messages.slice(pendingUser.baseline).some(message=>message.role==='user'&&message.content===pendingUser.content));
