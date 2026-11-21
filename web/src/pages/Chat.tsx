@@ -261,9 +261,9 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     setToolStatus('');setTurnSession(undefined);setSavedMessageId(undefined);setPendingUser(undefined);
    }
    refresh('/api/sessions','/api/approvals','/api/sessions/'+encodeURIComponent(id)+'/messages','/api/sessions/'+encodeURIComponent(id)+'/usage');
-   setCommandInfo(outcome.cancelled||controller?t('chat.stopped'):t('chat.cmd.nothingRunning'));
+   if(view.current===id)setCommandInfo(outcome.cancelled||controller?t('chat.stopped'):t('chat.cmd.nothingRunning'));
   }catch(e){
-   setError(translateError((e as Error).message));
+   if(view.current===id)setError(translateError((e as Error).message));
   }finally{
    stoppingRef.current=false;setStopping(false);
   }
