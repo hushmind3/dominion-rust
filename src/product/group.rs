@@ -762,6 +762,11 @@ impl Groups {
     pub(crate) async fn settle_native_run(&self,run:&Run)->Result<Room,String>{
         let binding=run.room_binding.as_ref().ok_or("Run has no Room origin")?;
         if !run.terminal(){return Err("Room Run is not terminal".into());}
+        // Concurrent completed speakers may race to settle the same Room.
+        // Rebase the receipt against the latest fsync-backed snapshot rather
+        // than re-running a billable model call or dropping a completed Run.
+        // Budget/admission decisions MUST be recomputed on every retry.
+        for attempt in 0..8 {
         let mut room=self.get(binding.room_id).await.ok_or("Room disappeared")?;
         if room.usage_receipts.iter().any(|receipt|
             receipt.origin_run_id==Some(run.id)){
@@ -860,21 +865,24 @@ impl Groups {
             });
         }
         room.updated_at_ms=now_ms();
-        // A Room state reader and the original HTTP request can both
-        // observe this terminal Run at once. The first wins the fsync
-        // revision; the other must recognize its committed receipt rather
-        // than returning a spurious stale-write error or rebilling.
+        // Room revisions protect atomic persistence, not logical ordering
+        // across independent speakers. A stale revision requires a fresh
+        // receipt projection, including the updated lifetime budget.
         match self.save(room).await{
-            Ok(committed)=>Ok(committed),
+            Ok(committed)=>return Ok(committed),
             Err(error) if error.contains("changed concurrently")=>{
                 let latest=self.get(binding.room_id).await.ok_or("Room disappeared")?;
                 if latest.usage_receipts.iter().any(|receipt|
                     receipt.origin_run_id==Some(run.id)){
-                    Ok(latest)
-                }else{Err(error)}
+                    return Ok(latest);
+                }
+                if attempt==7{return Err(error);}
+                tokio::task::yield_now().await;
             }
-            Err(error)=>Err(error)
+            Err(error)=>return Err(error)
         }
+        }
+        Err("Room settlement retry budget exceeded".into())
     }
     pub async fn next(&self,model:&ModelClient,id:Uuid)->Result<Room,String>{
         self.next_for(model,id,None).await
@@ -1127,6 +1135,117 @@ mod tests {
         assert_eq!(restored.get(first.id).await.unwrap().messages.len(),1);
         assert_eq!(restored.get(second.id).await.unwrap().messages.len(),1);
         drop(restored);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_native_speaker_settlements_rebase_without_rebilling(){
+        use crate::domain::{CreateRun,RoomRunBinding};
+        use std::time::Duration;
+        let root=std::env::temp_dir().join(format!(
+            "dominion-room-settlement-race-{}",Uuid::new_v4()));
+        let groups=Arc::new(Groups::open(root.clone()).await.unwrap());
+        let participants=["analyst","reviewer"].into_iter().map(|name|Participant{
+            name:name.into(),role:"independent analysis".into(),economy:false
+        }).collect::<Vec<_>>();
+        let room=groups.create(NewRoom{
+            topic:"parallel receipt durability".into(),participants,
+            max_rounds:Some(4),budget_krw:Some(10.0)
+        }).await.unwrap();
+        let room=groups.say(room.id,"Evaluate concurrently".into()).await.unwrap();
+        let make_run=|speaker:&str,cost:f64|{
+            let mut run=Run::new(CreateRun{
+                instruction:"Evaluate concurrently".into(),
+                budget_krw:Some(10.0),max_steps:Some(2)
+            },2).unwrap();
+            run.room_binding=Some(RoomRunBinding{
+                room_id:room.id,owner_message_index:0,
+                owner_at_ms:room.messages[0].at_ms,participant:speaker.into()
+            });
+            run.status=RunStatus::Completed;
+            run.answer=Some(format!("{speaker} completed evidence"));
+            run.model_name="local-test-model".into();
+            run.input_tokens=20;
+            run.output_tokens=5;
+            run.cost_krw=cost;
+            run.event("model","usage observed",
+                Some(json!({"usage_reported":true,"cache_usage_reported":true})));
+            run
+        };
+        let first=make_run("analyst",2.0);
+        let second=make_run("reviewer",3.0);
+        // Force both tasks to take the same pre-commit Room revision.
+        let gate=groups.write_gate(room.id).await;
+        let held=gate.lock().await;
+        let left=Arc::clone(&groups);
+        let r1=first.clone();
+        let t1=tokio::spawn(async move{left.settle_native_run(&r1).await});
+        let right=Arc::clone(&groups);
+        let r2=second.clone();
+        let t2=tokio::spawn(async move{right.settle_native_run(&r2).await});
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(5),t1).await
+            .expect("first settlement stalled").unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5),t2).await
+            .expect("second settlement stalled").unwrap().unwrap();
+        let final_room=groups.get(room.id).await.unwrap();
+        assert_eq!(final_room.messages.len(),3);
+        assert_eq!(final_room.usage_receipts.len(),2);
+        assert!(final_room.usage_receipts.iter().all(|r|r.accepted));
+        assert_eq!(final_room.cost_krw,5.0);
+        assert_eq!(final_room.used_tokens,50);
+        assert_eq!(final_room.read_cursors.len(),2);
+        // Client retransmission and reboot never charge again.
+        groups.settle_native_run(&first).await.unwrap();
+        groups.settle_native_run(&second).await.unwrap();
+        assert_eq!(groups.get(room.id).await.unwrap().usage_receipts.len(),2);
+        drop(groups);
+        let restored=Groups::open(root.clone()).await.unwrap();
+        let durable=restored.get(room.id).await.unwrap();
+        assert_eq!(durable.usage_receipts.len(),2);
+        assert_eq!(durable.cost_krw,5.0);
+        drop(restored);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rebased_native_settlement_rechecks_budget_and_preserves_billed_rejection(){
+        use crate::domain::{CreateRun,RoomRunBinding};
+        let root=std::env::temp_dir().join(format!(
+            "dominion-room-settlement-budget-{}",Uuid::new_v4()));
+        let groups=Groups::open(root.clone()).await.unwrap();
+        let room=groups.create(NewRoom{
+            topic:"budget arbitration".into(),
+            participants:["first","second"].into_iter().map(|name|Participant{
+                name:name.into(),role:"analysis".into(),economy:false
+            }).collect(),max_rounds:Some(4),budget_krw:Some(5.0)
+        }).await.unwrap();
+        let room=groups.say(room.id,"budgeted evaluation".into()).await.unwrap();
+        for speaker in ["first","second"]{
+            let mut run=Run::new(CreateRun{
+                instruction:"budgeted evaluation".into(),
+                budget_krw:Some(5.0),max_steps:Some(1)
+            },1).unwrap();
+            run.room_binding=Some(RoomRunBinding{
+                room_id:room.id,owner_message_index:0,
+                owner_at_ms:room.messages[0].at_ms,participant:speaker.into()
+            });
+            run.status=RunStatus::Completed;
+            run.answer=Some(format!("{speaker} output"));
+            run.model_name="mock".into();run.cost_krw=3.0;
+            groups.settle_native_run(&run).await.unwrap();
+        }
+        let final_room=groups.get(room.id).await.unwrap();
+        assert_eq!(final_room.messages.len(),2,
+            "the over-budget Run cannot fabricate a delivered reply");
+        assert_eq!(final_room.usage_receipts.len(),2);
+        assert!(final_room.usage_receipts[0].accepted);
+        assert!(!final_room.usage_receipts[1].accepted);
+        assert_eq!(final_room.cost_krw,6.0,
+            "already billed inference remains an auditable receipt");
+        assert_eq!(final_room.finish_reason,"cost_budget_exceeded");
+        drop(groups);
         fs::remove_dir_all(root).await.unwrap();
     }
 
