@@ -303,6 +303,96 @@ async fn apply_patch_checked(dir:&Path,patch:&str,check_only:bool)->Result<(),St
     Ok(())
 }
 
+/// Transfer the exact accepted Team seed to an independently cloned remote
+/// repository. The remote starts at the original owner revision, commits this
+/// bounded seed in an isolated worktree, then edits against the same tree.
+pub async fn remote_team_seed(settings:&Settings,parent:Uuid,child:Uuid,
+    original_sha:&str,child_seed:&str)->Result<(String,String),String>{
+    let (_,writer)=verified_team_worktrees(settings,parent,child,
+        original_sha,child_seed).await?;
+    let patch=git_patch(&writer,&["diff","--binary","--no-ext-diff",
+        original_sha,child_seed,"--"]).await?;
+    if patch.len()>131_072{return Err("remote Team seed exceeds 128 KiB".into());}
+    let digest=format!("{:x}",Sha256::digest(patch.as_bytes()));
+    Ok((patch,digest))
+}
+/// Install an owner-approved seed only in a detached remote worker worktree.
+pub async fn install_remote_seed(settings:&Settings,worker:Uuid,
+    original_sha:&str,patch:&str,digest:&str)->Result<String,String>{
+    if patch.len()>131_072||format!("{:x}",Sha256::digest(patch.as_bytes()))!=digest{
+        return Err("remote seed digest or size mismatch".into());
+    }
+    let root=settings.workspace_dir.canonicalize().map_err(|e|e.to_string())?;
+    let target=root.join(worker.to_string()).canonicalize().map_err(|e|e.to_string())?;
+    if !target.starts_with(&root)||git(&["rev-parse","HEAD"],&target).await?!=original_sha{
+        return Err("remote worker seed checkout changed".into());
+    }
+    if patch.is_empty(){return Ok(original_sha.to_string());}
+    apply_patch_checked(&target,patch,true).await?;
+    apply_patch_checked(&target,patch,false).await?;
+    git(&["add","-A","--","."],&target).await?;
+    git(&["-c","core.hooksPath=/dev/null","-c","commit.gpgsign=false",
+        "-c","user.name=Dominion Remote",
+        "-c","user.email=remote@dominion.invalid",
+        "commit","--no-verify","-qm","Approved remote Team seed"],&target).await?;
+    git(&["rev-parse","HEAD"],&target).await
+}
+/// Immutable exported patch from a remote isolated Writer. Never reads or
+/// returns the source Git checkout, and refuses symlinks/submodules and huge
+/// changes before sending bytes to the coordinating machine.
+pub async fn export_remote_writer_patch(settings:&Settings,worker:Uuid,
+    expected_seed:&str)->Result<(String,String,Vec<String>),String>{
+    let root=settings.workspace_dir.canonicalize().map_err(|e|e.to_string())?;
+    let target=root.join(worker.to_string()).canonicalize().map_err(|e|e.to_string())?;
+    if !target.starts_with(&root)||git(&["rev-parse","HEAD"],&target).await?!=expected_seed{
+        return Err("remote Writer head changed since admitted seed".into());
+    }
+    let (diff,paths)=changes_with_intent(&target).await?;
+    if diff.trim().is_empty()||diff.len()>131_072{
+        return Err("remote Writer patch is missing or exceeds 128 KiB".into());
+    }
+    let hash=format!("{:x}",Sha256::digest(diff.as_bytes()));
+    Ok((diff,hash,paths))
+}
+/// Apply an authenticated remote Writer result ONLY to the original
+/// owner-authorized Team child worktree; the main checkout is untouched.
+/// The caller journals the approved in-flight external tool BEFORE invoking
+/// this method. A crash with unknown outcome must be manually reconciled.
+pub async fn apply_remote_writer_patch(settings:&Settings,parent:Uuid,child:Uuid,
+    parent_sha:&str,child_seed:&str,patch:&str,expected_sha256:&str)
+    ->Result<Vec<String>,String>{
+    if patch.is_empty()||patch.len()>131_072||
+        format!("{:x}",Sha256::digest(patch.as_bytes()))!=expected_sha256{
+        return Err("remote Writer patch digest or size mismatch".into());
+    }
+    let (_,child_dir)=verified_team_worktrees(settings,parent,child,
+        parent_sha,child_seed).await?;
+    if patch.lines().any(|line|line.trim().ends_with("mode 120000")
+        ||line.trim().ends_with("mode 160000")){
+        return Err("remote Writer cannot install symlinks or submodules".into());
+    }
+    // Accept only regular file paths; git apply also validates path escapes.
+    let mut paths=Vec::new();
+    for line in patch.lines().filter(|line|line.starts_with("diff --git ")){
+        let pieces=line.split_whitespace().collect::<Vec<_>>();
+        if pieces.len()!=4||!pieces[2].starts_with("a/")||
+            pieces[3]!=format!("b/{}",&pieces[2][2..]){
+            return Err("invalid remote Writer patch headers".into());
+        }
+        let path=&pieces[2][2..];
+        validate_relative(path)?;
+        if path.starts_with(".git/")||path==".git"{
+            return Err("remote Writer patch cannot edit .git internals".into());
+        }
+        paths.push(path.to_owned());
+        if paths.len()>200{return Err("remote Writer patch changes too many files".into());}
+    }
+    if paths.is_empty(){return Err("remote Writer patch has no file deltas".into());}
+    apply_patch_checked(&child_dir,patch,true).await?;
+    apply_patch_checked(&child_dir,patch,false).await?;
+    Ok(paths)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
