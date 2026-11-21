@@ -14,6 +14,22 @@ const PIN_CHARS:usize=550;
 const RECENT_CHARS:usize=360;
 const COLD_CHARS:usize=240;
 
+/// Resource targets remain tool-capable even when enclosed in quotation
+/// marks. A filename is not self-contained translation source text.
+fn translation_target_is_resource(body:&str)->bool{
+    let value=body.trim().trim_matches(|c:char|
+        matches!(c,'\\''|'"'|'“'|'”'|'\u0060')).trim();
+    if value.is_empty(){return false;}
+    if ["http://","https://","www.","file://","/","./","../","~/"]
+        .iter().any(|prefix|value.starts_with(prefix)){return true;}
+    if !value.chars().any(char::is_whitespace){
+        if value.contains('/')||value.contains('\\'){return true;}
+        return [".pdf",".md",".rs",".py",".tsx",".json",".txt",".docx",
+            ".csv",".xlsx",".pptx",".html"].iter().any(|ending|value.ends_with(ending));
+    }
+    false
+}
+
 /// An explicit pasted translation is data, not a request to search for the
 /// words inside that data. Path/URL-only targets retain retrieval capability.
 fn pasted_translation_is_self_contained(query:&str)->bool{
@@ -25,11 +41,7 @@ fn pasted_translation_is_self_contained(query:&str)->bool{
         if let Some(rest)=text.strip_prefix(prefix){
             let body=rest.trim();
             if body.is_empty(){return false;}
-            if ["http://","https://","www.","file://","/","./","../","~/"]
-                .iter().any(|start|body.starts_with(start)){return false;}
-            if !body.chars().any(char::is_whitespace)
-                && [".pdf",".md",".rs",".py",".tsx",".json",".txt"]
-                    .iter().any(|ending|body.ends_with(ending)){return false;}
+            if translation_target_is_resource(body){return false;}
             return true;
         }
     }
@@ -38,9 +50,11 @@ fn pasted_translation_is_self_contained(query:&str)->bool{
             '"'=>["번역해 \"","번역해줘 \"","translate this \""],
             _=>["번역해 '","번역해줘 '","translate this '"]};
         let closing=if quote=='“'{'”'}else{quote};
-        if starts.iter().any(|prefix|text.starts_with(prefix))
-            &&text.ends_with(closing) &&text.chars().count()>12{
-            return true;
+        if let Some(body)=starts.iter().find_map(|prefix|text.strip_prefix(prefix)){
+            if text.ends_with(closing)&&text.chars().count()>12{
+                let target=body.strip_suffix(closing).unwrap_or(body);
+                return !translation_target_is_resource(target);
+            }
         }
     }
     false
