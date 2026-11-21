@@ -118,6 +118,21 @@ async fn submit(State(engine):State<Arc<Engine>>,headers:HeaderMap,
             "error":"read-only worker cannot request repository write capabilities"
         }))));
     }
+    // The capability probe is advisory; the actual remote POST must
+    // atomically enforce its advertised slot limit across simultaneous
+    // coordinator requests. Re-delivery of the same Run ID is still allowed.
+    static NODE_ADMISSION:std::sync::OnceLock<tokio::sync::Mutex<()>>=
+        std::sync::OnceLock::new();
+    let _node_gate=NODE_ADMISSION.get_or_init(||tokio::sync::Mutex::new(()))
+        .lock().await;
+    let slots=std::env::var("DOMINION_REMOTE_WORKER_SLOTS").ok()
+        .and_then(|raw|raw.parse::<usize>().ok()).unwrap_or(4).clamp(1,64);
+    if engine.store.get(req.run_id).await.is_none()
+        &&engine.store.stats().await.active>=slots{
+        return Err((StatusCode::TOO_MANY_REQUESTS,Json(json!({
+            "error":"remote native Worker has no free execution slots"
+        }))));
+    }
     let request_hash=request_fingerprint(&req)?;
     let mut run=Run::new(CreateRun{instruction:req.instruction.clone(),
         budget_krw:Some(req.budget_krw),max_steps:Some(req.max_steps)},20)
