@@ -101,11 +101,14 @@ impl Engine{
         let mut states=HashMap::new();
         let mut unmet=HashMap::new();
         let mut patch_ready=HashSet::new();
+        let mut actual_routes=HashMap::<Uuid,(String,String)>::new();
         for task in &graph.tasks{
             if let Some(child)=self.store.get(task.run_id).await{
                 if child.parent_run_id!=Some(id)||child.team.is_some(){
                     return Err("team child Run lineage mismatch".into());
                 }
+                actual_routes.insert(child.id,
+                    (child.provider_id.clone(),child.model_name.clone()));
                 let mut missing=TeamGraph::unmet_acceptance(task,&child);
                 if root.repository.is_some() && task.spec.role==TeamRole::Writer
                     && child.status==RunStatus::Completed{
@@ -137,8 +140,19 @@ impl Engine{
         // Keep the one-writer lease until owner approval actually integrates
         // the prior patch (task_team marks unintegrated completions as pending).
         let mut view=graph.view_with_repository_lease(id,&states,&unmet,root.repository.is_some());
+        let owner_routes=root.events.iter().find(|e|e.kind=="team_worker_routes_bound")
+            .and_then(|e|e.detail.as_ref())
+            .map(|value|serde_json::from_value::<HashMap<String,WorkerModelRoute>>(
+                value.clone()).map_err(|error|error.to_string()))
+            .transpose()?.unwrap_or_default();
         for (task,projected) in graph.tasks.iter().zip(view.tasks.iter_mut()){
             projected.patch_review_ready=patch_ready.contains(&task.run_id);
+            let assigned=actual_routes.get(&task.run_id)
+                .cloned().or_else(||owner_routes.get(&task.spec.id)
+                    .map(|route|(route.provider_id.clone(),route.model.clone())))
+                .unwrap_or_else(||(root.provider_id.clone(),root.model_name.clone()));
+            if !assigned.0.is_empty(){projected.provider_id=Some(assigned.0);}
+            if !assigned.1.is_empty(){projected.model_name=Some(assigned.1);}
         }
         Ok(view)
     }
