@@ -12,7 +12,7 @@ pub fn definitions(shell_enabled: bool) -> Vec<Value> {
     ];
     if shell_enabled{program_step_tools.push("shell");}
     let mut tools = vec![
-        tool("list_files", "List workspace files (sorted), with offset/limit pagination for repositories larger than 200 files", json!({"type":"object","properties":{"path":{"type":"string","description":"Relative directory; empty for root"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":400}},"required":["path"]})),
+        tool("list_files", "List workspace files (sorted), with offset/limit pagination for repositories larger than 200 files", json!({"type":"object","properties":{"path":{"type":"string","description":"Relative directory; empty for root"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":400},"name_contains":{"type":"string","maxLength":128,"description":"Optional case-insensitive filename or relative path substring, applied before pagination"}},"required":["path"]})),
         tool("read_file", "Read a UTF-8 source file, optionally selecting 1-based start_line and end_line; response is capped at 128 KB", json!({"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"]})),
         tool("read_tool_receipt", "Read an exact slice from an earlier tool result in THIS Run without repeating the external operation. Supply its tool_call_id; response is paginated at 6000 characters.", json!({"type":"object","properties":{"call_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":6000}},"required":["call_id"]})),
         tool("search_tool_receipts", "Search earlier exact tool results within THIS Run by a 2..128-character phrase or terms. Returns bounded snippets and call_id plus character offsets; use read_tool_receipt for exact source evidence. No external tool is rerun.", json!({"type":"object","properties":{"query":{"type":"string","minLength":2,"maxLength":128},"limit":{"type":"integer","minimum":1,"maximum":8}},"required":["query"],"additionalProperties":false})),
@@ -173,7 +173,12 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
         "git_diff" => git_read(&root,&["diff","--no-ext-diff","--"]).await,
         "list_files" => {
             let path = validated_path(&root, required(&call.arguments,"path")?)?;
-            let paths = list_relative(&root, &path,10_000).await?;
+            let mut paths = list_relative(&root, &path,10_000).await?;
+            if let Some(filter)=call.arguments.get("name_contains").and_then(Value::as_str) {
+                if filter.len()>128 {return Err("filename filter exceeds 128 bytes".into());}
+                let needle=filter.trim().to_lowercase();
+                if !needle.is_empty(){paths.retain(|name|name.to_lowercase().contains(&needle));}
+            }
             let offset=call.arguments.get("offset").and_then(Value::as_u64).unwrap_or(0).min(10_000) as usize;
             let limit=call.arguments.get("limit").and_then(Value::as_u64).unwrap_or(200).clamp(1,400) as usize;
             let selected=paths.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
@@ -417,6 +422,20 @@ mod tests {
         assert_eq!(page.len(),55);
         assert!(page.iter().all(|item|!Path::new(item).is_absolute()));
         assert_eq!(page[50],"file-250.txt");
+        let named=ToolCall{id:"name".into(),name:"list_files".into(),
+            arguments:json!({"path":"","offset":0,"limit":10,
+                "name_contains":"FILE-25"})};
+        let matches:Vec<String>=serde_json::from_str(
+            &execute(&settings,id,&named).await.unwrap()).unwrap();
+        assert_eq!(matches,vec![
+            "file-250.txt","file-251.txt","file-252.txt",
+            "file-253.txt","file-254.txt",
+        ],"filtered pagination must find late files before slicing the full tree");
+        let filtered_page=ToolCall{id:"name-offset".into(),name:"list_files".into(),
+            arguments:json!({"path":"","offset":2,"limit":2,"name_contains":"file-25"})};
+        let page:Vec<String>=serde_json::from_str(
+            &execute(&settings,id,&filtered_page).await.unwrap()).unwrap();
+        assert_eq!(page,vec!["file-252.txt","file-253.txt"]);
         let search=ToolCall{id:"search".into(),name:"search_files".into(),arguments:json!({"query":"needle-in-late-file"})};
         let result=execute(&settings,id,&search).await.unwrap();
         assert!(result.contains("file-250.txt"));

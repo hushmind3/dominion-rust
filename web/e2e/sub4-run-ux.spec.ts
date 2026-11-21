@@ -276,3 +276,42 @@ test('mobile Run can locate an old test receipt and search the entire durable jo
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+
+test('Run workspace filename search reaches files beyond the first hundred',
+ async({page,request})=>{
+ await page.setViewportSize({width:375,height:760})
+ const {session,runId}=await createCompletedChatRun(request)
+ try{
+  const names=Array.from({length:260},(_,i)=>'file-'+String(i).padStart(3,'0')+'.txt')
+  const seen:string[]=[]
+  await page.route('**/api/v1/runs/'+runId+'/files?*',route=>{
+   const url=new URL(route.request().url())
+   const term=(url.searchParams.get('name_contains')||'').toLowerCase()
+   seen.push(term)
+   const namesForPage=names.filter(name=>name.toLowerCase().includes(term))
+   const offset=Number(url.searchParams.get('offset')||0)
+   const limit=Number(url.searchParams.get('limit')||100)
+   return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+    files:namesForPage.slice(offset,offset+limit),
+    offset,limit,hasMore:namesForPage.length>offset+limit
+   })})
+  })
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  await page.getByRole('button',{name:/실행 기록|Run evidence/}).last().click()
+  const dialog=page.getByRole('dialog',{name:/에이전트 실행 증거|Agent execution evidence/})
+  await dialog.getByRole('button',{name:/Skills.*생성 파일|Skills.*generated files/}).click()
+  await expect(dialog.getByRole('button',{name:/다음 파일|Next/})).toBeVisible()
+  const search=dialog.getByRole('textbox',{name:/작업 파일 검색|Search workspace files/})
+  await search.fill('FILE-250')
+  await expect(dialog.getByRole('button',{name:'file-250.txt'})).toBeVisible()
+  await expect(dialog.getByRole('button',{name:'file-249.txt'})).toHaveCount(0)
+  expect(seen).toContain('file-250')
+  await search.fill('missing-123')
+  await expect(dialog.getByText(/일치하는 파일이 없습니다|No matching workspace files/)).toBeVisible()
+  await search.fill('')
+  await expect(dialog.getByRole('button',{name:'file-000.txt'})).toBeVisible()
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})

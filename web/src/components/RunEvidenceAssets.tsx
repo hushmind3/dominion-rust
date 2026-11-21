@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react'
 import {BookOpenText,ChevronDown,ChevronUp,Clipboard,FileCode2,FolderOpen,RefreshCw} from 'lucide-react'
 import {get} from '../api'
-import {Button} from './Primitives'
+import {Button,TextInput} from './Primitives'
 import {Notice,Panel,useRemote} from './UI'
 import {useLocale} from '../i18n'
 type Skill={name:string;path:string}
@@ -23,18 +23,30 @@ export function RunEvidenceAssets({runId}:{runId:string}){
  const ko=useLocale()==='ko'
  const [open,setOpen]=useState(false)
  const [fileOffset,setFileOffset]=useState(0)
+ const [fileSearch,setFileSearch]=useState('')
+ const [fileFilter,setFileFilter]=useState('')
  // Keep previews, page offsets and in-flight read replies tied to the
  // specific Run they came from; switching Runs must never show old files.
  const selectedRun=useRef(runId)
  selectedRun.current=runId
  useEffect(()=>{
   setFileOffset(0)
+  setFileSearch('');setFileFilter('')
   setPreview(null)
   setError('')
   setLoading(false)
  },[runId])
+ useEffect(()=>{
+  const timer=window.setTimeout(()=>{
+   setFileFilter(fileSearch.trim())
+   setFileOffset(0)
+   setPreview(null)
+  },300)
+  return ()=>window.clearTimeout(timer)
+ },[fileSearch,runId])
  const skills=useRemote<Skill[]>(open?'/api/v1/runs/'+encodeURIComponent(runId)+'/skills':null,[])
- const files=useRemote<FileList>(open?'/api/v1/runs/'+encodeURIComponent(runId)+'/files?offset='+fileOffset+'&limit=100':null,{files:[],hasMore:false})
+ const files=useRemote<FileList>(open?'/api/v1/runs/'+encodeURIComponent(runId)+'/files?offset='+fileOffset+'&limit=100'
+  +(fileFilter?'&name_contains='+encodeURIComponent(fileFilter):''):null,{files:[],hasMore:false})
  const [preview,setPreview]=useState<{runId:string;kind:'skill'|'file';name:string;content:string}|null>(null)
  const [loading,setLoading]=useState(false),[error,setError]=useState('')
  const inspect=async(kind:'skill'|'file',name:string)=>{
@@ -69,8 +81,10 @@ export function RunEvidenceAssets({runId}:{runId:string}){
       {!skills.value.length&&<p className="text-[11px] text-[#9C9388]">{ko?'이 실행에서 사용 가능한 Skill이 없습니다.':'No available skills for this Run.'}</p>}
      </div></section>
     <section><h4 className="mb-2 flex items-center gap-1 text-xs font-semibold"><FileCode2 size={13}/>{ko?'작업 파일':'Workspace files'} ({rows.length})</h4>
+     <TextInput aria-label={ko?'작업 파일 검색':'Search workspace files'} value={fileSearch}
+      onChange={event=>setFileSearch(event.target.value)} placeholder={ko?'파일명·경로로 전체 검색':'Search all filenames and paths'} className="mb-2 w-full !text-xs"/>
      <div className="max-h-40 space-y-1 overflow-auto">{rows.map(row=><Button size="sm" variant="ghost" key={row.path} disabled={loading} onClick={()=>void inspect('file',row.path)} className="!flex !w-full !justify-start !text-left break-all">{row.label}</Button>)}
-      {!rows.length&&<p className="text-[11px] text-[#9C9388]">{ko?'조회 가능한 파일이 없습니다.':'No readable workspace files.'}</p>}</div>
+      {!rows.length&&<p className="text-[11px] text-[#9C9388]">{fileFilter?(ko?'일치하는 파일이 없습니다.':'No matching workspace files.'):(ko?'조회 가능한 파일이 없습니다.':'No readable workspace files.')}</p>}</div>
       {(fileOffset>0||files.value.hasMore)&&<div className="mt-2 flex flex-wrap items-center justify-between gap-2">
        <Button size="sm" variant="secondary" disabled={files.loading||fileOffset===0} onClick={()=>{setFileOffset(n=>Math.max(0,n-100));setPreview(null)}}>{ko?'이전 파일':'Previous'}</Button>
        <span className="text-[10px] text-[#8A8176]">{rows.length?fileOffset+1:0}–{fileOffset+rows.length}</span>

@@ -353,7 +353,7 @@ async fn read_skill(State(engine):State<Arc<Engine>>,Path((id,name)):Path<(Uuid,
 }
 
 #[derive(Default,Deserialize)]
-struct FilePageQuery {offset:Option<usize>,limit:Option<usize>}
+struct FilePageQuery {offset:Option<usize>,limit:Option<usize>,name_contains:Option<String>}
 async fn list_files(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
     Query(query):Query<FilePageQuery>) -> Result<Json<Value>,ApiError> {
     if engine.store.get(id).await.is_none(){return Err(not_found());}
@@ -362,9 +362,13 @@ async fn list_files(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
     // file after the first 100 in a larger checkout.
     let offset=query.offset.unwrap_or(0).min(10_000);
     let limit=query.limit.unwrap_or(100).clamp(1,200);
+    if query.name_contains.as_ref().is_some_and(|value|value.len()>128){
+        return Err(bad("filename filter exceeds 128 bytes"));
+    }
     let data=tools::execute(&engine.settings,id,&crate::domain::ToolCall{
         id:"api-list".into(),name:"list_files".into(),
-        arguments:json!({"path":"","offset":offset,"limit":limit+1})
+        arguments:json!({"path":"","offset":offset,"limit":limit+1,
+            "name_contains":query.name_contains})
     }).await.map_err(bad)?;
     let mut items:Vec<String>=serde_json::from_str(&data).map_err(|e|bad(e.to_string()))?;
     let has_more=items.len()>limit;
