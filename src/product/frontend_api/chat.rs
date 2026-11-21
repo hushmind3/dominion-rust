@@ -78,7 +78,7 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
         &agent.system_prompt,compacted.as_ref(),&record.messages,input.input.trim(),
         input.reasoning_language.as_deref()==Some("ko"),context_budget)?;
     let run=Dominion::from_engine(Arc::clone(&engine))
-        .prepare_run(CreateRun{instruction:input.input.trim().into(),
+        .prepare_chat_run(CreateRun{instruction:input.input.trim().into(),
             budget_krw:None,max_steps:None},
             crate::sdk::RunOptions{
                 provider_id:selected_provider,model:selected_model,
@@ -106,7 +106,29 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
                 "cache_hit_claimed":false})));
         Ok(())
     }).await.map_err(broken)?;
-    engine.frontend.begin_turn(&record.id,input.input.trim(),run.id).await.map_err(broken)?;
+    if let Err(error)=engine.frontend.begin_turn(&record.id,input.input.trim(),run.id).await{
+        // The competing/invalid turn never acquired the session lease.
+        // Its prepared Run must not remain queued for a later worker wake.
+        let reason=error.clone();
+        engine.store.mutate(run.id,|current|{
+            current.status=RunStatus::Failed;
+            current.event("external_owner_admission_rejected",reason,None);
+            Ok(())
+        }).await.map_err(broken)?;
+        return Err(if error.contains("active run"){busy(error)}else{bad(error)});
+    }
+    // This second durable write is the commit point of the owner/Run saga.
+    // A crash before it leaves an unlaunchable fenced Run. The frontend
+    // session is never allowed to start a model until this binding exists.
+    if let Err(error)=engine.store.mutate(run.id,|current|{
+        current.event("external_owner_admission_bound",
+            "Durable chat session accepted this exact native Run",
+            Some(json!({"owner_kind":"chat","session_id":record.id})));
+        Ok(())
+    }).await{
+        let _=engine.frontend.finish_turn(&record.id,run.id,None).await;
+        return Err(broken(error));
+    }
     // Both tool agents and tool-free chat now launch through the same native
     // worker/cancellation lifecycle. No independent model-only executor.
     if let Err(error)=engine.launch(run.id).await{
