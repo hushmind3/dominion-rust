@@ -83,7 +83,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const job=useJob<LearningJob>(learningJob?'/api/jobs/'+encodeURIComponent(learningJob.id):null);
  const approval=(liveApproval?.sessionId===current?liveApproval:null)||
   approvals.value.find(item=>item.sessionId===current&&item.status==='pending');
- const [error,setError]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(''),[thought,setThought]=useState(''),[thinking,setThinking]=useState(false),[reasoningKo,setReasoningKo]=useState(koreanReasoningEnabled),[showReasoning,setShowReasoning]=useState(true),[showSettings,setShowSettings]=useState(false),[toolsEnabled,setToolsEnabled]=useState(true),[thinkingEnabled,setThinkingEnabled]=useState(true),[reasoningEffort,setReasoningEffort]=useState(''),[autoLearn,setAutoLearn]=useState(false),[showHistory,setShowHistory]=useState(()=>{try{if(window.innerWidth<768)return false;return localStorage.getItem('dominion.chat.sidebar')!=='0'}catch{return true}}),[toolStatus,setToolStatus]=useState('');
+ const [error,setError]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(''),[thought,setThought]=useState(''),[thinking,setThinking]=useState(false),[reasoningKo,setReasoningKo]=useState(koreanReasoningEnabled),[showReasoning,setShowReasoning]=useState(true),[showSettings,setShowSettings]=useState(false),[toolsEnabled,setToolsEnabled]=useState(false),[thinkingEnabled,setThinkingEnabled]=useState(true),[reasoningEffort,setReasoningEffort]=useState(''),[autoLearn,setAutoLearn]=useState(false),[showHistory,setShowHistory]=useState(()=>{try{if(window.innerWidth<768)return false;return localStorage.getItem('dominion.chat.sidebar')!=='0'}catch{return true}}),[toolStatus,setToolStatus]=useState('');
  useEffect(()=>{setReasoningEffort('');setThinkingEnabled(true)},[providerId,model,agentId,current]);
  const [permissionOpen,setPermissionOpen]=useState(false);
  const [modelMenu,setModelMenu]=useState(false),[installed,setInstalled]=useState<InstalledModel[]>([]),[modelsLoading,setModelsLoading]=useState(false),[runtime,setRuntime]=useState<Runtime>({status:'idle'}),[modelBusy,setModelBusy]=useState(''),[unloading,setUnloading]=useState(false),[learning,setLearning]=useState(false),[menuError,setMenuError]=useState('');
@@ -341,7 +341,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    if(inputRef.current)inputRef.current.style.height='';
    await streamChat({
     sessionId:id,agentId,providerId:manual?.providerId,model:manual?.model,input:text,
-    toolsEnabled,toolsExecutionEnabled:toolsEnabled,autoLearning:autoLearn,
+    toolsEnabled,toolsExecutionEnabled:toolsEnabled,autoLearning:toolsEnabled&&autoLearn,
     reasoningLanguage:reasoningKo?'ko':'original',
     // The Rust adapter exposes these settings only for verified endpoints.
     reasoningEffort:canSetEffort?(reasoningEffort||undefined):undefined,
@@ -484,6 +484,23 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
      <TextArea ref={inputRef} rows={1} placeholder={t("chat.inputPlaceholder")} value={input} onChange={e=>{const next=e.target.value;setInput(next);setSlashOpen(next.startsWith('/')&&!next.includes('\n'));setSlashActive(0);const el=e.currentTarget;el.style.height='auto';el.style.height=Math.min(el.scrollHeight,180)+'px'}} onKeyDown={appendKey} aria-controls="dominion-slash-menu" aria-expanded={slashOpen} className="conversation-composer-input"/>
      <div className="chat-composer-controls conversation-composer-controls">
       <div className="chat-composer-options conversation-composer-options">
+       <div role="group" aria-label={loc==='ko'?'대화 실행 방식':'Conversation execution mode'}
+        className="flex shrink-0 items-center gap-0.5 rounded-xl border border-[#E4DDD2] bg-[#F5F1EA] p-0.5">
+        <button type="button" aria-pressed={!toolsEnabled} disabled={busy}
+         onClick={()=>{setToolsEnabled(false);setAutoLearn(false)}}
+         className={'rounded-[9px] px-2.5 py-1.5 text-xs font-semibold transition-colors sm:px-3 '+
+          (!toolsEnabled?'bg-white text-[#302C28] shadow-sm':'text-[#8A8176] hover:text-[#302C28]')}
+         title={loc==='ko'?'모델과 직접 대화 · 도구 사용 없음':'Talk directly to the model without tools'}>
+         {loc==='ko'?'일반 채팅':'Chat'}
+        </button>
+        <button type="button" aria-pressed={toolsEnabled} disabled={busy}
+         onClick={()=>setToolsEnabled(true)}
+         className={'rounded-[9px] px-2.5 py-1.5 text-xs font-semibold transition-colors sm:px-3 '+
+          (toolsEnabled?'bg-white text-[#302C28] shadow-sm':'text-[#8A8176] hover:text-[#302C28]')}
+         title={loc==='ko'?'승인을 거쳐 도구와 작업 실행':'Use tools and execute approved tasks'}>
+         {loc==='ko'?'에이전트':'Agent'}
+        </button>
+       </div>
        <ExecutionPermissions active={active} open={permissionOpen} onOpenChange={open=>{setPermissionOpen(open);if(open){setShowSettings(false);setModelMenu(false)}}} onError={setError} onChanged={label=>setCommandInfo(t('chat.perm.changed',{label}))}/>
 
        <ReasoningSelect value={canSetEffort?reasoningEffort:''} onChange={effort=>{
@@ -492,7 +509,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
        defaultLabel={canSetEffort?(loc==='ko'?'기본 추론':'Default reasoning'):
         (loc==='ko'?'추론 강도 · 지원 미확인':'Reasoning effort unavailable')}
        className="chat-reasoning !h-7 !w-auto !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]"/>
-       <SelectInput aria-label={t('chat.agentAria')} value={agentId} onChange={e=>chooseAgent(e.target.value)} className="chat-agent !h-7 !w-auto !max-w-[140px] !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]">{agents.value.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
+       {toolsEnabled&&<SelectInput aria-label={t('chat.agentAria')} value={agentId} onChange={e=>chooseAgent(e.target.value)} className="chat-agent !h-7 !w-auto !max-w-[140px] !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]">{agents.value.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>}
        <ConversationSettings open={showSettings} onOpenChange={open=>{setShowSettings(open);if(open){setPermissionOpen(false);setModelMenu(false)}}} showReasoning={showReasoning} setShowReasoning={setShowReasoning} reasoningKo={reasoningKo} setReasoningKo={setReasoningKo} thinkingEnabled={thinkingEnabled} setThinkingEnabled={setThinkingEnabled} canDisableThinking={canDisableThinking&&!busy} reasoningEffort={reasoningEffort}
         setReasoningEffort={setReasoningEffort} toolsEnabled={toolsEnabled} setToolsEnabled={setToolsEnabled} autoLearn={autoLearn} setAutoLearn={setAutoLearn} learning={learning} learnDisabled={!current||Boolean(selectedSession?.roomId)||busy} onLearn={learnSession}/>
       </div>

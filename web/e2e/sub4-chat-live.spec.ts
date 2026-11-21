@@ -344,3 +344,51 @@ test('new chat owner message appears immediately and is not duplicated after str
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+
+test('plain chat is the default and Agent mode requires an explicit owner choice',
+ async({page,request})=>{
+ await page.setViewportSize({width:390,height:800})
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Explicit conversation mode acceptance'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json()
+ const submitted:Array<Record<string,unknown>>=[]
+ await page.route('**/api/chat',route=>{
+  if(route.request().method()==='POST'){
+   submitted.push(route.request().postDataJSON() as Record<string,unknown>)
+  }
+  return route.continue()
+ })
+ try{
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  const modes=page.getByRole('group',{name:/대화 실행 방식|Conversation execution mode/})
+  const plain=modes.getByRole('button',{name:/일반 채팅|Chat/})
+  const agent=modes.getByRole('button',{name:/에이전트|Agent/})
+  await expect(plain).toHaveAttribute('aria-pressed','true')
+  await expect(agent).toHaveAttribute('aria-pressed','false')
+  await expect(page.locator('.chat-agent')).toHaveCount(0)
+  await page.locator('textarea.conversation-composer-input').fill('안녕하세요. 일반 채팅입니다.')
+  await page.locator('button.conversation-composer-send').click()
+  await expect.poll(()=>submitted.length).toBe(1)
+  expect(submitted[0].toolsEnabled).toBe(false)
+  expect(submitted[0].toolsExecutionEnabled).toBe(false)
+  expect(submitted[0].autoLearning).toBe(false)
+  await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(1,{timeout:30000})
+  await agent.click()
+  await expect(agent).toHaveAttribute('aria-pressed','true')
+  await expect(plain).toHaveAttribute('aria-pressed','false')
+  await expect(page.locator('.chat-agent')).toBeVisible()
+  await page.locator('textarea.conversation-composer-input').fill('에이전트 모드 전송 검증')
+  await page.locator('button.conversation-composer-send').click()
+  await expect.poll(()=>submitted.length).toBe(2)
+  expect(submitted[1].toolsEnabled).toBe(true)
+  expect(submitted[1].toolsExecutionEnabled).toBe(true)
+  await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(2,{timeout:30000})
+  await plain.click()
+  await expect(plain).toHaveAttribute('aria-pressed','true')
+  await expect(page.locator('.chat-agent')).toHaveCount(0)
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
