@@ -270,6 +270,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn original_run_link_survives_a_failed_chat_turn_and_restart(){
+        let root=std::env::temp_dir().join(format!("dominion-chat-receipt-{}",Uuid::new_v4()));
+        let store=FrontendStore::open(root.clone(),"test-model").unwrap();
+        store.mutate(|snapshot|{
+            let now=timestamp(now_ms());
+            snapshot.sessions.insert("conversation".into(),UiSession{
+                id:"conversation".into(),title:"Durable chat".into(),
+                agent_id:"general".into(),provider_id:"dominion-native".into(),
+                model:"test-model".into(),created_at:now.clone(),updated_at:now,
+                room_id:None,pending_run:None,messages:Vec::new(),
+            });
+            Ok(())
+        }).await.unwrap();
+        let original=Uuid::new_v4();
+        store.begin_turn("conversation","a request that fails",original).await.unwrap();
+        store.finish_turn("conversation",original,None).await.unwrap();
+        drop(store);
+        let reopened=FrontendStore::open(root.clone(),"test-model").unwrap();
+        let session=reopened.session("conversation").await.unwrap();
+        assert!(session.pending_run.is_none());
+        assert_eq!(session.messages.len(),1,"failed inference must not invent an assistant");
+        assert_eq!(session.messages[0].role,"user");
+        assert_eq!(session.messages[0].metadata.as_ref().unwrap()["executionId"]
+            .as_str().unwrap(),original.to_string());
+        drop(reopened);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn rejected_snapshot_change_does_not_publish_partial_state(){
         let root=std::env::temp_dir().join(format!("dominion-frontend-reject-{}",Uuid::new_v4()));
         let store=FrontendStore::open(root.clone(),"test-model").unwrap();
