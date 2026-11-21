@@ -12,7 +12,7 @@ import {Agent,Approval,ChatMessage,ChatSession,Provider,get,post,resolveApproval
 import {Action,Empty,Notice,StateTag,refresh,useRemote} from '../components/UI'
 import {SlashMenu,slashCandidates,slashCommandLabel,slashCommands,type SlashChoice} from '../components/SlashMenu'
 import {ModelPicker} from '../components/ModelPicker'
-import {ReasoningSelect,reasoningOptions} from '../components/ReasoningSelect'
+import {ReasoningSelect} from '../components/ReasoningSelect'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {useTranscriptScroll} from '../hooks/useTranscriptScroll'
 import {useAnchoredPanel} from '../hooks/useAnchoredPanel'
