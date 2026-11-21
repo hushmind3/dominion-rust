@@ -1,7 +1,7 @@
 /** Pure SSE invalidation map. Unknown events do not invalidate the whole UI. */
 export type RefreshScope = {targets:string[];sessions:string[];rooms:string[]}
 type BusRow = Record<string,unknown>
-export type BusChange = {type?:string;kind?:string;record?:BusRow;message?:BusRow;approval?:BusRow;sessionId?:string;roomId?:string;jobId?:string}
+export type BusChange = {type?:string;kind?:string;record?:BusRow;message?:BusRow;approval?:BusRow;sessionId?:string;roomId?:string;jobId?:string;id?:string}
 const field=(row:BusRow|undefined,name:string):string|undefined=>{
  const value=row?.[name]
  return typeof value==='string'&&value.length>0?value:undefined
@@ -50,8 +50,12 @@ export function classifyRefreshEvent(event:BusChange):RefreshScope {
  }else if(event.type==='approval'){
   add('/api/approvals')
  }else if(event.type==='job_event'){
-  add('/api/jobs')
-  if(event.jobId)add('/api/jobs/'+encoded(event.jobId))
+  // Native Rust sends {id,status} only AFTER the durable Run transaction.
+  // Invalidate the corresponding Run and receipts, not unrelated catalogs.
+  add('/api/jobs','/api/executions','/api/v1/task-teams/*')
+  const id=event.id||event.jobId
+  if(id)add('/api/jobs/'+encoded(id),'/api/v1/runs/'+encoded(id),
+    '/api/executions/'+encoded(id)+'/operations')
  }else if(event.type==='execution_event'){
   add('/api/executions')
  }else if(event.type==='goal_event'){
