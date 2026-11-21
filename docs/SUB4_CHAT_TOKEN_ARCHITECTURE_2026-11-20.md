@@ -152,3 +152,24 @@ or a 27B model, and the extremely short outputs are not an agent benchmark.
   tariff is configured.
 - Production Dominion website, Worker and user hardware are unchanged.
   No Sub4 code was silently released onto the production main service.
+
+
+## 2026-11-21: Common-product contract hardening (Sub4 only)
+
+Scope: `dominion-sub4` only; production services, other branches, navigation and UI layout unchanged.
+
+- **Korean no-tools selection:** `no_tools_required` now recognizes complete multiword social exchanges such as `안녕하세요 반가워요` and self-contained timeless Korean explanation requests. Any explicit current-data lookup, attachment, file, repository, approval, modification, or previous-task reference still uses the normal tool-capable Run. No assistant/worker approval is bypassed.
+- **At-most-once model-only dispatch:** after provider throttling, the Run Store atomically persists `model_only_request_intent` **before** handing the request to a provider. `Engine::launch` refuses to replay a model-only Run containing an earlier intent, including after a crash. This chooses an uncertain/needs-reconciliation outcome over silently charging twice; it is not a claim of exactly-once provider-side execution.
+- **Correct effective budget:** `drive_model_only` now honors `account()`'s failure decision, which includes reserved/delegated budget rather than only the raw budget ceiling. A failed settled receipt cannot be overwritten with `Completed`.
+- **Remote Worker result accuracy:** a Writer completion now reports `writer: true` and `readOnly: false`, while an Inspector reports `writer: false` and `readOnly: true`. The isolated patch-review and separate remote charge rules are unchanged.
+
+Regression tests added/extended:
+
+- `korean_social_variants_are_tool_free_without_losing_tasks`
+- `korean_explanations_skip_tools_but_followups_remain_tool_capable`
+- `model_only_reserved_budget_failure_cannot_become_completed`
+- `model_only_uncertain_request_is_never_replayed_after_restart`
+- `model_only_chat_uses_native_worker_once_and_records_usage` asserts exactly one persisted send-intent.
+- Existing remote Inspector HTTP test asserts `writer: false`.
+
+**Verification state:** Changes committed on `dominion-sub4` through commit `0d121170369cbccf55fd785a492365d650ef9939`. Source paths and expected contract branches were reviewed. The editing environment did not provide a Rust toolchain or a local repository checkout, so Cargo, TypeScript, Chromium and all CI suites were **not executed** in this pass. Added tests are not presented as passed. The earlier Workers AI and llama.cpp measurements above are unchanged historical reference only; no new cost, local prefill, actual model quality, or production behavior measurements are claimed.
