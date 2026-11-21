@@ -241,8 +241,15 @@ async fn capabilities(State(engine):State<Arc<Engine>>,headers:HeaderMap)
     let slots=std::env::var("DOMINION_REMOTE_WORKER_SLOTS").ok()
         .and_then(|v|v.parse::<u64>().ok()).unwrap_or(4).clamp(1,64);
     let active=engine.store.stats().await.active as u64;
+    let repos=if writer_enabled(){
+        std::env::var("DOMINION_REMOTE_WRITER_REPOSITORIES")
+            .unwrap_or_default().split(',').map(str::trim)
+            .filter(|v|!v.is_empty()).take(32)
+            .map(str::to_owned).collect::<Vec<_>>()
+    }else{Vec::new()};
     Ok(Json(json!({"schemaVersion":1,"readOnly":true,
-        "writer":writer_enabled(),"active":active,"slots":slots})))
+        "writer":writer_enabled(),"writerRepositories":repos,
+        "active":active,"slots":slots})))
 }
 pub fn routes()->Router<Arc<Engine>>{
     Router::new()

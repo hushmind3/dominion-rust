@@ -133,7 +133,8 @@ impl RemoteWorker{
     /// Nodes that fail health/capacity checks are excluded BEFORE any POST.
     /// Once chosen the binding is journalled; transport errors never fan-out
     /// the same potentially billable instruction to a second machine.
-    async fn select_node(&self,origin:Uuid,call_id:&str,writer:bool)
+    async fn select_node(&self,origin:Uuid,call_id:&str,writer:bool,
+        repository:Option<&str>)
         ->Result<(String,String,String,Option<String>),String>{
         if self.nodes.is_empty(){
             if writer&&self.writer_token.is_none(){
@@ -152,6 +153,9 @@ impl RemoteWorker{
             let Ok(capabilities)=Self::response_json(reply).await else{continue};
             if capabilities["schemaVersion"]!=1 || capabilities["readOnly"]!=true
                 ||(writer&&capabilities["writer"]!=true){continue;}
+            if writer&&!capabilities["writerRepositories"].as_array()
+                .is_some_and(|entries|entries.iter().any(|v|
+                    v.as_str()==repository)){continue;}
             let active=capabilities["active"].as_u64().unwrap_or(u64::MAX);
             let slots=capabilities["slots"].as_u64().unwrap_or(0);
             if slots==0||active>=slots{continue;}
@@ -243,7 +247,8 @@ impl RemoteWorker{
                 "remote worker KRW reservation exhausted before dispatch".into())));
         }
         let (node_id,endpoint,worker_token,writer_token)=match self.select_node(
-            id,&call.id,editing).await{
+            id,&call.id,editing,
+            writer_context.as_ref().map(|w|w.3.as_str())).await{
             Ok(node)=>node,Err(error)=>return Ok(ToolEffectOutcome::Settled(Err(error))),
         };
         let remote_id=self.remote_id_for(&endpoint,id,&call.id);
@@ -524,7 +529,8 @@ mod tests{
                 "schemaVersion":1,"active":0,"slots":4,"readOnly":true})))}
             (StatusCode::OK,Json(json!({
                 "schemaVersion":1,"active":0,"slots":4,"readOnly":true,
-                "writer":true})))
+                "writer":true,
+                "writerRepositories":["projects/repo"]})))
         }
         let unhealthy_socket=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let healthy_socket=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -551,9 +557,10 @@ mod tests{
                 writer_token:Some("writer-token-at-least-thirty-two-characters".into()),
                 weight:1}
         ];
-        let selected=worker.select_node(Uuid::new_v4(),"call",false).await.unwrap();
+        let selected=worker.select_node(Uuid::new_v4(),"call",false,None).await.unwrap();
         assert_eq!(selected.0,"up");
-        let writing=worker.select_node(Uuid::new_v4(),"writer",true).await.unwrap();
+        let writing=worker.select_node(Uuid::new_v4(),"writer",true,
+            Some("projects/repo")).await.unwrap();
         assert_eq!(writing.0,"up");
         down.abort();up.abort();
     }
