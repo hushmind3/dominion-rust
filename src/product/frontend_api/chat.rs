@@ -190,8 +190,20 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
                 yield Ok(Event::default().json_data(json!({"type":"done"})).unwrap_or_else(|_|Event::default().data("{}")));
                 break;
             }
-            if run.status==RunStatus::Paused && run.in_flight.is_some(){
-                let value=json!({"type":"error","message":"Tool outcome is uncertain; reconcile the native run before proceeding."});
+            if run.status==RunStatus::Paused{
+                // A paused Run is not terminal, but a browser SSE response
+                // must never hang forever waiting for a user-only recovery
+                // decision. End this stream; the original Run stays durable.
+                let reason=if run.in_flight.is_some(){
+                    "Tool outcome is uncertain; reconcile the native Run before proceeding."
+                }else if run.model_only&&run.events.iter().any(|e|
+                    e.kind=="model_only_request_intent"){
+                    "Model-only provider outcome is uncertain and may have been billed. Open the original Run; inference will not be replayed."
+                }else{
+                    "Execution paused. Open the original Run to inspect the error and resume only when safe."
+                };
+                let value=json!({"type":"error","message":reason,
+                    "runId":id_text,"status":"paused"});
                 yield Ok(Event::default().json_data(value).unwrap_or_else(|_|Event::default().data("{}")));
                 yield Ok(Event::default().json_data(json!({"type":"done"})).unwrap_or_else(|_|Event::default().data("{}")));
                 break;
