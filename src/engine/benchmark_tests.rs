@@ -577,7 +577,7 @@ async fn registered_native_ollama_provider_completes_original_agent_tool_loop(){
         reflection:false,reflection_model:None,requests_per_minute:0,
         tool_calling:Some(true), // this real mock server implements tool calls
         parallel_tool_calls:Some(false),streaming:None,
-        prompt_cache:None,vision:None,context_window:None,
+        reasoning:None,prompt_cache:None,vision:None,context_window:None,
     }).unwrap();
     let mut run=Run::new(CreateRun{
         instruction:"List local files and report observed workspace".into(),
