@@ -157,7 +157,7 @@ jobs:
         run: cargo build --locked --bin dominion
       - name: Start real backend and Vite then exercise UI and API
         working-directory: web
-        run: npx playwright test e2e/native-boot.spec.ts e2e/sub4-live-api.spec.ts e2e/sub4-channels.spec.ts e2e/sub4-chat-live.spec.ts e2e/sub4-run-ux.spec.ts
+        run: npx playwright test e2e/native-boot.spec.ts e2e/sub4-live-api.spec.ts e2e/sub4-channels.spec.ts e2e/sub4-chat-live.spec.ts e2e/sub4-run-ux.spec.ts e2e/sub4-owner-origin.spec.ts
       - name: Upload browser traces for failing runs
         if: failure()
         uses: actions/upload-artifact@v4
