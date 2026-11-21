@@ -79,6 +79,25 @@ impl ModelClient {
             run_reasoning_effort:self.run_reasoning_effort.clone(),
             run_thinking:self.run_thinking})
     }
+    /// The UI receives the same exact support matrix enforced before paid
+    /// dispatch. Unknown vendors remain disabled instead of suggesting that
+    /// a setting can be applied when the adapter would discard it.
+    pub fn run_reasoning_support(&self)->Value{
+        let protocol=self.strong_protocol.as_str();
+        let model=self.strong.name.to_ascii_lowercase();
+        let official=self.strong.base_url=="https://api.openai.com/v1";
+        let openai=official&&matches!(protocol,"openai"|"responses")
+            &&matches!(model.as_str(),"gpt-5.6"|"gpt-6");
+        let ollama=protocol=="ollama";
+        let disable=ollama&&(model.starts_with("qwen3")||
+            model.starts_with("deepseek-r1"));
+        let levels=openai||(ollama&&model.starts_with("gpt-oss"));
+        json!({"thinkingDisable":disable,
+            "reasoningEfforts":if levels{vec!["low","medium","high"]}
+                else{Vec::<&str>::new()},
+            "verifiedEndpoint":disable||levels,
+            "model":self.strong.name})
+    }
     /// Only verified first-party transport/model combinations expose Run
     /// inference overrides. "Unknown" or operator-declared generic reasoning
     /// capability never justifies sending arbitrary vendor-specific fields.
