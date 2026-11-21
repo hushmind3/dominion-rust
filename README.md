@@ -71,6 +71,12 @@ Put the JSON string into `DOMINION_REMOTE_WORKERS_JSON` on the coordinator; do n
 
 **Two-machine smoke test:** `node scripts/sub4-distributed-smoke.mjs` checks **at least 2 authenticated real endpoints** from `DOMINION_REMOTE_WORKERS_JSON` without executing a billable task. Set `DOMINION_REMOTE_SMOKE_EXECUTE=true` explicitly to submit a bounded native task to both nodes and check their distinct Run IDs, statuses and reported KRW. This cannot provision remote devices, TLS certificates, Git repository clones, or provider credentials for the operator; CI mocks do not establish real hardware readiness.
 
+## Local owner HTTP admission (November 21, 2026)
+
+The Rust server uses a **shared outer admission boundary** for the original React UI, `/api` and `/api/v1`. When bound to loopback, it requires a recognized `Host` (`localhost`, `127.0.0.1`, or `[::1]`, matching any explicit configured port) and refuses untrusted browser `Origin`, `null` Origin or `Sec-Fetch-Site: cross-site` API requests. The existing Vite development proxy (`:5173`) is supported. Only the exact OAuth GET callback paths retain their cross-site redirect exception, with the pre-existing one-time state validation. Remote binds still require `DOMINION_ACCESS_TOKEN`; scoped remote Worker credentials are validated separately in their existing handler. Neither Host nor Origin is an authentication substitute.
+
+The source-scoped CI uses actual Rust HTTP and Chromium to assert that forged Host/Origin reads and writes return HTTP **403**, normal local Chat and Vite traffic remain functional, and OAuth redirects are admitted for state validation. It never makes an unauthorized production or user-data request. Operators of the existing `127.0.0.1:4323` instance can reproduce the guard on its **verified built SHA** with `curl -i -H 'Host: attacker.example:4323' http://127.0.0.1:4323/api/sessions` (expected 403), then an ordinary local GET (expected 200 unless a separately configured bearer token is required). Browser CI tests do not establish that an older watcher-built binary already contains this fix.
+
 ## Develop and verify
 
 Prerequisites: Rust stable, Node.js >= 24.12.0, npm.
