@@ -32,6 +32,12 @@ const server=createServer(async(req,res)=>{
   calls.push({model:input.model,messages:input.messages,
    toolNames:(input.tools||[]).map(t=>t?.function?.name).filter(Boolean),
    promptCacheKey:input.prompt_cache_key??null})
+  // Deterministic one-shot latency fixture: exercise navigation away from a
+  // real Rust Run while its provider call is still outstanding. No live API.
+  if(input.messages.some(message=>typeof message.content==='string'
+      &&message.content.includes('DOMINION_E2E_BACKGROUND_TURN'))){
+   await new Promise(resolve=>setTimeout(resolve,2400))
+  }
   return send(res,200,{id:'dominion-e2e-chat-'+index,model:input.model,
    choices:[{index:0,message:{role:'assistant',content:'Verified native mock answer '+index},
     finish_reason:'stop'}],
