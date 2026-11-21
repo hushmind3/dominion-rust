@@ -29,6 +29,7 @@ type Mcp = {
   url?: string;
   enabled: boolean;
 };
+type McpHealth={id:string;name:string;state:'ready'|'failed'|'timeout'|'disabled'|'not_probed'|'unavailable';toolCount?:number;error?:string};
 type Skill = {
   id: string;
   name: string;
@@ -321,7 +322,8 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
     [skillBusy,setSkillBusy] = useState(false),
     [discovery,setDiscovery] = useState<"idle"|"loading"|"done"|"failed">("idle"),
     [skillEdit, setSkillEdit] = useState<Partial<Skill> | null>(null),
-    [tools, setTools] = useState<any[]>([]);
+    [tools, setTools] = useState<any[]>([]),
+    [health,setHealth] = useState<McpHealth[]>([]);
   const install = async (entry: any) => {
     if (!confirm(t('ext.confirmRegister'))) return;
     setError("");setMessage("");
@@ -347,7 +349,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
       await mcp.reload();
       setMessage(t('ext.registeredHint'));
       setDiscovery("idle");
-      setTools([]);
+      setTools([]);setHealth([]);
     } catch (e) {
       setError((e as Error).message);
     } finally {setMcpBusy(false)}
@@ -399,13 +401,17 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
     setDiscovery("loading");
     if (!silent) {setError("");setMessage("")}
     try {
-      setTools(await get("/api/mcp/discover"));
+      const [found,observed]=await Promise.all([
+        get<any[]>("/api/mcp/discover"),get<McpHealth[]>("/api/mcp/status?probe=true")
+      ]);
+      setTools(found);setHealth(observed);
       setDiscovery("done");
       if (!silent) setMessage(t('ext.toolsFound'));
     } catch (e) {
       setDiscovery("failed");
       setTools([]);
-      if (!silent) setError((e as Error).message);
+      setHealth([]);
+      setError((e as Error).message);
     }
   };
   useEffect(() => {
@@ -429,6 +435,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
         {tab==="installed"&&<>
           <StatusLine label={t('ext.tab.servers')} value={mcp.value.length}/>
           <StatusLine label={t('ext.tab.tools')} value={discovery==="done"?tools.filter(item=>!item.error).length:t('ext.checkConnection')}/>
+          <StatusLine label={loc==='ko'?'연결 확인':'Healthy'} value={discovery==="done"?health.filter(item=>item.state==='ready').length+'/'+mcp.value.filter(item=>item.enabled).length:'—'}/>
         </>}
         {tab==="skills"&&<StatusLine label={t('ext.tab.skills')} value={skills.value.filter(item=>item.enabled).length+"/"+skills.value.length}/>}
       </div>}
@@ -544,17 +551,19 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                     {x.url}
                   </p>
                 </div>
-                <StateTag online={x.enabled&&tools.some(tool=>tool.mcpId===x.id&&!tool.error)}>
+                <div className="min-w-0">
+                 <StateTag online={x.enabled&&health.some(item=>item.id===x.id&&item.state==='ready')}>
                   {(() => {
                     if (!x.enabled) return t('ext.disabled')
-                    const own=tools.filter(tool=>tool.mcpId===x.id)
-                    const ok=own.filter(tool=>!tool.error).length
-                    if (ok) return t('ext.connectedTools',{count:ok})
-                    if (own.some(tool=>tool.error)) return t('ext.connectionFailed')
+                    const checked=health.find(item=>item.id===x.id)
+                    if (checked?.state==='ready') return t('ext.connectedTools',{count:checked.toolCount||0})
+                    if (checked?.state==='failed'||checked?.state==='timeout'||checked?.state==='unavailable') return t('ext.connectionFailed')
                     if (discovery==="loading") return t('ext.checking')
                     return t('ext.checkConnection')
                   })()}
-                </StateTag>
+                 </StateTag>
+                 {health.find(item=>item.id===x.id)?.error&&<p role="status" className="mt-1 max-w-xs break-words text-[11px] text-rose-700">{health.find(item=>item.id===x.id)?.error}</p>}
+                </div>
                 <Button
                   size="icon"
                   variant="ghost"
@@ -577,7 +586,7 @@ export function ExtensionsPage({section,embedded=false}:{section?:ExtensionTab;e
                     try {
                       await del("/api/mcp/" + encodeURIComponent(x.id));
                       await mcp.reload();
-                      setTools([]);
+                      setTools([]);setHealth([]);
                       setDiscovery("idle");
                     } catch (cause) {setError((cause as Error).message)}
                   }}
