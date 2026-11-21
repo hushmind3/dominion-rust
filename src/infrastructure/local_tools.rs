@@ -14,6 +14,7 @@ pub fn definitions(shell_enabled: bool) -> Vec<Value> {
         tool("edit_file", "Edit one exact occurrence in a file; fails when the expected text differs or appears more than once", json!({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"]})),
         tool("git_status", "Inspect changed files in an attached Git worktree, without modifying anything", json!({"type":"object","properties":{}})),
         tool("git_diff", "Inspect uncommitted changes in an attached Git worktree, without modifying anything", json!({"type":"object","properties":{}})),
+        tool("run_tests", "Run a bounded test command in the isolated Git worktree through the existing OS sandbox, with explicit owner approval every time. Use this even if general shell execution is disabled. Example: cargo test --locked, python3 -m unittest discover. No shell pipelines or arbitrary scripts.", json!({"type":"object","properties":{"command":{"type":"string","maxLength":512,"description":"One recognized test invocation, no pipes, redirects or chained commands"}},"required":["command"],"additionalProperties":false})),
         tool("read_program", "Execute one model-authored read-only evidence DAG entirely in Rust: independent reads run in parallel, dependencies/typed errors drive branches, list_files -> read_listed_files and search_files -> read_matched_files discover paths at runtime, objective witnesses stop unnecessary work. Receipts contain source hashes. No nested model, shell, writes or external actions.", json!({"type":"object","properties":{"steps":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"object","properties":{"id":{"type":"string"},"tool":{"type":"string","enum":["list_files","read_file","search_files","git_status","git_diff","read_listed_files","read_matched_files"]},"arguments":{"type":"object","description":"Tool arguments; any scalar argument may bind to a prior step via {from:stepId,path:/value/0/file}. Bindings resolve from actual typed receipts and pass normal tool schema admission."},"after":{"type":"array","maxItems":12,"items":{"type":"string"}},"when":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["ok","error","skipped"]},"contains":{"type":"string"},"not":{"type":"boolean"},"predicate":{"type":"object","description":"Main Program IR three-valued predicate. Types: equals, exists, compare, not, all, any. Use from=prior step, path=/status or /value/...; missing evidence is Unknown.","properties":{"type":{"type":"string","enum":["equals","exists","compare","not","all","any"]},"from":{"type":"string"},"path":{"type":"string"},"value":{},"op":{"type":"string","enum":["gt","gte","lt","lte"]},"predicate":{"type":"object"},"predicates":{"type":"array","items":{"type":"object"}}},"required":["type"]}},"required":["step"]},"from":{"type":"string"},"suffix":{"type":"string"},"contains":{"type":"string"},"max_files":{"type":"integer","minimum":1,"maximum":8},"lines_containing":{"type":"string"}},"required":["id","tool"]}},"objective":{"type":"object","properties":{"mode":{"type":"string","enum":["all","any"]},"assertions":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["ok","error"]},"contains":{"type":"string"}},"required":["step"]}}},"required":["mode","assertions"]}},"required":["steps"]})),
         tool("run_program","Schedule a short dependent tool program: model chooses native read/edit/write steps once, Rust resolves typed observations and runs each step through the ORIGINAL durable Run, schema, approvals and crash recovery. No intermediate model calls; an error returns to the model for repair. Call this tool alone. External accounts, MCP, subagents and nested run_program are forbidden.", json!({"type":"object","properties":{"steps":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"object","properties":{"id":{"type":"string"},"tool":{"type":"string","enum":["list_files","read_file","search_files","git_status","git_diff","read_program","write_file","edit_file","shell"]},"arguments":{"type":"object","description":"Native tool arguments, or a typed reference {from:earlierStepId,path:/value/0/file} from an earlier actual tool receipt."},"when":{"type":"object","description":"Typed observation predicate from Main Program IR. Missing evidence is Unknown, never false.","properties":{"type":{"type":"string","enum":["exists","equals","compare","not","all","any"]},"from":{"type":"string"},"path":{"type":"string"},"value":{},"op":{"type":"string","enum":["gt","gte","lt","lte"]},"predicate":{"type":"object"},"predicates":{"type":"array","items":{"type":"object"}}},"required":["type"]},"on_error":{"type":"string","enum":["stop","continue"]}},"required":["id","tool","arguments"]}},"stop_when":{"type":"object","description":"Optional typed literal evidence predicate; stop remaining program steps when proven by actual tool receipts (not a final task pass).","properties":{"type":{"type":"string","enum":["exists","equals","compare","not","all","any"]},"from":{"type":"string"},"path":{"type":"string"},"value":{},"op":{"type":"string","enum":["gt","gte","lt","lte"]},"predicate":{"type":"object"},"predicates":{"type":"array","items":{"type":"object"}}},"required":["type"]}},"required":["steps"]})),
         tool("spawn_subagent", "Delegate an independent task to an isolated Rust worker with reserved budget; use check_subagent to read results", json!({"type":"object","properties":{"instruction":{"type":"string"},"budget_krw":{"type":"number"},"max_steps":{"type":"integer"},"read_only":{"type":"boolean","description":"True for read-only investigators: no writes, shell, external MCP mutations or patch adoption."},"profile":{"type":"string","enum":["general","inspection","implementation","verification"],"description":"Optional scoped tools: inspection=local and connected-account reads, implementation=workspace edits, verification=reads plus approval-gated shell. Defaults to general. Child retains the original Run, model and budget authority."}},"required":["instruction"]})),
@@ -196,6 +197,13 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
             }
             Ok(json!(hits).to_string())
         }
+        "run_tests" => {
+            let command=required(&call.arguments,"command")?;
+            if command.len()>512||!crate::acceptance::test_command(command){
+                return Err("run_tests accepts a single approved test command only".into());
+            }
+            run_shell(root,command).await
+        }
         "shell" if settings.shell_enabled => {
             let command = required(&call.arguments,"command")?;
             if command.len() > 4096 { return Err("command exceeds 4096 bytes".into()); }
@@ -289,6 +297,29 @@ mod tests {
         let dir = std::env::temp_dir();
         assert!(validated_path(&dir, "../etc/passwd").is_err());
         assert!(validated_path(&dir, "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn safe_test_runner_is_listed_without_unrestricted_shell(){
+        let tools=definitions(false);
+        let names=tools.iter().filter_map(|tool|
+            tool.pointer("/function/name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"run_tests"));
+        assert!(!names.contains(&"shell"));
+        assert!(crate::acceptance::test_command("cargo test --locked"));
+        assert!(crate::acceptance::test_command("python3 -m unittest discover"));
+        for unsafe_command in [
+            "echo cargo test",
+            "cargo test && rm -rf src",
+            "cargo test --help",
+            "cargo test -- $(whoami)",
+            "cargo test > output.txt",
+            "cargo test; echo done",
+        ]{
+            assert!(!crate::acceptance::test_command(unsafe_command),
+                "non-test command must not pass: {unsafe_command}");
+        }
     }
 
     #[tokio::test]

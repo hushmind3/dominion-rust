@@ -170,13 +170,14 @@ fn test_directive(instruction:&str)->Option<bool> {
         "테스트를 통과","테스트 다시","검증 테스트 실행"]
         .iter().any(|request|text.contains(request)).then_some(true)
 }
-fn test_command(command:&str)->bool {
+pub(crate) fn test_command(command:&str)->bool {
     let command=command.trim();
     // Compound commands can change sources after testing, and merely
     // echoing a test command is not evidence of executed tests.
     if command.is_empty()||command.chars().any(|c|
         matches!(c,';'|'&'|'|'|'\n'|'\r'|'>'|'<'|'\u{60}'))
-        ||command.contains("$(") {return false;}
+        ||command.chars().any(|c|!c.is_alphanumeric()
+            &&!matches!(c,' '|'-'|'_'|'.'|'/'|':'|'='|'+'|',')) {return false;}
     let words=command.split_whitespace().collect::<Vec<_>>();
     if words.iter().any(|word|matches!(*word,
         "--help"|"-h"|"--version"|"-V"|"--list"|"-list"|"--no-run"|
@@ -198,7 +199,7 @@ fn potential_mutation(name:&str,arguments:&Value)->bool {
         "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|
         "read_program"|"read_tool_receipt"|"search_tool_receipts"|
         "check_subagent"|"check_subagents" => false,
-        "shell" => !arguments["command"].as_str().is_some_and(test_command),
+        "shell"|"run_tests" => !arguments["command"].as_str().is_some_and(test_command),
         _ => true,
     }
 }
@@ -245,9 +246,11 @@ pub fn requested_test_evidence(run:&Run)->Option<TestEvidence> {
         } else if event.kind=="tool_result" {
             if let Some(detail)=event.detail.as_ref(){
                 let call_id=detail["call_id"].as_str().unwrap_or("");
-                if detail["name"]=="shell"&&detail["succeeded"]==true{
+                if (detail["name"]=="shell"||detail["name"]=="run_tests")
+                    &&detail["succeeded"]==true{
                     if let Some((start,name,arguments))=starts.get(call_id){
-                        if name=="shell"&&test_command(arguments["command"].as_str().unwrap_or(""))
+                        if (name=="shell"||name=="run_tests")
+                            &&test_command(arguments["command"].as_str().unwrap_or(""))
                             &&*start>latest_test_directive_seq
                             &&last_mutation.is_none_or(|mutation|mutation<*start){
                             last_test=Some(event.seq);
@@ -262,7 +265,7 @@ pub fn requested_test_evidence(run:&Run)->Option<TestEvidence> {
     let summary=if satisfied {
         "An approved test command succeeded after the last possible repository edit. This is executed-test evidence, not semantic proof.".to_string()
     }else{
-        "Explicitly requested tests have no fresh successful execution receipt after the last possible repository change. Request approval for a real shell test command, inspect its exit status, fix failures, and rerun before claiming completion. Model prose is not a receipt.".to_string()
+        "Explicitly requested tests have no fresh successful execution receipt after the last possible repository change. Request approval for a real run_tests command (available without general shell access), inspect its exit status, fix failures, and rerun before claiming completion. Model prose is not a receipt.".to_string()
     };
     Some(TestEvidence{satisfied,last_test_seq:last_test,
         last_mutation_seq:last_mutation,summary})

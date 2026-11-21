@@ -58,12 +58,12 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
                 |"list_skills"|"load_skill"),
             "implementation"=>return !run.read_only&&matches!(name,
                 "list_files"|"read_file"|"read_tool_receipt"|"search_tool_receipts"|"search_files"|"git_status"|"git_diff"
-                |"read_program"|"run_program"|"write_file"|"edit_file"|"shell"
+                |"read_program"|"run_program"|"write_file"|"edit_file"|"shell"|"run_tests"
                 |"external_agent_edit"|"remote_worker_edit"
                 |"memory_search"|"list_skills"|"load_skill"),
             "verification"=>return !run.read_only&&matches!(name,
                 "list_files"|"read_file"|"read_tool_receipt"|"search_tool_receipts"|"search_files"|"git_status"|"git_diff"
-                |"read_program"|"shell"|"memory_search"|"list_skills"|"load_skill"),
+                |"read_program"|"shell"|"run_tests"|"memory_search"|"list_skills"|"load_skill"),
             _=>{}
         }
     }
@@ -90,7 +90,7 @@ pub fn select_catalog(run:&Run,tools:Vec<Value>,has_children:bool,denied:&[Strin
     let selected=tools.into_iter().filter(|tool|{
         let Some(name)=tool.pointer("/function/name").and_then(Value::as_str)else{return false;};
         if !admitted_tool(run,name,denied){return false;}
-        if name.starts_with("git_") && run.repository.is_none(){return false;}
+        if (name.starts_with("git_")||name=="run_tests") && run.repository.is_none(){return false;}
         if matches!(name,"check_subagent"|"read_subagent_file"|"merge_subagent") && !has_children{return false;}
         if name=="merge_subagent" && run.repository.is_none(){return false;}
         if name=="external_agent_edit" && (run.repository.is_none()||run.parent_run_id.is_none()||run.read_only){return false;}

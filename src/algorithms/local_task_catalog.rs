@@ -7,7 +7,7 @@ use crate::domain::Run;
 use serde_json::Value;
 const LOCAL:&[&str]=&[
     "list_files","read_file","write_file","edit_file",
-    "search_files","git_status","git_diff","shell","tool_search",
+    "search_files","git_status","git_diff","run_tests","shell","tool_search",
 ];
 fn small_local_task(run:&Run)->bool{
     if run.repository.is_none()||run.read_only||run.model_only

@@ -31,7 +31,7 @@ async fn false_then_repair_model(State((steps,repair,execute_tests)):State<Model
     }else if execute_tests&&step==3{
         json!({"role":"assistant","content":null,"tool_calls":[{
             "id":"approved-test-1","type":"function","function":{
-                "name":"shell","arguments":json!({"command":"python3 -m unittest discover"}).to_string()
+                "name":if execute_tests{"run_tests"}else{"shell"},"arguments":json!({"command":"python3 -m unittest discover"}).to_string()
             }}]})
     }else{
         json!({"role":"assistant","content":"The Python task is complete."})
@@ -60,7 +60,7 @@ async fn completion_scenario(repair:bool,run_tests:bool,execute_tests:bool)->(Ru
     let mut settings=Settings::from_env().unwrap();
     settings.separate_plan_model_call=false;
     settings.separate_model_audit_enabled=false;
-    settings.shell_enabled=execute_tests;
+    settings.shell_enabled=false;
     settings.data_dir=root.join("data");
     settings.workspace_dir=root.join("workspace");
     settings.main.base_url=format!("http://{address}");
@@ -108,7 +108,7 @@ class SumTest(unittest.TestCase):
             let state=store.get(id).await.unwrap();
             if state.terminal(){break state;}
             if execute_tests&&state.status==RunStatus::AwaitingApproval
-                &&state.pending_approval.as_ref().is_some_and(|call|call.name=="shell")
+                &&state.pending_approval.as_ref().is_some_and(|call|call.name=="run_tests")
                 &&state.approval_decision.is_none(){
                 engine.approve(id,true).await.unwrap();
             }
@@ -166,18 +166,18 @@ async fn completed_edit_cannot_skip_explicit_owner_test_requirement(){
 
 
 #[tokio::test]
-async fn approved_real_unittest_receipt_after_edit_allows_completion(){
+async fn approved_scoped_test_runner_without_general_shell_allows_completion(){
     let (run,file,requests)=completion_scenario(true,true,true).await;
     assert_eq!(run.status,RunStatus::Completed,"events: {:?}",run.events);
     assert_eq!(file,"print(sum(range(1, 6)))\n");
     assert_eq!(requests,5);
     assert!(run.events.iter().any(|e|e.kind=="test_evidence_missing"));
     assert!(run.events.iter().any(|e|e.kind=="approval_required"
-        &&e.message.contains("Shell command")));
+        &&e.message.contains("Test command")));
     assert!(run.events.iter().any(|e|e.kind=="decision"
         &&e.message=="User approved tool"));
     assert!(run.events.iter().any(|e|e.kind=="tool_result"
-        &&e.detail.as_ref().is_some_and(|d|d["name"]=="shell"
+        &&e.detail.as_ref().is_some_and(|d|d["name"]=="run_tests"
             &&d["succeeded"]==true
             &&d["result"].as_str().is_some_and(|text|text.contains("exit status: 0")))));
     assert!(run.events.iter().any(|e|e.kind=="test_evidence_checked"));
