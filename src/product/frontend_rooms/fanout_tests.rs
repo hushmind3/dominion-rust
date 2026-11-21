@@ -365,6 +365,28 @@ async fn background_nine_agent_room_returns_before_fanout_and_preserves_same_id_
 }
 
 #[tokio::test]
+async fn active_room_turn_rejects_destructive_frontend_controls_with_conflict(){
+    let (engine,id,requests,server,root)=setup(10,"discussion").await;
+    engine.groups.say_once(id,"Retain owner request".into(),
+        "owner-inflight",vec![]).await.unwrap();
+    let lease=engine.groups.try_frontend_turn(id).unwrap();
+    let erased=reset(State(engine.clone()),Path(id)).await.unwrap_err();
+    assert_eq!(erased.0,StatusCode::CONFLICT);
+    let deleted=remove(State(engine.clone()),Path(id)).await.unwrap_err();
+    assert_eq!(deleted.0,StatusCode::CONFLICT);
+    let stopped=stop(State(engine.clone()),Path(id)).await.unwrap_err();
+    assert_eq!(stopped.0,StatusCode::CONFLICT);
+    let room=engine.groups.get(id).await.unwrap();
+    assert_eq!(room.messages.len(),1);
+    assert_eq!(room.status,RoomStatus::Open);
+    assert_eq!(requests.load(Ordering::SeqCst),0);
+    drop(lease);
+    server.abort();
+    drop(engine);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
 async fn background_room_lease_rejects_overlapping_sends_and_exposes_running_state(){
     let (engine,id,requests,server,root)=setup(10,"discussion").await;
     let seeded=engine.groups.say_once(id,"First request".into(),

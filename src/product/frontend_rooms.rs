@@ -22,6 +22,11 @@ fn bad(message:impl Into<String>)->Fault{
     (StatusCode::BAD_REQUEST,Json(json!({"error":message.into()})))
 }
 fn missing()->Fault{(StatusCode::NOT_FOUND,Json(json!({"error":"room not found"})))}
+fn room_write_error(message:String)->Fault {
+  if message.starts_with("room turn active") {
+    (StatusCode::CONFLICT,Json(json!({"error":message})))
+  }else{bad(message)}
+}
 fn unsupported(reason:&str)->Fault{(StatusCode::NOT_IMPLEMENTED,Json(json!({"error":reason})))}
 fn failed(message:String)->Fault{(StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":message})))}
 
@@ -347,7 +352,7 @@ async fn update_existing(engine:&Arc<Engine>,id:Uuid,view:FrontendRoom,participa
         "error":"cannot change Room configuration while native speaker Run is unsettled"
     }))));
   }
-  let room=engine.groups.configure(id,view.clone(),participants).await.map_err(bad)?;
+  let room=engine.groups.configure(id,view.clone(),participants).await.map_err(room_write_error)?;
   let session_id=room_session(id);
   if let Err(err)=engine.frontend.mutate(|data|{
     if let Some(session)=data.sessions.get_mut(&session_id){
@@ -375,7 +380,7 @@ async fn remove(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
       "error":"cannot delete Room while a source-linked Run is unsettled"
     }))));
   }
-  engine.groups.remove(id).await.map_err(bad)?;
+  engine.groups.remove(id).await.map_err(room_write_error)?;
   let session_id=room_session(id);
   if let Err(err)=engine.frontend.mutate(|state|{
     state.sessions.remove(&session_id);
@@ -686,16 +691,21 @@ async fn reset(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
       "error":"native Room Run still awaits approval, execution or durable settlement; cannot erase its owner message"
     }))));
   }
-  let room=engine.groups.reset(id).await.map_err(bad)?;
+  let room=engine.groups.reset(id).await.map_err(room_write_error)?;
   Ok(Json(json!({"ok":true,"room":room_view(&room),"sessionId":room_session(id)})))
 }
 async fn stop(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   ->Result<Json<Value>,Fault>{
+  if engine.groups.frontend_turn_active(id){
+    return Err((StatusCode::CONFLICT,Json(json!({
+      "error":"room turn active; wait for original speaker receipts before stopping"
+    }))));
+  }
   let snapshot=engine.groups.get(id).await.ok_or_else(missing)?;
   // Owner STOP propagates to the original Engine cancellation lifecycle.
   // In-flight tool effects remain uncertain until journal reconciliation.
   room_native::cancel_unsettled(&engine,&snapshot).await.map_err(bad)?;
-  let room=engine.groups.stop(id).await.map_err(bad)?;
+  let room=engine.groups.stop(id).await.map_err(room_write_error)?;
   Ok(Json(json!({"ok":true,"room":room_view(&room)})))
 }
 async fn knowledge(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)

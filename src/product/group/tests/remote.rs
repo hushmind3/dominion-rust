@@ -405,6 +405,54 @@ use super::*;
         fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]
+    async fn in_flight_frontend_room_cannot_be_deleted_reset_stopped_or_reconfigured(){
+        let root=std::env::temp_dir()
+            .join(format!("dominion-room-mutation-{}",Uuid::new_v4()));
+        let groups=Groups::open(root.clone()).await.unwrap();
+        let room=groups.create(NewRoom{topic:"Preserve original evidence".into(),
+            participants:vec![Participant{name:"analyst".into(),
+                role:"analysis".into(),economy:false}],
+            max_rounds:Some(9),budget_krw:Some(100.0)}).await.unwrap();
+        groups.say_once(room.id,"Owner instruction".into(),"source-1",
+            vec!["analyst".into()]).await.unwrap();
+        let lease=groups.try_frontend_turn(room.id).unwrap();
+        let before=groups.get(room.id).await.unwrap();
+        for result in [
+            groups.reset(room.id).await.map(|_|()),
+            groups.stop(room.id).await.map(|_|()),
+            groups.remove(room.id).await,
+        ]{
+            assert!(result.unwrap_err().contains("room turn active"));
+        }
+        let config=FrontendRoom{
+            name:"test".into(),topic:room.topic.clone(),owner_name:"owner".into(),
+            agent_ids:vec!["analyst".into()],routing_mode:"discussion".into(),
+            rounds:1,max_turns:1,lifetime_max_responses:20,token_budget:0,
+            context_budget_tokens:2000,tools_enabled:false,auto_learning:false,
+            auto_models:true,models:vec![],reasoning_effort:String::new(),
+            learned_context:String::new(),
+        };
+        assert!(groups.configure(room.id,config.clone(),
+            room.participants.clone()).await.unwrap_err().contains("room turn active"));
+        let during=groups.get(room.id).await.unwrap();
+        assert_eq!(during.messages[0].content,"Owner instruction");
+        assert_eq!(during.revision,before.revision);
+        assert_eq!(during.status,RoomStatus::Open);
+        drop(lease);
+        groups.configure(room.id,config,room.participants.clone()).await.unwrap();
+        groups.reset(room.id).await.unwrap();
+        let reset=groups.get(room.id).await.unwrap();
+        assert!(reset.messages.is_empty());
+        assert!(reset.client_messages.is_empty());
+        assert!(reset.client_requested_agents.is_empty());
+        groups.stop(room.id).await.unwrap();
+        groups.remove(room.id).await.unwrap();
+        assert!(groups.get(room.id).await.is_none());
+        drop(groups);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn same_owner_message_id_cannot_switch_target_agents_even_after_restart(){
         let root=std::env::temp_dir()
             .join(format!("dominion-room-target-dedup-{}",Uuid::new_v4()));
