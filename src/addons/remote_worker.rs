@@ -426,8 +426,20 @@ impl RemoteWorker{
         Ok(tokio::select!{
             biased;
             signal=cancellation.changed()=>{
+                let mut request=self.client.post(format!("{}/cancel",
+                    Self::url_for(&endpoint,Some(remote_id))))
+                    .header(AUTH_HEADER,&worker_token);
+                if editing {
+                    if let Some(secret)=writer_token.as_ref(){
+                        request=request.header("x-dominion-worker-writer-token",secret);
+                    }
+                }
+                let outcome=tokio::time::timeout(Duration::from_secs(3),
+                    request.send()).await;
                 ToolEffectOutcome::Uncertain(format!(
-                    "remote worker {remote_id} cancellation or channel loss after dispatch: {signal:?}"))
+                    "remote worker {remote_id} cancellation or channel loss after dispatch: {signal:?}; remote cancel acknowledgement: {}",
+                    outcome.as_ref().ok().and_then(|v|v.as_ref().ok())
+                        .is_some_and(|v|v.status().is_success())))
             }
             outcome=execute=>outcome
         })
@@ -496,6 +508,48 @@ mod tests{
             .any(|e|e.kind=="remote_worker_unmetered"));
         server.abort();
         tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
+    async fn authenticated_pool_rejects_unhealthy_node_and_routes_to_healthy_peer(){
+        use axum::{extract::State,http::StatusCode,routing::get,Json,Router};
+        async fn capabilities(State(healthy):State<bool>)
+            ->(StatusCode,Json<Value>){
+            if !healthy{return (StatusCode::SERVICE_UNAVAILABLE,Json(json!({
+                "schemaVersion":1,"active":0,"slots":4,"readOnly":true})))}
+            (StatusCode::OK,Json(json!({
+                "schemaVersion":1,"active":0,"slots":4,"readOnly":true,
+                "writer":true})))
+        }
+        let unhealthy_socket=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let healthy_socket=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a=unhealthy_socket.local_addr().unwrap();
+        let b=healthy_socket.local_addr().unwrap();
+        let up=tokio::spawn(async move{
+            axum::serve(healthy_socket,Router::new()
+                .route("/api/v1/remote-worker/capabilities",get(capabilities))
+                .with_state(true)).await.unwrap();
+        });
+        let down=tokio::spawn(async move{
+            axum::serve(unhealthy_socket,Router::new()
+                .route("/api/v1/remote-worker/capabilities",get(capabilities))
+                .with_state(false)).await.unwrap();
+        });
+        let mut worker=RemoteWorker::configured(&format!("http://{b}"),
+            "token-with-at-least-thirty-two-characters".into()).unwrap();
+        worker.nodes=vec![
+            RegistryNode{id:"down".into(),url:format!("http://{a}"),
+                token:"token-with-at-least-thirty-two-characters".into(),
+                writer_token:None,weight:16},
+            RegistryNode{id:"up".into(),url:format!("http://{b}"),
+                token:"token-with-at-least-thirty-two-characters".into(),
+                writer_token:Some("writer-token-at-least-thirty-two-characters".into()),
+                weight:1}
+        ];
+        let selected=worker.select_node(Uuid::new_v4(),"call",false).await.unwrap();
+        assert_eq!(selected.0,"up");
+        let writing=worker.select_node(Uuid::new_v4(),"writer",true).await.unwrap();
+        assert_eq!(writing.0,"up");
+        down.abort();up.abort();
     }
     #[test]
     fn remote_worker_url_is_operator_scoped_and_rejects_unsafe_targets(){

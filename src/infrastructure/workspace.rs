@@ -410,6 +410,62 @@ mod tests{
     }
 
     #[tokio::test]
+    async fn remote_writer_seed_transfer_and_patch_cannot_touch_source_checkout(){
+        let root=std::env::temp_dir().join(format!(
+            "dominion-remote-team-git-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.workspace_dir=root.clone();
+        let source=root.join("projects").join("repo");
+        fs::create_dir_all(&source).await.unwrap();
+        git(&["init","-q"],&source).await.unwrap();
+        fs::write(source.join("main.txt"),"original\n").await.unwrap();
+        git(&["add","main.txt"],&source).await.unwrap();
+        git(&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid",
+            "commit","-qm","base"],&source).await.unwrap();
+        let parent=Uuid::new_v4();
+        let child=Uuid::new_v4();
+        let remote=Uuid::new_v4();
+        let base=attach(&settings,parent,"projects/repo").await.unwrap();
+        attach_at(&settings,child,"projects/repo",Some(&base)).await.unwrap();
+        // The Team root has already accepted a distinct file; a remote
+        // Writer must start from this exact seeded detached snapshot.
+        fs::write(root.join(parent.to_string()).join("prior.txt"),"approved\n")
+            .await.unwrap();
+        let child_seed=seed_team_worker(&settings,parent,child,&base).await.unwrap();
+        let (seed,seed_sha)=remote_team_seed(&settings,parent,child,
+            &base,&child_seed).await.unwrap();
+        attach_at(&settings,remote,"projects/repo",Some(&base)).await.unwrap();
+        let remote_seed=install_remote_seed(&settings,remote,&base,
+            &seed,&seed_sha).await.unwrap();
+        assert_ne!(remote_seed,base);
+        assert_eq!(fs::read_to_string(root.join(remote.to_string())
+            .join("prior.txt")).await.unwrap(),"approved\n");
+        fs::write(root.join(remote.to_string()).join("main.txt"),"remote change\n")
+            .await.unwrap();
+        let (patch,hash,paths)=export_remote_writer_patch(&settings,
+            remote,&remote_seed).await.unwrap();
+        assert_eq!(paths,vec!["main.txt"]);
+        assert!(apply_remote_writer_patch(&settings,parent,child,
+            &base,&child_seed,&patch,"0").await.is_err());
+        let applied=apply_remote_writer_patch(&settings,parent,child,
+            &base,&child_seed,&patch,&hash).await.unwrap();
+        assert_eq!(applied,vec!["main.txt"]);
+        assert_eq!(fs::read_to_string(root.join(child.to_string())
+            .join("main.txt")).await.unwrap(),"remote change\n");
+        assert_eq!(fs::read_to_string(root.join(parent.to_string())
+            .join("main.txt")).await.unwrap(),"original\n");
+        assert_eq!(fs::read_to_string(source.join("main.txt")).await.unwrap(),"original\n");
+        assert!(apply_remote_writer_patch(&settings,parent,child,
+            &base,&child_seed,&patch,&hash).await.is_err(),
+            "patch is not safely applied twice");
+        for id in [parent,child,remote]{
+            git(&["worktree","remove","--force",
+                &root.join(id.to_string()).to_string_lossy()],&source).await.unwrap();
+        }
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn child_patch_integration_checks_conflicts_and_preserves_original(){
         let root=std::env::temp_dir().join(format!("dominion-merge-{}",Uuid::new_v4()));
         let mut settings=Settings::from_env().unwrap();

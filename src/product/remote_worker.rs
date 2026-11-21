@@ -216,6 +216,22 @@ async fn read(State(engine):State<Arc<Engine>>,headers:HeaderMap,
     }
     Ok(Json(reply(&engine,&run).await?))
 }
+async fn cancel(State(engine):State<Arc<Engine>>,headers:HeaderMap,
+    Path(id):Path<Uuid>)->Result<Json<Value>,Fault>{
+    authorized(&headers)?;
+    let run=engine.store.get(id).await.ok_or_else(||(
+        StatusCode::NOT_FOUND,Json(json!({"error":"remote Run not found"}))))?;
+    if !run.events.iter().any(|e|e.kind=="remote_worker_admitted"){
+        return Err((StatusCode::NOT_FOUND,Json(json!({"error":"not a remote Run"}))));
+    }
+    let writer=run.events.iter().any(|e|e.kind=="remote_worker_admitted"
+        &&e.detail.as_ref().is_some_and(|v|v["writer"]==true));
+    if writer{writer_authorized(&headers)?;}
+    let cancelled=engine.cancel(id).await.map_err(|error|(
+        StatusCode::CONFLICT,Json(json!({"error":error}))))?;
+    Ok(Json(json!({"id":id,"status":cancelled.status,
+        "cancelRequested":true})))
+}
 async fn capabilities(State(engine):State<Arc<Engine>>,headers:HeaderMap)
     ->Result<Json<Value>,Fault>{
     authorized(&headers)?;
@@ -230,6 +246,7 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/remote-worker/capabilities",get(capabilities))
         .route("/remote-worker/runs",post(submit))
         .route("/remote-worker/runs/{id}",get(read))
+        .route("/remote-worker/runs/{id}/cancel",post(cancel))
 }
 #[cfg(test)]
 mod tests{
