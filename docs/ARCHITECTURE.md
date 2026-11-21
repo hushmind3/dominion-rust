@@ -24,6 +24,15 @@ User / Chat / TypeScript SDK / HTTP
     Broadcast event → React SSE
 ```
 
+## P0–P3 architecture contract (2026-11-21)
+
+- **P0 Core / Harness / Strategies:** `src/domain.rs`, `src/journal.rs`, `src/policy.rs` own immutable Run state, effect admission, approvals and budgets. The sole native loop is `src/harness/runner.rs`; `src/algorithms/mod.rs` only projects strategy decisions. `src/domain/events.rs` projects Run/Team/Room/Chat events into a versioned view without inventing a global sequence.
+- **P1 Room / Team / Model:** `src/product/group.rs` retains original transcript and independent participant cursors; bounded recall stays an input projection. `src/product/coordination.rs` derives pending Room tickets from durable messages. `src/engine/task_team.rs` handles task DAGs and isolated Writer patch adoption. Endpoint capabilities are pinned before each native Run; upstream pre-inference HTTP 400 has a typed durable rejection and a fenced retry ID, whereas ambiguous effects are never auto-replayed.
+- **P2 Agent bridge / memory:** `src/addons/agent_bridge.rs` treats Codex App Server and CLI agents as independent runtimes, never model providers. `src/product/knowledge.rs` preserves user-managed memory; `src/product/strategy.rs` reports observed, non-causal procedure evidence. Both reuse the native Run and authorization journal.
+- **P3 optional federation:** `src/addons/remote_worker.rs` sends explicitly approved read-only jobs to `src/product/remote_worker.rs` on a separately authenticated Rust instance. The worker itself runs the same native Harness; the persisted idempotent `RunRepository::put_if_absent` fences request replay, keeps provider receipts on the remote node and prevents remote recursive delegation. Disabled without operator-selected URL/token. This does not introduce a second scheduler, cloud service or remote Writer capability.
+
+The production bootstrap selects SQLite as the Run source of truth and imports legacy JSON once; `Store::open` remains a backward-compatible JSON adapter for tests and legacy uses. Worker and coordinator remain separately authenticated and budgeted; remote inference charges are not automatically merged into the origin Run.
+
 ## Real execution path
 
 1. A request creates a `Run` in `src/domain.rs`. `Store::put` writes the JSON record with fsync before it becomes visible.
