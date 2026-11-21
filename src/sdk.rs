@@ -52,6 +52,18 @@ impl Dominion {
         self.engine.store.put(run.clone()).await?;
         Ok(run)
     }
+    /// A frontend-owned native Run must not run until the frontend session's
+    /// durable begin-turn transaction acknowledges exactly this identity.
+    /// Persist the admission fence in the FIRST snapshot: even a crash
+    /// between preparation and session binding cannot leak a paid call.
+    pub(crate) async fn prepare_chat_run(&self,input:CreateRun,options:RunOptions)
+        ->Result<Run,String>{
+        let mut run=self.configured_run(input,options)?;
+        run.event("external_owner_admission_required",
+            "Chat owner binding is required before native Run launch",None);
+        self.engine.store.put(run.clone()).await?;
+        Ok(run)
+    }
     /// The same SDK launch path is used for direct SDK, browser jobs and
     /// frontend "SDK Run" jobs. Model-only turns keep their own provider path.
     pub async fn submit_selected(&self,input:CreateRun,options:RunOptions)->Result<Run,String>{
