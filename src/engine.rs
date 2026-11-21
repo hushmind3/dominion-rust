@@ -157,6 +157,13 @@ impl Engine {
         }
         let started = self.store.mutate(id, |run| {
             if run.terminal() { return Err("cannot restart finished execution".into()); }
+            // A provider request may have been billed before a crash, even when
+            // no reply was durably received. Never replay that uncertain
+            // model-only invocation on launch or after a scheduler wake.
+            if run.model_only && run.events.iter().any(|event|
+                event.kind=="model_only_request_intent"){
+                return Err("model-only request may already have been billed; reconcile the original Run instead of reissuing inference".into());
+            }
             if run.team.is_some(){
                 return Err("team coordinator is not an agent; use the Task Team scheduler".into());
             }
