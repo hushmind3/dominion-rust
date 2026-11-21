@@ -11,6 +11,50 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 impl Engine {
+    /// A normal agent may call a paid model repeatedly (planning, actions,
+    /// optional audit). The next attempt is admitted only if every preceding
+    /// intent has an atomically committed usage/result receipt.
+    async fn begin_agent_model_request(&self,id:Uuid,stage:&str,
+        messages:&[Value],catalog:&[Value])->Result<u64,String>{
+        let snapshot=self.store.mutate(id,|run|{
+            if run.status!=RunStatus::Running||run.terminal(){
+                return Err("agent model request cannot begin in an inactive Run".into());
+            }
+            if let Some(seq)=journal::unsettled_model_request(run){
+                return Err(format!("agent provider request #{seq} has an unknown outcome"));
+            }
+            run.event("model_request_intent",
+                "Native agent model dispatch may incur upstream charges",
+                Some(json!({"stage":stage,"provider_id":run.provider_id,
+                    "model":run.model_name,"context_messages":messages.len(),
+                    "context_chars":messages.iter().map(|m|
+                        m.to_string().chars().count()).sum::<usize>(),
+                    "tool_count":catalog.len(),
+                    "tool_schema_chars":catalog.iter().map(|m|
+                        m.to_string().chars().count()).sum::<usize>(),
+                    "automatic_replay":false})));
+            Ok(())
+        }).await?;
+        snapshot.events.last().map(|e|e.seq)
+            .ok_or("missing persisted agent model request intent".into())
+    }
+    /// The settlement event and the monetary/token ledger are one Store
+    /// transaction. A crash cannot durably save one without the other.
+    fn settle_agent_model_request(run:&mut Run,intent_seq:u64,
+        result:&Reply)->Result<(),String>{
+        if journal::unsettled_model_request(run)!=Some(intent_seq){
+            return Err("agent model receipt does not match pending send intent".into());
+        }
+        run.event("model_request_settled",
+            "Original agent provider response and token receipt committed",
+            Some(json!({"intent_seq":intent_seq,"provider_model":result.model,
+                "usage_reported":result.usage_reported,
+                "input_tokens":result.input_tokens,
+                "output_tokens":result.output_tokens,
+                "cost_krw":result.cost_krw})));
+        Self::account(run,result);
+        Ok(())
+    }
     /// Tool-free chat shares the native worker registry, cancellation channel,
     /// provider routing, budget ledger and crash recovery with agent jobs.
     /// Exactly one billable model turn runs; no tool schemas are offered.
@@ -276,6 +320,8 @@ impl Engine {
                 let messages=self.algorithm.planning_request(&run,self.settings.context_max_chars)?;
                 let planning_history_len=run.messages.len();
                 self.services.throttle(&run.provider_id).await;
+                if *cancellation.borrow(){return Ok(());}
+                let intent=self.begin_agent_model_request(id,"plan",&messages,&[]).await?;
                 let reply=tokio::select!{
                     biased;
                     _=cancellation.changed()=>return Ok(()),
@@ -283,7 +329,7 @@ impl Engine {
                         &run,&messages,&[],true)=>response?
                 };
                 self.store.mutate(id, |run| {
-                    Self::account(run,&reply);
+                    Self::settle_agent_model_request(run,intent,&reply)?;
                     if run.terminal() || run.status!=RunStatus::Running {return Ok(());}
                     if run.messages.len()!=planning_history_len {
                         run.event("stale_plan","New user directive arrived during planning; recomputing",None);
@@ -396,6 +442,9 @@ impl Engine {
                 Ok(())
             }).await?;
             self.services.throttle(&run.provider_id).await;
+            if *cancellation.borrow(){return Ok(());}
+            let intent=self.begin_agent_model_request(id,"agent_turn",
+                &outbound,&catalog).await?;
             let reply=tokio::select!{
                 biased;
                 _=cancellation.changed()=>return Ok(()),
@@ -405,7 +454,7 @@ impl Engine {
             let terminal_candidate = reply.calls.is_empty();
             let mut accepted=false;
             self.store.mutate(id, |run| {
-                Self::account(run,&reply);
+                Self::settle_agent_model_request(run,intent,&reply)?;
                 if schema_chars_saved>0 {
                     run.tool_schema_chars_avoided=run.tool_schema_chars_avoided.saturating_add(schema_chars_saved as u64);
                     run.event("tool_schema_scoped",format!("Omitted {schema_chars_saved} tool-schema bytes from this request"),None);
@@ -547,6 +596,9 @@ impl Engine {
                 &git_evidence,&reply.text,self.settings.context_max_chars)?;
             let expected_verify_history=latest.messages.len();
             self.services.throttle(&latest.provider_id).await;
+            if *cancellation.borrow(){return Ok(());}
+            let intent=self.begin_agent_model_request(id,"verification",
+                &verify_messages,&[]).await?;
             let verdict=tokio::select!{
                 biased;
                 _=cancellation.changed()=>return Ok(()),
@@ -556,7 +608,7 @@ impl Engine {
             let passed = crate::verification::strict_pass(&verdict.text);
             let mut verified=false;
             self.store.mutate(id, |run| {
-                Self::account(run,&verdict);
+                Self::settle_agent_model_request(run,intent,&verdict)?;
                 if run.terminal() || run.status!=RunStatus::Running {return Ok(());}
                 if run.messages.len()!=expected_verify_history {
                     run.event("stale_verification","New instructions arrived during verification; verifying again after continuation",None);
