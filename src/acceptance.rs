@@ -155,19 +155,26 @@ impl TestEvidence {
 fn test_directive(instruction:&str)->Option<bool> {
     let text=instruction.to_lowercase();
     if ["do not run tests","don't run tests","without running tests",
-        "tests must not run","테스트 실행하지","테스트를 실행하지",
-        "테스트 돌리지","테스트는 하지","테스트 하지 마"]
+        "tests must not run","skip tests","without tests","don't execute tests",
+        "테스트 실행하지","테스트를 실행하지","테스트 돌리지",
+        "테스트는 하지","테스트 하지 마","테스트 하지마",
+        "테스트 안 돌려","테스트 안 해","테스트 없이","테스트 생략",
+        "테스트는 나중에"]
         .iter().any(|negation|text.contains(negation)){return Some(false);}
     if ["how to run tests","how to execute tests","explain how to run",
         "document how to run","describe how to run","테스트 실행 방법",
-        "테스트를 실행하는 방법","테스트 돌리는 방법","테스트 실행법"]
+        "테스트를 실행하는 방법","테스트 돌리는 방법","테스트 실행법",
+        "테스트 어떻게 돌려","테스트를 어떻게 돌려","테스트 방법을 알려"]
         .iter().any(|explanation|text.contains(explanation)){return None;}
     ["run tests","run the tests","run unit tests","execute tests",
         "run pytest","run cargo test","run npm test","run the test suite",
         "rerun tests","re-run tests",
         "테스트 실행","테스트를 실행","테스트 돌려","테스트를 돌려",
         "테스트까지 돌려","테스트까지 실행","테스트 통과시켜",
-        "테스트를 통과","테스트 다시","검증 테스트 실행"]
+        "테스트를 통과","테스트 다시","검증 테스트 실행",
+        "테스트도 돌려","테스트를 돌리고","테스트 돌리고",
+        "테스트도 실행","테스트 성공시켜","테스트도 통과",
+        "테스트 실행해","테스트 돌려봐","테스트도 해줘"]
         .iter().any(|request|text.contains(request)).then_some(true)
 }
 pub(crate) fn test_command(command:&str)->bool {
@@ -358,6 +365,48 @@ mod tests{
         assert_eq!(test_directive("Explain how to run tests"),None);
         assert_eq!(test_directive("테스트 실행 방법을 알려줘"),None);
     }
+    #[test]
+    fn colloquial_korean_test_directives_are_enforced_without_triggering_explanations(){
+        use serde_json::json;
+        for command in [
+            "sum.py 수정하고 테스트도 돌려",
+            "수정 후 테스트 돌리고 결과 알려줘",
+            "테스트도 실행해서 결과 확인",
+            "패치 적용한 다음 테스트 성공시켜",
+            "이제 테스트 돌려봐",
+        ] {
+            assert_eq!(test_directive(command),Some(true),"{command}");
+        }
+        for no_execution in [
+            "테스트 없이 코드만 정리해",
+            "테스트는 나중에 하자",
+            "테스트 어떻게 돌려?",
+            "테스트 실행 방법을 설명해",
+            "Skip tests and summarize",
+        ] {
+            assert_ne!(test_directive(no_execution),Some(true),"{no_execution}");
+        }
+        let mut run=Run::new(crate::domain::CreateRun{
+            instruction:"sum.py 수정 후 테스트도 돌려".into(),
+            budget_krw:None,max_steps:Some(5),
+        },5).unwrap();
+        run.repository=Some("fixture".into());
+        assert!(!requested_test_evidence(&run).unwrap().satisfied);
+        run.event("tool_started","owner requested test",
+            Some(json!({"id":"t","name":"run_tests",
+                "arguments":{"command":"cargo test --locked"}})));
+        run.event("tool_result","test succeeded",
+            Some(json!({"call_id":"t","name":"run_tests","succeeded":true})));
+        assert!(requested_test_evidence(&run).unwrap().satisfied);
+        run.event("directive","owner correction",
+            Some(json!({"text":"테스트는 나중에. 작업만 요약해"})));
+        assert!(requested_test_evidence(&run).is_none());
+        run.event("directive","owner correction",
+            Some(json!({"text":"수정 끝났으니 테스트도 돌려"})));
+        assert!(!requested_test_evidence(&run).unwrap().satisfied,
+            "new colloquial owner request requires a fresh test receipt");
+    }
+
     #[test]
     fn test_execution_gate_only_applies_to_explicit_owner_requests(){
         use serde_json::json;
