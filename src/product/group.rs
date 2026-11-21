@@ -140,7 +140,10 @@ pub struct Room {
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub last_provider_failure:Option<RoomProviderFailure>,
     #[serde(default)] pub frontend:Option<FrontendRoom>,
-    #[serde(default)] pub client_messages:HashMap<String,ClientMessageReceipt>,
+    #[serde(default)] pub client_messages:HashMap<String,usize>,
+    /// Original audiences without altering legacy numeric receipt storage.
+    #[serde(default,skip_serializing_if="HashMap::is_empty")]
+    pub client_requested_agents:HashMap<String,Vec<String>>,
     #[serde(default)] pub recipients:Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -186,7 +189,6 @@ impl Room {
 }
 mod context;
 use context::{RoomContext,project_room_context,room_line,excerpt};
-pub use context::ClientMessageReceipt;
 pub use context::FrontendTurnLease;
 
 pub struct Groups {
@@ -273,7 +275,7 @@ impl Groups {
         let budget=req.budget_krw.unwrap_or(5000.0);
         if !budget.is_finite() || !(0.0..=1_000_000.0).contains(&budget) {return Err("invalid budget_krw".into());}
         let now=now_ms();
-        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:Vec::new()};
+        let room=Room{id:Uuid::new_v4(),topic:req.topic,participants:req.participants,messages:vec![],status:RoomStatus::Open,rounds:0,max_rounds:req.max_rounds.unwrap_or(12).clamp(1,50),cost_krw:0.0,budget_krw:budget,created_at_ms:now,updated_at_ms:now,revision:0,used_tokens:0,usage_receipts:Vec::new(),remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,frontend:None,client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:Vec::new()};
         self.save(room).await
     }
     pub async fn get(&self,id:Uuid)->Option<Room>{self.rooms.lock().await.get(&id).cloned()}
@@ -327,7 +329,7 @@ impl Groups {
     pub async fn reset(&self,id:Uuid)->Result<Room,String>{
         if self.active.lock().await.contains(&id){return Err("wait for the ongoing group turn to finish".into());}
         let mut room=self.get(id).await.ok_or("room not found")?;
-        room.messages.clear();room.client_messages.clear();room.recipients.clear();room.rounds=0;room.cost_krw=0.0;room.used_tokens=0;
+        room.messages.clear();room.client_messages.clear();room.client_requested_agents.clear();room.recipients.clear();room.rounds=0;room.cost_krw=0.0;room.used_tokens=0;
         room.usage_receipts.clear();room.remote_continuations.clear();room.read_cursors.clear();
         room.finish_reason.clear();
         room.last_provider_failure=None;
@@ -374,11 +376,11 @@ impl Groups {
         }
         if self.active.lock().await.contains(&id){return Err("room turn is active".into());}
         let mut room=self.get(id).await.ok_or("room not found")?;
-        if let Some(saved)=room.client_messages.get(client_id){
-            let index=saved.index();
+        if let Some(&index)=room.client_messages.get(client_id){
             if room.messages.get(index).is_none_or(|entry|
                 entry.speaker!="user"||entry.content!=content)
-                ||!saved.matches_agents(&requested_agents){
+                ||room.client_requested_agents.get(client_id)
+                    .is_some_and(|original|original!=&requested_agents){
                 return Err("clientMessageId was reused for a different message or audience".into());
             }
             return Ok((room.clone(),false,index));
@@ -389,8 +391,8 @@ impl Groups {
         if recipients.iter().any(|agent|!room.participants.iter().any(|p|p.name==*agent)){
             return Err("room message targets unregistered agents".into());
         }
-        room.client_messages.insert(client_id.to_owned(),
-            ClientMessageReceipt::Bound{index,requested_agents});
+        room.client_messages.insert(client_id.to_owned(),index);
+        room.client_requested_agents.insert(client_id.to_owned(),requested_agents);
         // Pin round-robin routing on owner admission, not after a model reply
         // increments room.rounds. A retry/restart must not dispatch an
         // unintended second speaker under the same clientMessageId.

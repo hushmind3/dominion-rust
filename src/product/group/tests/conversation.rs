@@ -169,7 +169,7 @@ use super::*;
                     used_tokens:0,usage_receipts:vec![],
                     remote_continuations:HashMap::new(),read_cursors:HashMap::new(),
                     finish_reason:String::new(),last_provider_failure:None,
-                    frontend:None,client_messages:HashMap::new(),recipients:vec![]
+                    frontend:None,client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]
                 };
                 for i in 0..owner_turns{
                     let content=if i==3{
@@ -239,7 +239,7 @@ use super::*;
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
-            last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:vec![]
+            last_provider_failure:None,frontend:None,client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]
         };
         let common=Groups::shared_prefix(&room);
         let mut shared_messages:Option<Vec<Value>>=None;
@@ -269,7 +269,7 @@ use super::*;
             cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
-            last_provider_failure:None,frontend:None,client_messages:HashMap::new(),recipients:vec![]
+            last_provider_failure:None,frontend:None,client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]
         };
         for i in 0..17 {
             let content=if i==2{
@@ -310,7 +310,7 @@ use super::*;
             rounds:0,max_rounds:1000,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
-            frontend:None,client_messages:HashMap::new(),recipients:vec![]};
+            frontend:None,client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]};
         for index in 0..100{
             let content=match index{
                 0=>"Remember original code BLUE-HARBOR-7421".to_string(),
@@ -356,7 +356,7 @@ use super::*;
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
-            frontend:None,client_messages:HashMap::new(),recipients:vec![]};
+            frontend:None,client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]};
         room.messages.push(Utterance{speaker:"user".into(),
             content:"Remember the deployment is cobalt and the API must preserve cancellation".into(),
             at_ms:1,model:None});
@@ -383,7 +383,7 @@ use super::*;
             rounds:0,max_rounds:1000,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
-            frontend:None,client_messages:HashMap::new(),recipients:vec![]};
+            frontend:None,client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]};
         for index in 0..100{
             let content=match index{
                 0=>"Remember original access code BLUE-HARBOR-7421".to_string(),
@@ -451,7 +451,7 @@ use super::*;
             used_tokens:0,usage_receipts:vec![],
             remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
-            client_messages:HashMap::new(),recipients:vec![]
+            client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]
         };
         room.messages.push(Utterance{
             speaker:"user".into(),content:"Discuss the design".into(),
@@ -490,7 +490,7 @@ use super::*;
             updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
-            client_messages:HashMap::new(),recipients:vec![]
+            client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]
         };
         let mut previous:Vec<Value>=vec![];
         for turn in 0..3 {
@@ -532,7 +532,7 @@ use super::*;
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
-            client_messages:HashMap::new(),recipients:vec![]
+            client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]
         };
         for turn in 0..3 {
             room.messages.push(Utterance{
@@ -609,7 +609,7 @@ use super::*;
             budget_krw:1000.0,created_at_ms:0,updated_at_ms:0,revision:0,
             used_tokens:0,usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:Some(frontend),
-            client_messages:HashMap::new(),recipients:vec![]
+            client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]
         };
         let first=project_room_context(&room,&member,6000);
         assert!(first.mutable_notes.as_ref().unwrap().contains("FIRST_MEM"));

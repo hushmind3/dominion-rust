@@ -7,7 +7,7 @@ use super::*;
             rounds:0,max_rounds:100,cost_krw:0.0,budget_krw:1000.0,
             created_at_ms:0,updated_at_ms:0,revision:0,used_tokens:0,
             usage_receipts:vec![],remote_continuations:HashMap::new(),read_cursors:HashMap::new(),finish_reason:String::new(),last_provider_failure:None,
-            frontend:None,client_messages:HashMap::new(),recipients:vec![]};
+            frontend:None,client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:vec![]};
         for i in 0..50{
             room.messages.push(Utterance{speaker:if i%2==0{"user"}else{"peer"}.into(),
                 content:format!("Turn #{i}: {}", "new data ".repeat(120)),
@@ -437,14 +437,14 @@ use super::*;
         assert!(!accepted.1);
         assert_eq!(accepted.0.messages.iter().filter(|m|m.speaker=="user").count(),1);
         let original=serde_json::to_value(&accepted.0).unwrap();
-        assert_eq!(original["client_messages"]["owner-1"]["requested_agents"],
-            json!(["architect"]));
+        assert_eq!(original["client_messages"]["owner-1"],json!(0));
+        assert_eq!(original["client_requested_agents"]["owner-1"],json!(["architect"]));
         let mut legacy=original;
-        legacy["client_messages"]["owner-1"]=json!(0);
+        legacy.as_object_mut().unwrap().remove("client_requested_agents");
         let restored:Room=serde_json::from_value(legacy).unwrap();
-        assert_eq!(restored.client_messages["owner-1"].index(),0);
-        assert!(restored.client_messages["owner-1"].matches_agents(&["reviewer".into()]),
-            "old snapshots without target metadata must remain readable");
+        assert_eq!(restored.client_messages["owner-1"],0);
+        assert!(restored.client_requested_agents.is_empty(),
+            "legacy SDK numeric idempotency receipts must remain readable");
         drop(reopened);
         fs::remove_dir_all(root).await.unwrap();
     }

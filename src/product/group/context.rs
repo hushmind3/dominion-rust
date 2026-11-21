@@ -1,25 +1,4 @@
 use super::*;
-/// An idempotent owner message binds the exact original recipient selection.
-/// Legacy snapshots stored only a numeric index; keep that wire format
-/// readable without silently modifying old user records on load.
-#[derive(Clone,Debug,Serialize,Deserialize)]
-#[serde(untagged)]
-pub enum ClientMessageReceipt {
-    Legacy(usize),
-    Bound { index:usize, requested_agents:Vec<String> },
-}
-impl ClientMessageReceipt {
-    pub(crate) fn index(&self)->usize {
-        match self {Self::Legacy(index)|Self::Bound{index,..}=>*index}
-    }
-    pub(crate) fn matches_agents(&self,requested:&[String])->bool{
-        match self {
-            Self::Legacy(_)=>true, // Historical snapshots did not store targets.
-            Self::Bound{requested_agents,..}=>requested_agents==requested,
-        }
-    }
-}
-
 /// Deterministic append-only projection for provider caching. The durable
 /// Room transcript is never compacted or used as model-authored "memory".
 /// Checkpoints are reconstructed from indexed original evidence, so restart
@@ -356,7 +335,7 @@ mod context_lookup_tests{
             usage_receipts:Vec::new(),remote_continuations:HashMap::new(),
             read_cursors:HashMap::new(),finish_reason:String::new(),
             last_provider_failure:None,frontend:None,
-            client_messages:HashMap::new(),recipients:Vec::new()
+            client_messages:HashMap::new(),client_requested_agents:HashMap::new(),recipients:Vec::new()
         };
         let original=format!("버밀리언 외벽 {} FINAL_OWNER_PROVENANCE_2026",
             "상세 건축 검토 기록 ".repeat(35));
