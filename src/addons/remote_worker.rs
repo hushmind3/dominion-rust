@@ -189,6 +189,64 @@ impl RemoteWorker{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[tokio::test]
+    async fn remote_worker_executes_one_authorized_native_result_over_http(){
+        use axum::{extract::{State,Path},http::StatusCode,
+            routing::{get,post},Json,Router};
+        use crate::{domain::{CreateRun,Run},store::Store};
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        async fn submit(State(count):State<Arc<AtomicUsize>>,
+            Json(request):Json<Value>)->(StatusCode,Json<Value>){
+            count.fetch_add(1,Ordering::SeqCst);
+            (StatusCode::CREATED,Json(json!({
+                "id":request["runId"],"status":"running"
+            })))
+        }
+        async fn inspect(Path(id):Path<Uuid>)->Json<Value>{
+            Json(json!({"id":id,"status":"completed","answer":"observed native evidence",
+                "costKrw":2.5,"inputTokens":50,"outputTokens":8}))
+        }
+        let server_socket=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=server_socket.local_addr().unwrap();
+        let count=Arc::new(AtomicUsize::new(0));
+        let router=Router::new()
+            .route("/api/v1/remote-worker/runs",post(submit))
+            .route("/api/v1/remote-worker/runs/{id}",get(inspect))
+            .with_state(Arc::clone(&count));
+        let server=tokio::spawn(async move{
+            axum::serve(server_socket,router).await.unwrap();
+        });
+        let root=std::env::temp_dir().join(format!(
+            "dominion-remote-gateway-test-{}",Uuid::new_v4()));
+        let backend=Arc::new(Store::open(root.clone()).await.unwrap());
+        let store=Arc::new(RunStorePort::new(backend));
+        let call=ToolCall{id:"one-authorized-call".into(),
+            name:TOOL.into(),arguments:json!({"instruction":"inspect test evidence"})};
+        let mut origin=Run::new(CreateRun{
+            instruction:"Ask remote investigator".into(),budget_krw:Some(100.0),
+            max_steps:Some(4)},4).unwrap();
+        origin.in_flight=Some(call.clone());
+        let origin_id=origin.id;
+        store.put(origin).await.unwrap();
+        let worker=RemoteWorker::configured(&format!("http://{addr}"),"x".repeat(40)).unwrap();
+        let (_cancel_tx,cancel_rx)=watch::channel(false);
+        let output=worker.execute(&store,origin_id,&call,cancel_rx).await.unwrap();
+        match output{
+            ToolEffectOutcome::Settled(Ok(content))=>{
+                let receipt:Value=serde_json::from_str(&content).unwrap();
+                assert_eq!(receipt["answer"],"observed native evidence");
+                assert_eq!(receipt["remoteCostKrw"],2.5);
+                assert_eq!(receipt["readOnly"],true);
+            }
+            other=>panic!("remote native inspection was not settled: {other:?}")
+        }
+        assert_eq!(count.load(Ordering::SeqCst),1,
+            "one journalled call must emit only one remote submission");
+        assert!(store.get(origin_id).await.unwrap().events.iter()
+            .any(|e|e.kind=="remote_worker_unmetered"));
+        server.abort();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
     #[test]
     fn remote_worker_url_is_operator_scoped_and_rejects_unsafe_targets(){
         let token="a".repeat(40);
