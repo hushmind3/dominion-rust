@@ -747,17 +747,17 @@ test('concurrent chat sends admit one owner Run and never leave a queued orphan'
    {modelRequests:number}
   expect(usage.modelRequests).toBe(1)
   const listed=await (await request.get('/api/sdk/runs')).json() as
-   Array<{instruction:string;status:string;events:Array<{kind:string}>}>
+   Array<{instruction:string;status:string;checkpoint:{events:Array<{kind:string}>}}>
   const contenders=listed.filter(run=>run.instruction===input)
   expect(contenders.length).toBeGreaterThanOrEqual(1)
   expect(contenders.some(run=>['queued','running','interrupted'].includes(run.status))).toBe(false)
   for(const run of contenders){
-   expect(run.events.some(event=>event.kind==='external_owner_admission_required')).toBe(true)
-   if(run.events.some(event=>event.kind==='external_owner_admission_rejected')){
+   expect(run.checkpoint.events.some(event=>event.kind==='external_owner_admission_required')).toBe(true)
+   if(run.checkpoint.events.some(event=>event.kind==='external_owner_admission_rejected')){
     expect(run.status).toBe('failed')
-    expect(run.events.some(event=>event.kind==='model_only_request_intent')).toBe(false)
+    expect(run.checkpoint.events.some(event=>event.kind==='model_only_request_intent')).toBe(false)
    }else{
-    expect(run.events.some(event=>event.kind==='external_owner_admission_bound')).toBe(true)
+    expect(run.checkpoint.events.some(event=>event.kind==='external_owner_admission_bound')).toBe(true)
    }
   }
  }finally{
