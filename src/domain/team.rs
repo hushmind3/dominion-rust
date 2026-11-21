@@ -61,6 +61,10 @@ pub struct TeamTaskView{
     pub depends_on:Vec<String>,
     pub workspace:String,
     pub status:TeamTaskState,
+    /// Actual completed Writer with verified artifact waiting for a SHA-256
+    /// owner patch review. Do not conflate tool permission prompts with
+    /// completed Git changes awaiting adoption.
+    #[serde(default)]pub patch_review_ready:bool,
     /// Empty for accepted or not-yet-finished workers. Only real receipts
     /// are used; unfulfilled requirements block dependent tasks.
     #[serde(default,skip_serializing_if="Vec::is_empty")]
@@ -230,7 +234,7 @@ impl TeamGraph{
             tasks.push(TeamTaskView{
                 id:task.spec.id.clone(),run_id:task.run_id,role:task.spec.role,
                 depends_on:task.spec.depends_on.clone(),
-                workspace:task.spec.workspace.clone(),status,
+                workspace:task.spec.workspace.clone(),status,patch_review_ready:false,
                 unmet_acceptance:unmet.get(&task.run_id).cloned().unwrap_or_default(),
             });
         }
