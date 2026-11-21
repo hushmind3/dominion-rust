@@ -499,3 +499,54 @@ test('a late failed Run receipt is never shown in a different chat session',
   await request.delete('/api/sessions/'+second.id)
  }
 })
+
+
+test('moving to another session detaches the SSE reader while the original native Run still completes',
+ async({page,request})=>{
+ const created=await Promise.all([
+  request.post('/api/sessions',{data:{agentId:'general',title:'Durable background turn A'}}),
+  request.post('/api/sessions',{data:{agentId:'general',title:'Independent chat B'}})
+ ])
+ expect(created.map(item=>item.status())).toEqual([201,201])
+ const [first,second]=await Promise.all(created.map(response=>response.json())) as
+  Array<{id:string}>
+ try{
+  await page.setViewportSize({width:1200,height:850})
+  await page.goto('/#/chat?session='+encodeURIComponent(first.id))
+  const composer=page.locator('textarea.conversation-composer-input')
+  await composer.fill('DOMINION_E2E_BACKGROUND_TURN: describe this fixture')
+  await page.locator('button.conversation-composer-send').click()
+  await expect.poll(async()=>{
+   const response=await request.get('http://127.0.0.1:4876/_calls')
+   if(!response.ok())return false
+   const payload=await response.json() as {requests:Array<{
+    messages:Array<{content:string}>
+   }>}
+   return payload.requests.some(call=>call.messages.some(message=>
+    message.content?.includes('DOMINION_E2E_BACKGROUND_TURN')))
+  }).toBe(true)
+  // The model call has started; leaving this chat must NOT cancel its Run.
+  await page.getByRole('button',{name:'Independent chat B'}).click()
+  await expect(page).toHaveURL(new RegExp('session='+second.id))
+  await expect(page.locator('button.conversation-composer-send[type="submit"]')).toBeVisible()
+  await composer.fill('Answer the independent second chat')
+  await page.locator('button.conversation-composer-send').click()
+  await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(1,{timeout:30000})
+  await expect.poll(async()=>{
+   const response=await request.get('/api/sessions/'+first.id+'/messages')
+   if(!response.ok())return []
+   const messages=await response.json() as Array<{role:string}>
+   return messages.map(message=>message.role)
+  },{timeout:30000}).toEqual(['user','assistant'])
+  await page.getByRole('button',{name:'Durable background turn A'}).click()
+  await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(1,{timeout:30000})
+  await expect(page.locator('[data-message-role="assistant"]')).toContainText('Verified native mock answer')
+  const a=await (await request.get('/api/sessions/'+first.id+'/messages')).json() as Array<{role:string}>
+  const b=await (await request.get('/api/sessions/'+second.id+'/messages')).json() as Array<{role:string}>
+  expect(a.map(item=>item.role)).toEqual(['user','assistant'])
+  expect(b.map(item=>item.role)).toEqual(['user','assistant'])
+ }finally{
+  await request.delete('/api/sessions/'+first.id)
+  await request.delete('/api/sessions/'+second.id)
+ }
+})
