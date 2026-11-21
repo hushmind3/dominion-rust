@@ -92,6 +92,64 @@ impl RemoteWorker{
                 .ok().filter(|s|s.len()>=32),
             nodes:Vec::new(),client})
     }
+    /// Owner-only, credential-redacted topology. A passive GET never probes
+    /// remote networks; an explicit probe runs bounded authenticated checks.
+    /// The UI cannot create a remote worker or edit stored capability tokens.
+    pub async fn operator_topology(&self,probe:bool)->Value{
+        let entries=if self.nodes.is_empty(){
+            vec![RegistryNode{id:"legacy".into(),url:self.endpoint.clone(),
+                token:self.token.clone(),writer_token:self.writer_token.clone(),
+                weight:1}]
+        }else{self.nodes.clone()};
+        if !probe{
+            let rows=entries.into_iter().map(|node|json!({
+                "id":node.id,"url":node.url,"weight":node.weight,
+                "writerConfigured":node.writer_token.is_some(),
+                "state":"not_probed"
+            })).collect::<Vec<_>>();
+            return json!({"configured":true,"probed":false,"nodes":rows});
+        }
+        let mut pending=tokio::task::JoinSet::new();
+        for node in entries{
+            let client=self.client.clone();
+            pending.spawn(async move{
+                let mut row=json!({"id":node.id,"url":node.url,"weight":node.weight,
+                    "writerConfigured":node.writer_token.is_some(),
+                    "state":"unavailable"});
+                let probe=async{
+                    let reply=client.get(format!("{}/api/v1/remote-worker/capabilities",
+                        node.url.trim_end_matches('/')))
+                        .header(AUTH_HEADER,&node.token).send().await
+                        .map_err(|error|error.to_string())?;
+                    Self::response_json(reply).await
+                };
+                match tokio::time::timeout(Duration::from_secs(4),probe).await{
+                    Ok(Ok(payload)) if payload["schemaVersion"]==1
+                        &&payload["readOnly"]==true=>{
+                        let slots=payload["slots"].as_u64().unwrap_or(0);
+                        let active=payload["active"].as_u64().unwrap_or(u64::MAX);
+                        row["state"]=json!(if slots>active{"ready"}else{"at_capacity"});
+                        row["slots"]=json!(slots);row["active"]=json!(active);
+                        row["writerAvailable"]=json!(payload["writer"]==true
+                            &&node.writer_token.is_some());
+                        // Repositories are exposed only to this owner-authenticated
+                        // dashboard, never as an unauthenticated discovery endpoint.
+                        row["writerRepositories"]=payload["writerRepositories"].clone();
+                    }
+                    Ok(Ok(_))=>{row["state"]=json!("invalid_protocol");}
+                    Ok(Err(_))=>{row["state"]=json!("unreachable_or_unauthorized");}
+                    Err(_)=>{row["state"]=json!("timeout");}
+                }
+                row
+            });
+        }
+        let mut nodes=Vec::new();
+        while let Some(result)=pending.join_next().await{
+            if let Ok(node)=result{nodes.push(node);}
+        }
+        nodes.sort_by(|a,b|a["id"].as_str().cmp(&b["id"].as_str()));
+        json!({"configured":true,"probed":true,"nodes":nodes})
+    }
     pub fn writer_definition(&self)->Option<Value>{
         if self.writer_token.is_none() &&
             !self.nodes.iter().any(|n|n.writer_token.is_some()){return None;}
