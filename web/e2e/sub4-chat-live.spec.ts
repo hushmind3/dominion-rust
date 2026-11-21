@@ -642,3 +642,45 @@ test('late cancellation acknowledgement is not displayed as another conversation
   await request.delete('/api/sessions/'+ownerB.id)
  }
 })
+
+
+test('a failed native model call remains inspectable after refreshing the chat',async({page,request})=>{
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Failed native receipt evidence'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json() as {id:string}
+ try{
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  await page.locator('textarea.conversation-composer-input')
+   .fill('DOMINION_E2E_FAILED_CHAT_RECEIPT: provider returned no content')
+  await page.locator('button.conversation-composer-send').click()
+  const userMessages=async()=>{
+   const result=await request.get('/api/sessions/'+session.id+'/messages')
+   if(!result.ok())return [] as Array<{role:string;metadata?:{executionId?:string}}>
+   return await result.json() as Array<{role:string;metadata?:{executionId?:string}}>
+  }
+  await expect.poll(async()=>{
+   const messages=await userMessages()
+   return messages.length===1&&messages[0].role==='user'&&
+    typeof messages[0].metadata?.executionId==='string'
+  },{timeout:30000}).toBe(true)
+  await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(0)
+  await expect.poll(async()=>{
+   const result=await request.get('/api/sessions/'+session.id)
+   const latest=await result.json() as {pendingRun?:string|null}
+   return latest.pendingRun==null
+  },{timeout:30000}).toBe(true)
+  await page.reload()
+  await expect(page.locator('[data-message-role="user"]')).toHaveCount(1)
+  const previous=page.getByRole('button',{name:/최근 실행 기록 열기|Inspect last agent run/})
+  await expect(previous).toBeVisible()
+  await previous.click()
+  await expect(page.getByRole('dialog',{name:/에이전트 실행 증거|Agent execution evidence/}))
+   .toBeVisible()
+  const saved=await userMessages()
+  expect(saved.map(message=>message.role)).toEqual(['user'])
+  expect(saved[0].metadata?.executionId).toMatch(/^[0-9a-f-]{36}$/)
+ }finally{
+  await request.delete('/api/sessions/'+session.id)
+ }
+})
