@@ -253,8 +253,16 @@ pub(super) async fn execution_operations(State(engine):State<Arc<Engine>>,Path(i
         "tool_denied","tool_policy_denied","tool_hook_denied"
     ].contains(&event.kind.as_str())).map(|event|json!({
         "id":format!("{}:{}",id,event.seq),"callId":event.detail.as_ref()
-            .and_then(|v|v.get("call_id")).and_then(Value::as_str).unwrap_or(""),
-        "tool":event.message,"status":event.kind,
+            .and_then(|v|v.get("call_id").or_else(||v.get("id")))
+            .and_then(Value::as_str).unwrap_or(""),
+        "tool":event.detail.as_ref().and_then(|v|v.get("name"))
+            .and_then(Value::as_str).unwrap_or(&event.message),
+        "status":event.kind,"detail":event.detail,
+        "arguments":event.detail.as_ref().and_then(|v|v.get("arguments")),
+        "result":event.detail.as_ref().and_then(|v|v.get("result")),
+        "error":if event.kind.contains("error")||event.kind.contains("denied"){
+            Some(event.message.as_str())
+        }else{None},
         "startedAt":timestamp(event.at_ms)
     })).collect::<Vec<_>>();
     Ok(Json(json!(list)))
