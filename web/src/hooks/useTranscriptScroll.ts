@@ -4,7 +4,7 @@ export function useTranscriptScroll(scope: string | undefined, revision: string,
  const scrollRef = useRef<HTMLDivElement>(null)
  const following = useRef(true)
 
- useLayoutEffect(() => { following.current = true }, [scope])
+ useLayoutEffect(() => { following.current = true; onMore?.(false) }, [scope, onMore])
  useLayoutEffect(() => {
   const el = scrollRef.current
   if (!el) return
@@ -19,6 +19,7 @@ export function useTranscriptScroll(scope: string | undefined, revision: string,
    if (following.current) el.scrollTop = el.scrollHeight
   })
   observer.observe(el)
+  if (el.firstElementChild) observer.observe(el.firstElementChild)
   return () => observer.disconnect()
  }, [])
 

@@ -77,3 +77,25 @@
 .settings-nav-collapsed>div:first-child{gap:0;padding:0;justify-content:center}
 .settings-nav-collapsed>div:first-child>*:not(button){display:none}
 .settings-nav-collapsed>*:not(:first-child){display:none}
+
+
+/* 1:1 Chat readability: owner bubbles on the right, assistant prose on
+   the left. Keep Room and global workspace typography unchanged. */
+.page-chat [data-chat-scroll]{
+ font-family:"Pretendard Variable",Pretendard,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",system-ui,sans-serif;
+ font-size:16px;letter-spacing:-.008em;line-height:1.72;
+ scroll-padding-bottom:18px;overflow-anchor:auto;
+}
+.page-chat [data-message-role="user"]>div{
+ box-shadow:0 1px 2px rgba(36,33,29,.035);
+}
+.page-chat [data-message-role="assistant"] .chat-answer p{
+ overflow-wrap:anywhere;
+}
+.page-chat [data-message-role="assistant"] .chat-answer pre{
+ white-space:pre;max-width:100%;
+}
+@media(max-width:767px){
+ .page-chat [data-chat-scroll]{font-size:15.5px}
+ .page-chat [data-message-role="user"]>div{max-width:90%}
+}

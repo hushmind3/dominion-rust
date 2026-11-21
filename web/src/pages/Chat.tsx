@@ -2,8 +2,8 @@ import {ConversationSettings} from '../components/ConversationSettings'
 import {ExecutionPermissions} from '../components/ExecutionPermissions'
 import {ConversationSwitch} from '../components/WorkspaceShell'
 import {TokenUsage} from '../components/TokenUsage'
+import {ChatAnswer} from '../components/ChatAnswer'
 import {RunInspectorDialog} from '../components/RunInspectorDialog'
-import {OwnerAvatar,useOwnerProfile} from '../components/OwnerProfile'
 import {createPortal} from 'react-dom'
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {FormEvent,useEffect,useMemo,useRef,useState,type KeyboardEvent} from 'react'
@@ -75,6 +75,8 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  useEffect(()=>{if(!current){setOverride(undefined);setAgentChoice(undefined)}},[initialAgent,initialProvider,initialModel]);
  const [turnSession,setTurnSession]=useState<string>();
  const [savedMessageId,setSavedMessageId]=useState<string>();
+ const [pendingUser,setPendingUser]=useState<{scope?:string;content:string;baseline:number}>();
+ const [scrollAway,setScrollAway]=useState(false);
  const [approvalBusy,setApprovalBusy]=useState(false);
  const [liveApproval,setLiveApproval]=useState<Approval|null>(null);
  const [learningJob,setLearningJob]=useState<{id:string;scope:string}>();
@@ -99,11 +101,13 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const view=useRef(current);
  view.current=current;
  const viewingTurn=turnSession===current&&(!savedMessageId||!messages.some(message=>message.id===savedMessageId));
+ const pendingVisible=Boolean(pendingUser&&pendingUser.scope===current
+  &&!messages.slice(pendingUser.baseline).some(message=>message.role==='user'&&message.content===pendingUser.content));
  const slashItems=slashOpen?slashCandidates(input,agents.value,models):[];
- const transcriptRevision=JSON.stringify([messages.at(-1)?.id,messages.length,viewingTurn?live.length:0,viewingTurn?thought.length:0,viewingTurn?toolStatus:'',approval?.id]);
+ const transcriptRevision=JSON.stringify([messages.at(-1)?.id,messages.length,viewingTurn?live.length:0,viewingTurn?thought.length:0,viewingTurn?toolStatus:'',pendingVisible?pendingUser?.content.length:0,approval?.id]);
  const usageRevision=JSON.stringify([messages.at(-1)?.id,messages.length]);
  useEffect(()=>{if(!current){setServerUsage({});return}let alive=true;get<SessionUsage>('/api/sessions/'+encodeURIComponent(current)+'/usage').then(usage=>{if(alive)setServerUsage(usage)}).catch(()=>{});return()=>{alive=false}},[current,usageRevision])
- const {scrollRef,onScroll,jumpDown}=useTranscriptScroll(current,transcriptRevision);
+ const {scrollRef,onScroll,jumpDown}=useTranscriptScroll(current,transcriptRevision,setScrollAway);
  const modelPanel=useAnchoredPanel(modelMenu,()=>setModelMenu(false),380);
  useEffect(()=>()=>stream.current?.abort(),[]);
  useEffect(()=>{if(window.innerWidth<768)return;try{localStorage.setItem('dominion.chat.sidebar',showHistory?'1':'0')}catch{}},[showHistory]);
@@ -183,12 +187,12 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  };
  const chooseAgent=(id:string)=>{setAgentChoice({scope:current,id});setOverride(undefined)};
  const pickSession=(s:ChatSession)=>{
-  onSession(s.id);setAgentChoice(undefined);setOverride(undefined);
+  onSession(s.id);setAgentChoice(undefined);setOverride(undefined);setPendingUser(undefined);
   setError('');setCommandInfo('');setSlashOpen(false);
   if(window.innerWidth<768)setShowHistory(false);
  };
  const resetLocal=()=>{
-  onSession(undefined);setAgentChoice(undefined);setOverride(undefined);setInput('');
+  onSession(undefined);setAgentChoice(undefined);setOverride(undefined);setInput('');setPendingUser(undefined);
   setError('');setCommandInfo('');setSlashOpen(false);
   if(window.innerWidth<768)setShowHistory(false);
   inputRef.current?.focus({preventScroll:true});
@@ -216,7 +220,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    if(stream.current===controller){
     stream.current=null;activeTurnSession.current=undefined;
     setBusy(false);setLive('');setThought('');setLiveApproval(null);
-    setToolStatus('');setTurnSession(undefined);setSavedMessageId(undefined);
+    setToolStatus('');setTurnSession(undefined);setSavedMessageId(undefined);setPendingUser(undefined);
    }
    refresh('/api/sessions','/api/approvals','/api/sessions/'+encodeURIComponent(id)+'/messages','/api/sessions/'+encodeURIComponent(id)+'/usage');
    setCommandInfo(outcome.cancelled||controller?t('chat.stopped'):t('chat.cmd.nothingRunning'));
@@ -314,6 +318,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   stream.current=controller;
   activeTurnSession.current=current;
   setTurnSession(current);setSavedMessageId(undefined);
+  setPendingUser({scope:current,content:text,baseline:messages.length});
   setBusy(true);setError('');setFailedRunId('');setCommandInfo('');setLive('');setThought('');setSlashOpen(false);setToolStatus('');
   jumpDown();
   let id=current;
@@ -326,6 +331,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     activeTurnSession.current=id;
     if(view.current===current){
      onSession(id);setTurnSession(id);
+     setPendingUser(previous=>previous?{...previous,scope:id}:previous);
      if(agentId)setAgentChoice({id:agentId,scope:id});
      if(manual)setOverride({...manual,scope:id});
     }
@@ -358,7 +364,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   }catch(e){
    if(!controller.signal.aborted&&view.current===id){
     setError(translateError((e as Error).message));
-    if(!saved)setInput(previous=>previous.trim()?previous:text);
+    if(!saved){setPendingUser(undefined);setInput(previous=>previous.trim()?previous:text);}
    }
   }finally{
    if(stream.current===controller){
@@ -397,7 +403,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    <div className="min-h-0 flex-1 overflow-y-auto px-2">{sessions.value.filter(s=>!s.roomId).map(s=><Button variant="bare" onClick={()=>pickSession(s)} key={s.id} title={s.title} className={'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-xs text-[#7C7469] hover:bg-[#F7E8E1] '+(current===s.id?'bg-[#F7E8E1] font-bold text-[#A94E30]':'')}><MessageCircle size={15} className="shrink-0"/><span className="truncate">{s.title}</span></Button>)}{!sessions.value.length&&<div className="p-5 text-center text-xs text-[#9C9388]">{t('chat.first')}</div>}</div>
    <div className="shrink-0 border-t border-[#E7E0D5] p-2"><Button variant="ghost" onClick={openSettings} className="w-full !justify-start gap-2 !text-xs" aria-label={t('nav.settings')}><Settings size={17}/>{t('nav.settings')}</Button></div>
   </aside>
-  <div className="flex min-h-0 min-w-0 flex-col">
+  <div className="relative flex min-h-0 min-w-0 flex-col">
    <header className="chat-header relative flex h-13 shrink-0 items-center justify-between gap-2 border-b border-[#E7E0D5] bg-[#FFFDF9] px-4">
     <Button size="icon" variant="ghost" onClick={()=>setShowHistory(x=>!x)} title={showHistory?t('chat.listCollapse'):t('chat.listExpand')} aria-label={showHistory?t('chat.listCollapse'):t('chat.listExpand')}><Menu size={18}/></Button>
     <ConversationSwitch mode="chat" onChange={switchMode}/>
@@ -443,12 +449,19 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
      <Button size="icon" variant="ghost" className="conversation-settings" title={t('nav.settings')} aria-label={t('nav.settings')} onClick={openSettings}><Settings size={18}/></Button>
     </div>
    </header>
-   <div ref={scrollRef} onScroll={onScroll} data-chat-scroll className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{!messages.length&&!(busy&&viewingTurn)?<div className="mx-auto flex min-h-full max-w-xl flex-col justify-center px-5 py-8">
+   <div ref={scrollRef} onScroll={onScroll} data-chat-scroll className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#FFFDF9]">{!messages.length&&!(busy&&viewingTurn)?<div className="mx-auto flex min-h-full max-w-xl flex-col justify-center px-5 py-8">
     <div className="mb-6 flex items-center gap-3"><span className="grid size-11 place-items-center rounded-2xl bg-[#F7E8E1] text-[#C96442]"><Sparkles size={22}/></span><div><h1 className="text-[24px] font-bold tracking-[-.03em] text-[#24211D]">{t('chat.newChatHeading')}</h1><p className="mt-1 text-[13px] text-[#8A8176]">{t('chat.newChatDesc')}</p></div></div>
     <div className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5"><div className="mb-2 text-[11px] font-semibold text-[#8A8176]">{t('chat.examples')}</div>{[t('chat.example1'),t('chat.example2'),t('chat.example3')].map(example=><Button type="button" key={example} onClick={()=>{setInput(example);inputRef.current?.focus({preventScroll:true})}} className="flex w-full items-center justify-between border-t border-[#EFE9DF] px-2 py-3 text-left text-[12px] text-[#5C544A] hover:bg-[#FFFDF9]">{example}<ArrowRight size={14} className="shrink-0 text-[#9C9388]"/></Button>)}</div>
     {!model&&<Button type="button" onClick={openModels} className="mt-4 inline-flex items-center gap-2 self-start text-[12px] font-semibold text-[#C96442]"><Compass size={15}/> {t('chat.connectFirst')} <ArrowRight size={14}/></Button>}
-   </div>:<div className="mx-auto flex min-h-full w-full max-w-[860px] flex-col gap-6 px-6 py-7">{messages.filter(m=>m.role!=='tool').map(m=><Message key={m.id} message={m} agentName={agents.value.find(a=>a.id===m.agent_id)?.name} showReasoning={showReasoning} onInspect={setInspectedRun} />)}{viewingTurn&&(live||thought||busy)&&<div className="flex min-w-0 items-start gap-3 assistant"><div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#F3EEE5] text-[#4A443C] ai"><Sparkles size={17}/></div><div className="relative min-w-0 flex-1"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">DOMINION <span>{t('ui.label.live')}</span>{busy&&thought&&!showReasoning&&<span className="inline-flex items-center gap-1 rounded bg-[#F3EEE5] px-1.5 py-0.5 text-[10px] font-medium text-[#7C7469]"><BrainCircuit size={11}/> {t('chat.thinkingNow')}</span>}</div>{showReasoning&&thought&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={thinking}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setThinking(x=>!x)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:thought.length.toLocaleString()} )} <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{thought}</div></details>}{live&&<div className="min-w-0 break-words text-sm leading-7 text-[#3A342D] [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-slate-100 [&_code]:break-words [&_ul]:list-disc [&_ul]:pl-6">{live}</div>}{busy&&!live&&<div className="flex items-center gap-2 text-xs text-[#9C9388]"><i/><i/><i/></div>}</div></div>}{viewingTurn&&toolStatus&&<div className="inline-flex items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-1.5 text-xs text-[#7C7469]"><TerminalSquare size={15}/>{toolStatus}</div>}</div>}</div>
-   <div className="conversation-composer-wrap sticky bottom-0 z-10"><div className="mx-auto w-full max-w-[860px]">{approval&&<div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><div><ShieldAlert size={20}/><span><strong>{t('chat.approval')}</strong><small>{approval.tool} · {JSON.stringify(approval.args??{}).slice(0,150)}</small></span></div><div><Action variant="secondary" disabled={approvalBusy} onClick={()=>approve(false)}>{t('chat.deny')}</Action><Action disabled={approvalBusy} onClick={()=>approve(true)}><Check size={15}/> {t('chat.approve')}</Action></div></div>}
+   </div>:<div className="mx-auto flex min-h-full w-full max-w-[880px] flex-col gap-7 px-4 py-6 sm:px-8 sm:py-8">{messages.filter(m=>m.role!=='tool').map(m=><Message key={m.id} message={m} agentName={agents.value.find(a=>a.id===m.agent_id)?.name} showReasoning={showReasoning} onInspect={setInspectedRun} />)}{viewingTurn&&pendingVisible&&<article data-message data-message-role="user" data-chat-pending="true" className="flex w-full justify-end">
+ <div className="max-w-[min(86%,680px)] rounded-[20px] rounded-br-[7px] bg-[#F1EEE9] px-4 py-3 text-[15.5px] leading-[1.75] whitespace-pre-wrap break-words text-[#302C28]">{pendingUser?.content}</div>
+ </article>}
+ {viewingTurn&&(live||thought||busy)&&<div data-message data-message-role="assistant" data-chat-streaming="true" className="flex min-w-0 items-start gap-3 assistant"><div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#F3EEE5] text-[#4A443C] ai"><Sparkles size={17}/></div><div className="relative min-w-0 flex-1"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">DOMINION <span>{t('ui.label.live')}</span>{busy&&thought&&!showReasoning&&<span className="inline-flex items-center gap-1 rounded bg-[#F3EEE5] px-1.5 py-0.5 text-[10px] font-medium text-[#7C7469]"><BrainCircuit size={11}/> {t('chat.thinkingNow')}</span>}</div>{showReasoning&&thought&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={thinking}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setThinking(x=>!x)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:thought.length.toLocaleString()} )} <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{thought}</div></details>}{live&&<ChatAnswer content={live}/>}{busy&&!live&&<div className="flex items-center gap-2 text-xs text-[#9C9388]"><i/><i/><i/></div>}</div></div>}{viewingTurn&&toolStatus&&<div className="inline-flex items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-1.5 text-xs text-[#7C7469]"><TerminalSquare size={15}/>{toolStatus}</div>}</div>}</div>
+   {scrollAway&&<button type="button" aria-label={loc==='ko'?'최신 메시지로 이동':'Jump to latest message'}
+     onClick={jumpDown} className="absolute bottom-[110px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-[#DED7CC] bg-white px-3 py-2 text-xs font-semibold text-[#5C544A] shadow-md hover:bg-[#FAF7F1]">
+     <ChevronDown size={15}/>{loc==='ko'?'최신 대화':'Latest'}
+    </button>}
+    <div className="conversation-composer-wrap sticky bottom-0 z-10"><div className="mx-auto w-full max-w-[860px]">{approval&&<div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><div><ShieldAlert size={20}/><span><strong>{t('chat.approval')}</strong><small>{approval.tool} · {JSON.stringify(approval.args??{}).slice(0,150)}</small></span></div><div><Action variant="secondary" disabled={approvalBusy} onClick={()=>approve(false)}>{t('chat.deny')}</Action><Action disabled={approvalBusy} onClick={()=>approve(true)}><Check size={15}/> {t('chat.approve')}</Action></div></div>}
     {originalRunId&&<div role="status"
      className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
      <span className="min-w-0 break-words">{loc==='ko'?
@@ -499,16 +512,28 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  </div>
 }
 function Message({message,agentName,showReasoning,onInspect}:{message:ChatMessage;agentName?:string;showReasoning?:boolean;onInspect:(runId:string)=>void}){
- const {profile}=useOwnerProfile()
  const ko=useLocale()==='ko'
- const [open,setOpen]=useState(true);const human=message.role==='user';
- return <div className={'flex min-w-0 items-start gap-3 '+(human?'':'')} data-message>
-  {human?<OwnerAvatar profile={profile}/>:<div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#A94E30]"><Sparkles size={17}/></div>}
-  <div className="relative min-w-0 flex-1">
-   <div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">{human?t('ui.you'):agentName||'DOMINION'}{!human&&<TokenUsage usage={message.metadata?.usage} className="ml-auto rounded border border-[#E7DDCC] bg-[#F7F1E6] px-1.5 py-0.5 text-[9px] font-medium text-[#8A775F]"/>}</div>
-   {showReasoning&&message.reasoning&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={open}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setOpen(v=>!v)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:message.reasoning.length.toLocaleString()})} <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{message.reasoning}</div></details>}
-   <div className={"min-w-0 break-words text-sm leading-7 text-[#3A342D] [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-slate-100 [&_code]:break-words [&_ul]:list-disc [&_ul]:pl-6 "+(human?"rounded-xl bg-[#F3EEE5] px-4 py-3":"")}>{message.content||(!human&&message.tool_calls?.length?t('chat.toolRequest'):'' )}</div>
-   {!human&&message.content&&<Button className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-[#7C7469] hover:bg-[#F3EEE5]" onClick={()=>navigator.clipboard.writeText(message.content)} title={t('chat.copy')}><Copy size={14}/></Button>}{!human&&typeof message.metadata?.executionId==='string'&&<Button variant="ghost" size="sm" className="ml-1 !min-h-7" onClick={()=>onInspect(message.metadata!.executionId as string)}><Activity size={12}/>{ko?'실행 기록':'Run evidence'}</Button>}
+ const [open,setOpen]=useState(false)
+ if(message.role==='user'){
+  return <article data-message data-message-role="user" className="flex w-full justify-end">
+   <div className="max-w-[min(86%,680px)] rounded-[20px] rounded-br-[7px] bg-[#F1EEE9] px-4 py-3 text-[15.5px] leading-[1.75] whitespace-pre-wrap break-words text-[#302C28]">{message.content}</div>
+  </article>
+ }
+ return <article data-message data-message-role="assistant" className="flex min-w-0 w-full items-start gap-3">
+  <div aria-hidden="true" className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#A94E30]"><Sparkles size={16}/></div>
+  <div className="min-w-0 flex-1">
+   <div className="mb-2 flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#4A443C]">{agentName||'DOMINION'}
+    <TokenUsage usage={message.metadata?.usage} className="ml-auto rounded border border-[#E7DDCC] bg-[#F7F1E6] px-1.5 py-0.5 text-[9px] font-medium text-[#8A775F]"/>
+   </div>
+   {showReasoning&&message.reasoning&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[12px] leading-6 text-[#7C7469]" open={open}>
+    <summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setOpen(v=>!v)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:message.reasoning.length.toLocaleString()})} <ChevronRight size={13} className="inline"/></summary>
+    <div className="mt-2 whitespace-pre-wrap">{message.reasoning}</div>
+   </details>}
+   {message.content?<ChatAnswer content={message.content}/>:message.tool_calls?.length?<div className="text-sm text-[#7C7469]">{t('chat.toolRequest')}</div>:null}
+   <div className="mt-1 flex flex-wrap items-center gap-1">
+    {message.content&&<Button variant="ghost" size="sm" className="!min-h-7 !gap-1.5 !px-2 !text-xs text-[#7C7469]" onClick={()=>void navigator.clipboard.writeText(message.content)} title={t('chat.copy')}><Copy size={14}/>{t('chat.copy')}</Button>}
+    {typeof message.metadata?.executionId==='string'&&<Button variant="ghost" size="sm" className="!min-h-7" onClick={()=>onInspect(message.metadata!.executionId as string)}><Activity size={13}/>{ko?'실행 기록':'Run evidence'}</Button>}
+   </div>
   </div>
- </div>
+ </article>
 }

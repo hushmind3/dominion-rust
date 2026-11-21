@@ -248,3 +248,94 @@ test('pasted translation containing news and tool verbs stays one tool-free nati
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+
+test('mobile 1:1 chat shows owner on the right, formatted assistant on the left and preserves scroll intent',
+ async({page,request})=>{
+ await page.setViewportSize({width:375,height:760})
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Chat layout acceptance'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json()
+ try{
+  const response=await request.post('/api/chat',{
+   data:{sessionId:session.id,agentId:'general',input:'안녕하세요, 정렬을 점검합니다',
+    toolsEnabled:false,toolsExecutionEnabled:false,
+    autoLearning:false,reasoningLanguage:'ko'},timeout:30_000
+  })
+  expect(response.ok()).toBeTruthy()
+  const original=await (await request.get('/api/sessions/'+session.id+'/messages')).json()
+  expect(original.map((m:{role:string})=>m.role)).toEqual(['user','assistant'])
+  const ticks=String.fromCharCode(96).repeat(3)
+  const answer='# 검증 결과\n\n**중요한 답변**\n\n- 목록 첫째\n- 목록 둘째\n\n'
+   +ticks+'rust\nlet x = 1;\n'+ticks+'\n\n'
+   +'| 항목 | 결과 |\n| --- | --- |\n| Chat | 정상 |\n\n'
+   +Array.from({length:48},(_,i)=>'추가 설명 '+i).join('\n\n')
+  await page.route('**/api/sessions/'+session.id+'/messages',route=>{
+   if(route.request().method()!=='GET')return route.continue()
+   const messages=original.map((m:{role:string})=>m.role==='assistant'
+    ?{...m,content:answer}:m)
+   return route.fulfill({status:200,contentType:'application/json',
+    body:JSON.stringify(messages)})
+  })
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  const owner=page.locator('[data-message-role="user"]').first()
+  const assistant=page.locator('[data-message-role="assistant"]').first()
+  await expect(owner).toBeVisible()
+  await expect(assistant).toBeVisible()
+  await expect(owner).toHaveCSS('justify-content','flex-end')
+  await expect(assistant.locator('.chat-answer strong')).toContainText('중요한 답변')
+  await expect(assistant.locator('.chat-answer h3')).toContainText('검증 결과')
+  await expect(assistant.locator('.chat-answer ul li')).toHaveCount(2)
+  await expect(assistant.locator('.chat-answer pre code')).toContainText('let x = 1;')
+  await expect(assistant.locator('.chat-answer table')).toBeVisible()
+  const ownerBox=await owner.locator('div').first().boundingBox()
+  const assistantBox=await assistant.locator('div').nth(1).boundingBox()
+  expect(ownerBox).not.toBeNull()
+  expect(assistantBox).not.toBeNull()
+  expect(ownerBox!.x).toBeGreaterThan(assistantBox!.x+70)
+  const fontSize=await assistant.locator('.chat-answer').evaluate(element=>
+   parseFloat(getComputedStyle(element).fontSize))
+  expect(fontSize).toBeGreaterThanOrEqual(15)
+  const scroll=page.locator('[data-chat-scroll]')
+  await scroll.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'))})
+  const latest=page.getByRole('button',{name:/최신 메시지로 이동|Jump to latest message/})
+  await expect(latest).toBeVisible()
+  await latest.click()
+  await expect.poll(()=>scroll.evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight))
+   .toBeLessThan(20)
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
+
+test('new chat owner message appears immediately and is not duplicated after streaming persistence',
+ async({page,request})=>{
+ await page.setViewportSize({width:390,height:800})
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Optimistic owner bubble acceptance'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json()
+ try{
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  await expect(page.locator('textarea.conversation-composer-input')).toBeVisible()
+  await page.route('**/api/chat',async route=>{
+   if(route.request().method()!=='POST')return route.continue()
+   await new Promise(resolve=>setTimeout(resolve,1300))
+   return route.continue()
+  })
+  await page.locator('textarea.conversation-composer-input').fill('지금 보낸 사용자 메시지')
+  await page.locator('button.conversation-composer-send').click()
+  const pending=page.locator('[data-chat-pending="true"]')
+  await expect(pending).toContainText('지금 보낸 사용자 메시지')
+  await expect(pending).toHaveCSS('justify-content','flex-end')
+  await expect(page.locator('[data-chat-streaming="true"]')).toBeVisible()
+  await expect(page.locator('[data-message-role="user"]')).toHaveCount(1,{timeout:15_000})
+  await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(1,{timeout:15_000})
+  await expect(pending).toHaveCount(0,{timeout:15_000})
+  const transcript=await (await request.get('/api/sessions/'+session.id+'/messages')).json()
+  expect(transcript.map((m:{role:string})=>m.role)).toEqual(['user','assistant'])
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
