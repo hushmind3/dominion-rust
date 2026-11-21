@@ -39,7 +39,8 @@ impl RuntimeServices for ProductHost {
             }else{run.provider_session_affinity.clone()};
             let selected=ProductHost::model_for_selection(self,settings,base,
                 &run.provider_id,&run.model_name)?
-                .with_session_affinity(&affinity);
+                .with_session_affinity(&affinity)
+                .with_run_reasoning(run.reasoning_effort.as_deref(),run.thinking)?;
             selected.complete(messages,tools,economy).await
         })
     }
