@@ -8,6 +8,7 @@ pub mod config;
 pub mod group;
 mod coordination;
 pub mod native_api;
+mod owner_access;
 pub mod remote_worker;
 pub mod build_identity;
 pub mod strategy;
