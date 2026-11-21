@@ -405,6 +405,51 @@ use super::*;
         fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]
+    async fn same_owner_message_id_cannot_switch_target_agents_even_after_restart(){
+        let root=std::env::temp_dir()
+            .join(format!("dominion-room-target-dedup-{}",Uuid::new_v4()));
+        let groups=Groups::open(root.clone()).await.unwrap();
+        let room=groups.create(NewRoom{topic:"route owner correction".into(),
+            participants:vec![
+                Participant{name:"architect".into(),role:"design".into(),economy:false},
+                Participant{name:"reviewer".into(),role:"review".into(),economy:false}
+            ],max_rounds:Some(20),budget_krw:Some(100.0)}).await.unwrap();
+        let first=groups.say_once_scoped(room.id,"Review this code".into(),
+            "owner-1",vec!["architect".into()],vec!["architect".into()])
+            .await.unwrap();
+        assert!(first.1);
+        let same=groups.say_once_scoped(room.id,"Review this code".into(),
+            "owner-1",vec!["architect".into()],vec!["architect".into()])
+            .await.unwrap();
+        assert!(!same.1);
+        assert_eq!(same.2,first.2);
+        assert!(groups.say_once_scoped(room.id,"Review this code".into(),
+            "owner-1",vec!["reviewer".into()],vec!["reviewer".into()])
+            .await.unwrap_err().contains("audience"));
+        drop(groups);
+        let reopened=Groups::open(root.clone()).await.unwrap();
+        assert!(reopened.say_once_scoped(room.id,"Review this code".into(),
+            "owner-1",vec!["reviewer".into()],vec!["reviewer".into()])
+            .await.unwrap_err().contains("audience"));
+        let accepted=reopened.say_once_scoped(room.id,"Review this code".into(),
+            "owner-1",vec!["architect".into()],vec!["architect".into()])
+            .await.unwrap();
+        assert!(!accepted.1);
+        assert_eq!(accepted.0.messages.iter().filter(|m|m.speaker=="user").count(),1);
+        let original=serde_json::to_value(&accepted.0).unwrap();
+        assert_eq!(original["client_messages"]["owner-1"]["requested_agents"],
+            json!(["architect"]));
+        let mut legacy=original;
+        legacy["client_messages"]["owner-1"]=json!(0);
+        let restored:Room=serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.client_messages["owner-1"].index(),0);
+        assert!(restored.client_messages["owner-1"].matches_agents(&["reviewer".into()]),
+            "old snapshots without target metadata must remain readable");
+        drop(reopened);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn round_robin_recipient_is_frozen_in_the_durable_owner_turn(){
         let root=std::env::temp_dir().join(format!("dominion-room-rr-pin-{}",Uuid::new_v4()));
         let groups=Groups::open(root.clone()).await.unwrap();

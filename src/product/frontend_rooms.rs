@@ -414,7 +414,7 @@ async fn state(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
   let (wanted,actual)=owner.map_or((0,0),|index|
     owner_turn_progress(&room,index,&room.recipients));
   let last_message_id=owner.and_then(|index|
-    room.client_messages.iter().find(|(_,position)|**position==index)
+    room.client_messages.iter().find(|(_,position)|position.index()==index)
         .map(|(key,_)|key.clone())).unwrap_or_default();
   let jobs=if running{vec![json!({
     "id":last_message_id,"kind":"room_turn","status":"running",
@@ -474,8 +474,9 @@ async fn admit_owner_message(
             }
         }
     }
-    let (room,inserted,index)=engine.groups.say_once(
-        id,input.input.trim().to_owned(),&input.client_message_id,recipients
+    let (room,inserted,index)=engine.groups.say_once_scoped(
+        id,input.input.trim().to_owned(),&input.client_message_id,recipients,
+        requested.clone()
     ).await.map_err(bad)?;
     Ok((room,inserted,index,requested))
 }
@@ -615,9 +616,11 @@ async fn send_background(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   // an idempotent status read, not another nine-model fan-out.
   let lease=if let Some(lease)=engine.groups.try_frontend_turn(id){lease}else{
     let room=engine.groups.get(id).await.ok_or_else(missing)?;
-    let index=room.client_messages.get(&input.client_message_id).copied();
-    let same=index.and_then(|index|room.messages.get(index).map(|message|
-      (index,message.content.as_str()==input.input.trim())));
+    let same=room.client_messages.get(&input.client_message_id)
+      .and_then(|receipt|room.messages.get(receipt.index()).map(|message|
+        (receipt.index(),message.speaker=="user"
+          &&message.content==input.input.trim()
+          &&receipt.matches_agents(&input.agent_ids))));
     if let Some((index,true))=same{
       let message=message_rows(&room).get(index).cloned()
         .ok_or_else(||failed("stored message disappeared".into()))?;

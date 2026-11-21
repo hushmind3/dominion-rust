@@ -116,6 +116,26 @@ pub struct RoomReadCursor {
     pub last_reply_index:Option<usize>,
     pub last_owner_index:Option<usize>,
 }
+/// An idempotent owner message binds the exact original recipient selection.
+/// Legacy snapshots stored only a numeric index; keep that wire format
+/// readable without silently modifying old user records on load.
+#[derive(Clone,Debug,Serialize,Deserialize)]
+#[serde(untagged)]
+pub enum ClientMessageReceipt {
+    Legacy(usize),
+    Bound { index:usize, requested_agents:Vec<String> },
+}
+impl ClientMessageReceipt {
+    pub(crate) fn index(&self)->usize {
+        match self {Self::Legacy(index)|Self::Bound{index,..}=>*index}
+    }
+    pub(crate) fn matches_agents(&self,requested:&[String])->bool{
+        match self {
+            Self::Legacy(_)=>true, // Historical snapshots did not store targets.
+            Self::Bound{requested_agents,..}=>requested_agents==requested,
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Room {
     pub id: Uuid, pub topic: String, pub participants: Vec<Participant>,
@@ -140,7 +160,7 @@ pub struct Room {
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub last_provider_failure:Option<RoomProviderFailure>,
     #[serde(default)] pub frontend:Option<FrontendRoom>,
-    #[serde(default)] pub client_messages:HashMap<String,usize>,
+    #[serde(default)] pub client_messages:HashMap<String,ClientMessageReceipt>,
     #[serde(default)] pub recipients:Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -357,6 +377,14 @@ impl Groups {
     /// creating duplicate user messages or triggering duplicate model turns.
     pub async fn say_once(&self,id:Uuid,content:String,client_id:&str,recipients:Vec<String>)
         ->Result<(Room,bool,usize),String>{
+        self.say_once_scoped(id,content,client_id,recipients.clone(),recipients).await
+    }
+    /// The raw owner target selection is separate from mention-derived
+    /// routing. Replays of an identical clientMessageId may read the original
+    /// result but cannot silently substitute a different audience.
+    pub async fn say_once_scoped(&self,id:Uuid,content:String,client_id:&str,
+        recipients:Vec<String>,requested_agents:Vec<String>)
+        ->Result<(Room,bool,usize),String>{
         if content.trim().is_empty()||content.len()>10_000{
             return Err("invalid room message".into());
         }
@@ -365,11 +393,14 @@ impl Groups {
         }
         if self.active.lock().await.contains(&id){return Err("room turn is active".into());}
         let mut room=self.get(id).await.ok_or("room not found")?;
-        if let Some(index)=room.client_messages.get(client_id){
-            if room.messages.get(*index).is_none_or(|entry|entry.content!=content){
-                return Err("clientMessageId was reused for a different message".into());
+        if let Some(saved)=room.client_messages.get(client_id){
+            let index=saved.index();
+            if room.messages.get(index).is_none_or(|entry|
+                entry.speaker!="user"||entry.content!=content)
+                ||!saved.matches_agents(&requested_agents){
+                return Err("clientMessageId was reused for a different message or audience".into());
             }
-            return Ok((room.clone(),false,*index));
+            return Ok((room.clone(),false,index));
         }
         if !matches!(room.status,RoomStatus::Open){return Err("room is closed".into());}
         let index=room.messages.len();
@@ -377,7 +408,8 @@ impl Groups {
         if recipients.iter().any(|agent|!room.participants.iter().any(|p|p.name==*agent)){
             return Err("room message targets unregistered agents".into());
         }
-        room.client_messages.insert(client_id.to_owned(),index);
+        room.client_messages.insert(client_id.to_owned(),
+            ClientMessageReceipt::Bound{index,requested_agents});
         // Pin round-robin routing on owner admission, not after a model reply
         // increments room.rounds. A retry/restart must not dispatch an
         // unintended second speaker under the same clientMessageId.

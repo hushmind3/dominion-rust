@@ -379,6 +379,13 @@ async fn background_room_lease_rejects_overlapping_sends_and_exposes_running_sta
     assert_eq!(same.1.0["job"]["status"],"running");
     assert_eq!(engine.groups.get(id).await.unwrap().messages.len(),1,
         "a retry must not create a second durable owner message");
+    let wrong_audience=send_background(State(engine.clone()),Path(id),Json(SayInput{
+        input:"First request".into(),agent_ids:vec!["agent-0".into()],
+        client_message_id:"seeded-request".into(),reasoning_language:None
+    })).await.unwrap_err();
+    assert_eq!(wrong_audience.0,StatusCode::CONFLICT,
+        "the in-flight idempotency shortcut must not bypass exact owner target binding");
+    assert_eq!(requests.load(Ordering::SeqCst),0);
     let overlapping=send_background(State(engine.clone()),Path(id),Json(SayInput{
         input:"Overlapping owner request".into(),agent_ids:vec![],
         client_message_id:"overlap-1".into(),reasoning_language:None
