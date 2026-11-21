@@ -5,7 +5,7 @@ import {Button} from './Primitives'
 import {Notice,Panel,useRemote} from './UI'
 import {useLocale} from '../i18n'
 type Skill={name:string;path:string}
-type FileList={files:unknown}
+type FileList={files:unknown;offset?:number;limit?:number;hasMore?:boolean}
 type FileEntry={path:string;label:string}
 const fileRows=(value:unknown):FileEntry[]=>{
  const raw=(value&&typeof value==='object'&&!Array.isArray(value)&&'files' in value)?
@@ -17,13 +17,14 @@ const fileRows=(value:unknown):FileEntry[]=>{
   const item=entry as Record<string,unknown>
   const path=typeof item.path==='string'?item.path:typeof item.name==='string'?item.name:''
   return path?[{path,label:path}]:[]
- }).filter(item=>item.path&&!item.path.endsWith('/')).slice(0,100)
+ }).filter(item=>item.path&&!item.path.endsWith('/')).slice(0,200)
 }
 export function RunEvidenceAssets({runId}:{runId:string}){
  const ko=useLocale()==='ko'
  const [open,setOpen]=useState(false)
+ const [fileOffset,setFileOffset]=useState(0)
  const skills=useRemote<Skill[]>(open?'/api/v1/runs/'+encodeURIComponent(runId)+'/skills':null,[])
- const files=useRemote<FileList>(open?'/api/v1/runs/'+encodeURIComponent(runId)+'/files':null,{files:[]})
+ const files=useRemote<FileList>(open?'/api/v1/runs/'+encodeURIComponent(runId)+'/files?offset='+fileOffset+'&limit=100':null,{files:[],hasMore:false})
  const [preview,setPreview]=useState<{kind:'skill'|'file';name:string;content:string}|null>(null)
  const [loading,setLoading]=useState(false),[error,setError]=useState('')
  const inspect=async(kind:'skill'|'file',name:string)=>{
@@ -53,7 +54,12 @@ export function RunEvidenceAssets({runId}:{runId:string}){
      </div></section>
     <section><h4 className="mb-2 flex items-center gap-1 text-xs font-semibold"><FileCode2 size={13}/>{ko?'작업 파일':'Workspace files'} ({rows.length})</h4>
      <div className="max-h-40 space-y-1 overflow-auto">{rows.map(row=><Button size="sm" variant="ghost" key={row.path} disabled={loading} onClick={()=>void inspect('file',row.path)} className="!flex !w-full !justify-start !text-left break-all">{row.label}</Button>)}
-      {!rows.length&&<p className="text-[11px] text-[#9C9388]">{ko?'조회 가능한 파일이 없습니다.':'No readable workspace files.'}</p>}</div></section>
+      {!rows.length&&<p className="text-[11px] text-[#9C9388]">{ko?'조회 가능한 파일이 없습니다.':'No readable workspace files.'}</p>}</div>
+      {(fileOffset>0||files.value.hasMore)&&<div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+       <Button size="sm" variant="secondary" disabled={files.loading||fileOffset===0} onClick={()=>{setFileOffset(n=>Math.max(0,n-100));setPreview(null)}}>{ko?'이전 파일':'Previous'}</Button>
+       <span className="text-[10px] text-[#8A8176]">{fileOffset+1}–{fileOffset+rows.length}</span>
+       <Button size="sm" variant="secondary" disabled={files.loading||!files.value.hasMore} onClick={()=>{setFileOffset(n=>n+100);setPreview(null)}}>{ko?'다음 파일':'Next'}</Button>
+      </div>}</section>
    </div>
    {preview&&<div className="mt-3 rounded-lg border border-[#E7E0D5] bg-[#FAF7F1] p-3">
     <div className="flex flex-wrap items-center justify-between gap-2"><strong className="break-all text-xs">{preview.name}</strong><Button size="sm" variant="ghost" onClick={()=>void navigator.clipboard.writeText(preview.content)}><Clipboard size={12}/>{ko?'내용 복사':'Copy'}</Button></div>
