@@ -31,9 +31,9 @@ impl Engine {
         // Persist intent before dispatching a potentially billable call.
         // A crashed request with no saved receipt is uncertain: replay must
         // require a fresh Run rather than silently charging the owner twice.
-        let admitted=self.store.mutate(id,|current|{
+        let checkpoint=self.store.mutate(id,|current|{
             if current.terminal()||current.status!=RunStatus::Running{
-                return Ok(false);
+                return Ok(());
             }
             if current.events.iter().any(|event|
                 event.kind=="model_only_request_intent"){
@@ -43,9 +43,11 @@ impl Engine {
                 "Model-only inference may be billed after this durable checkpoint",
                 Some(json!({"provider_id":current.provider_id,
                     "model":current.model_name,"tool_count":0})));
-            Ok(true)
+            Ok(())
         }).await?;
-        if !admitted{return Ok(());}
+        if checkpoint.terminal()||checkpoint.status!=RunStatus::Running{
+            return Ok(());
+        }
         let reply=tokio::select!{
             biased;
             _=cancellation.changed()=>return Ok(()),
