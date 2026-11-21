@@ -1,6 +1,7 @@
 //! P3 opt-in remote worker gateway. This is a transport for the existing
 //! native Harness, never an independent policy, scheduler or model executor.
 use crate::{domain::{ToolCall,ToolEffectOutcome},ports::RunStorePort};
+use serde::Deserialize;
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{sync::Arc,time::Duration};
@@ -11,13 +12,48 @@ pub const TOOL:&str="remote_worker_consult";
 const AUTH_HEADER:&str="x-dominion-worker-token";
 const MAX_REMOTE_BODY:u64=256*1024;
 
+#[derive(Clone,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct RegistryNode{
+    id:String,
+    url:String,
+    token:String,
+    #[serde(default="default_weight")]weight:u8,
+}
+fn default_weight()->u8{1}
 pub struct RemoteWorker{
     endpoint:String,
     token:String,
+    nodes:Vec<RegistryNode>,
     client:reqwest::Client,
 }
 impl RemoteWorker{
     pub fn from_env()->Result<Option<Self>,String>{
+        if let Ok(raw)=std::env::var("DOMINION_REMOTE_WORKERS_JSON"){
+            if !raw.trim().is_empty(){
+                let mut entries=serde_json::from_str::<Vec<RegistryNode>>(&raw)
+                    .map_err(|e|format!("invalid remote worker registry: {e}"))?;
+                if entries.is_empty()||entries.len()>16{
+                    return Err("remote worker registry needs 1..16 entries".into());
+                }
+                let mut unique=std::collections::HashSet::new();
+                for entry in &entries{
+                    if entry.id.is_empty()||entry.id.len()>64||
+                        !entry.id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')||
+                        entry.weight==0||entry.weight>16||
+                        !unique.insert(entry.id.clone()){
+                        return Err("remote worker IDs/weights must be unique and bounded".into());
+                    }
+                    let node=Self::configured(&entry.url,entry.token.clone())?;
+                    if !unique.insert(node.endpoint.clone()){
+                        return Err("duplicate remote worker endpoint".into());
+                    }
+                }
+                entries.sort_by(|a,b|a.id.cmp(&b.id));
+                let first=Self::configured(&entries[0].url,entries[0].token.clone())?;
+                return Ok(Some(Self{nodes:entries,..first}));
+            }
+        }
         let Some(url)=std::env::var("DOMINION_REMOTE_WORKER_URL")
             .ok().filter(|v|!v.trim().is_empty()) else{return Ok(None)};
         let token=std::env::var("DOMINION_REMOTE_WORKER_TOKEN")
@@ -44,7 +80,8 @@ impl RemoteWorker{
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
             .build().map_err(|e|e.to_string())?;
-        Ok(Self{endpoint:base.trim_end_matches('/').to_owned(),token,client})
+        Ok(Self{endpoint:base.trim_end_matches('/').to_owned(),token,
+            nodes:Vec::new(),client})
     }
     pub fn definition(&self)->Value{
         json!({"type":"function","function":{
@@ -56,18 +93,57 @@ impl RemoteWorker{
         }})
     }
     fn remote_id(&self,origin:Uuid,call_id:&str)->Uuid{
+        self.remote_id_for(&self.endpoint,origin,call_id)
+    }
+    fn remote_id_for(&self,endpoint:&str,origin:Uuid,call_id:&str)->Uuid{
         let mut digest=Sha256::new();
         digest.update(b"dominion-remote-readonly-v1\\0");
-        digest.update(self.endpoint.as_bytes());
+        digest.update(endpoint.as_bytes());
         digest.update(origin.as_bytes());
         digest.update(call_id.as_bytes());
         let digest=digest.finalize();
         let mut bytes=[0u8;16];bytes.copy_from_slice(&digest[..16]);
         Uuid::from_bytes(bytes)
     }
-    fn url(&self,run_id:Option<Uuid>)->String{
+    fn url_for(endpoint:&str,run_id:Option<Uuid>)->String{
         let path=run_id.map(|id|format!("/{id}")).unwrap_or_default();
-        format!("{}/api/v1/remote-worker/runs{path}",self.endpoint)
+        format!("{endpoint}/api/v1/remote-worker/runs{path}")
+    }
+    /// Operator-approved registry + authenticated live capability discovery.
+    /// Nodes that fail health/capacity checks are excluded BEFORE any POST.
+    /// Once chosen the binding is journalled; transport errors never fan-out
+    /// the same potentially billable instruction to a second machine.
+    async fn select_node(&self,origin:Uuid,call_id:&str)->Result<(String,String,String),String>{
+        if self.nodes.is_empty(){
+            return Ok(("legacy".into(),self.endpoint.clone(),self.token.clone()));
+        }
+        let mut candidates=Vec::<(f64,&RegistryNode)>::new();
+        for entry in &self.nodes{
+            let status=self.client.get(format!("{}/api/v1/remote-worker/capabilities",
+                entry.url.trim_end_matches('/')))
+                .header(AUTH_HEADER,&entry.token).send().await;
+            let Ok(reply)=status else{continue};
+            let Ok(capabilities)=Self::response_json(reply).await else{continue};
+            if capabilities["schemaVersion"]!=1 || capabilities["readOnly"]!=true{continue;}
+            let active=capabilities["active"].as_u64().unwrap_or(u64::MAX);
+            let slots=capabilities["slots"].as_u64().unwrap_or(0);
+            if slots==0||active>=slots{continue;}
+            let mut digest=Sha256::new();
+            digest.update(origin.as_bytes());digest.update(call_id.as_bytes());
+            digest.update(entry.id.as_bytes());
+            let hash=digest.finalize();
+            let mut bytes=[0u8;8];bytes.copy_from_slice(&hash[..8]);
+            let u=(u64::from_be_bytes(bytes) as f64+1.0)/(u64::MAX as f64+2.0);
+            // Weighted rendezvous hashing is insensitive to JSON ordering.
+            // Discount near-capacity nodes before admitting a new Run.
+            let score=-(u.ln())/(entry.weight as f64)
+                *(slots as f64)/(slots.saturating_sub(active) as f64);
+            candidates.push((score,entry));
+        }
+        candidates.sort_by(|a,b|a.0.total_cmp(&b.0));
+        candidates.first().map(|(_,node)|(
+            node.id.clone(),node.url.trim_end_matches('/').to_owned(),node.token.clone()))
+            .ok_or("no authenticated remote workers have capacity".into())
     }
     async fn response_json(response:reqwest::Response)->Result<Value,String>{
         if response.content_length().is_some_and(|n|n>MAX_REMOTE_BODY){
@@ -109,17 +185,21 @@ impl RemoteWorker{
             return Ok(ToolEffectOutcome::Settled(Err(
                 "remote worker KRW reservation exhausted before dispatch".into())));
         }
-        let remote_id=self.remote_id(id,&call.id);
+        let (node_id,endpoint,worker_token)=match self.select_node(id,&call.id).await{
+            Ok(node)=>node,Err(error)=>return Ok(ToolEffectOutcome::Settled(Err(error))),
+        };
+        let remote_id=self.remote_id_for(&endpoint,id,&call.id);
         store.mutate(id,|run|{
             run.event("remote_worker_unmetered",
                 "Remote model charges are metered by the remote worker, not by the local Run",
                 Some(json!({"remoteRunId":remote_id,"callId":call.id,
+                    "nodeId":node_id,"endpoint":endpoint,
                     "billing":"remote_separately_metered","readOnly":true})));
             Ok(())
         }).await?;
         let execute=async {
-            let response=self.client.post(self.url(None))
-                .header(AUTH_HEADER,&self.token)
+            let response=self.client.post(Self::url_for(&endpoint,None))
+                .header(AUTH_HEADER,&worker_token)
                 .json(&json!({"runId":remote_id,"instruction":instruction,
                     "budgetKrw":remaining,
                     "maxSteps":origin.max_steps.min(20).max(1)}))
@@ -142,8 +222,8 @@ impl RemoteWorker{
                 return ToolEffectOutcome::Uncertain("remote worker returned a mismatched Run ID".into());
             }
             for _ in 0..180 {
-                let response=self.client.get(self.url(Some(remote_id)))
-                    .header(AUTH_HEADER,&self.token).send().await;
+                let response=self.client.get(Self::url_for(&endpoint,Some(remote_id)))
+                    .header(AUTH_HEADER,&worker_token).send().await;
                 let result=match response{
                     Ok(value)=>value,
                     Err(error)=>return ToolEffectOutcome::Uncertain(format!(
@@ -194,6 +274,7 @@ impl RemoteWorker{
                         }
                         return ToolEffectOutcome::Settled(Ok(json!({
                             "source":"dominion_remote_worker","remoteRunId":remote_id,
+                            "nodeId":node_id,
                             "answer":answer.chars().take(20000).collect::<String>(),
                             "remoteCostKrw":view["costKrw"],
                             "remoteInputTokens":view["inputTokens"],

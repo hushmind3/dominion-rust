@@ -89,8 +89,18 @@ async fn read(State(engine):State<Arc<Engine>>,headers:HeaderMap,
     }
     Ok(Json(reply(&run)))
 }
+async fn capabilities(State(engine):State<Arc<Engine>>,headers:HeaderMap)
+    ->Result<Json<Value>,Fault>{
+    authorized(&headers)?;
+    let slots=std::env::var("DOMINION_REMOTE_WORKER_SLOTS").ok()
+        .and_then(|v|v.parse::<u64>().ok()).unwrap_or(4).clamp(1,64);
+    let active=engine.store.stats().await.active as u64;
+    Ok(Json(json!({"schemaVersion":1,"readOnly":true,
+        "writer":false,"active":active,"slots":slots})))
+}
 pub fn routes()->Router<Arc<Engine>>{
     Router::new()
+        .route("/remote-worker/capabilities",get(capabilities))
         .route("/remote-worker/runs",post(submit))
         .route("/remote-worker/runs/{id}",get(read))
 }
