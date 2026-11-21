@@ -25,7 +25,7 @@ impl RemoteWorker{
         Self::configured(&url,token).map(Some)
     }
     pub fn configured(base:&str,token:String)->Result<Self,String>{
-        if token.len()<32||token.len()>2048||token.contains(['\\r','\\n']){
+        if token.len()<32||token.len()>2048||token.bytes().any(|byte|byte==10||byte==13){
             return Err("remote worker capability token must be 32..2048 bytes".into());
         }
         let url=reqwest::Url::parse(base).map_err(|e|format!("invalid remote worker URL: {e}"))?;
@@ -99,7 +99,7 @@ impl RemoteWorker{
             return Ok(ToolEffectOutcome::Settled(Err(
                 "remote worker requires a journalled, approved tool intent".into())));
         }
-        if origin.read_only==false && origin.room_binding.is_some(){
+        if origin.room_binding.is_some(){
             return Ok(ToolEffectOutcome::Settled(Err(
                 "a Room peer cannot authorize a remote worker".into())));
         }
@@ -166,7 +166,7 @@ impl RemoteWorker{
                         }).to_string()));
                     }
                     Some("failed"|"cancelled")=>return ToolEffectOutcome::Settled(Err(format!(
-                        "remote worker {remote_id} ended with status {}",view["status"])))) ,
+                        "remote worker {remote_id} ended with status {}",view["status"]))),
                     Some("awaiting_approval"|"paused")=>return ToolEffectOutcome::Uncertain(
                         format!("remote worker {remote_id} requires remote owner reconciliation")),
                     Some("queued"|"running")=>tokio::time::sleep(Duration::from_millis(500)).await,
