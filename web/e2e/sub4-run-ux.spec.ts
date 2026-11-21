@@ -73,3 +73,41 @@ test('mobile pending-approval detail visibly separates approve and deny without 
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+test('mobile chat recovers source-linked paused agent Run without exposing automatic paid retry',
+ async({page,request})=>{
+ await page.setViewportSize({width:360,height:720})
+ const {session,runId}=await createCompletedChatRun(request)
+ try{
+  const original=await (await request.get('/api/v1/runs/'+runId)).json()
+  // Only model an interrupted read view. The actual Rust admission and
+  // at-most-once billing fence are tested independently in Rust.
+  await page.route('**/api/sessions',async route=>{
+   if(route.request().method()!=='GET')return route.continue()
+   const actual=await route.fetch()
+   const sessions=await actual.json()
+   return route.fulfill({response:actual,json:sessions.map((item:any)=>
+    item.id===session.id?{...item,pendingRun:runId}:item)})
+  })
+  await page.route('**/api/v1/runs/'+runId,route=>{
+   const events=original.events||[]
+   const latest=Math.max(0,...events.map((item:{seq:number})=>item.seq))
+   return route.fulfill({status:200,contentType:'application/json',
+    body:JSON.stringify({...original,model_only:false,status:'paused',
+     events:[...events,{seq:latest+1,kind:'model_request_intent',
+      message:'Provider model call started',detail:{stage:'agent_turn'},
+      at_ms:Date.now()}]})})
+  })
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  const source=page.getByRole('button',{name:/원본 실행 기록 열기|Open original Run/})
+  await expect(source).toBeVisible()
+  await source.click()
+  const dialog=page.getByRole('dialog',{name:/에이전트 실행 증거|Agent execution evidence/})
+  await expect(dialog.getByText(runId,{exact:true})).toBeVisible()
+  await expect(dialog.getByText(/모델 응답 확인 필요|Model response requires reconciliation/))
+   .toBeVisible()
+  await expect(dialog.getByRole('button',{name:/이어 실행|Resume/})).toHaveCount(0)
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
