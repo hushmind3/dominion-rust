@@ -15,6 +15,7 @@ import {ModelPicker} from '../components/ModelPicker'
 import {ReasoningSelect} from '../components/ReasoningSelect'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {useTranscriptScroll} from '../hooks/useTranscriptScroll'
+import {useScopedChatDraft} from '../hooks/useScopedChatDraft'
 import {useAnchoredPanel} from '../hooks/useAnchoredPanel'
 import {useJob,jobFinished,type JobState} from '../hooks/useJob'
 import {t,useLocale,type LocaleKey} from '../i18n'
@@ -45,7 +46,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  pricingKnown?:boolean;toolSchemaChars?:number;contextChars?:number}
  const [serverUsage,setServerUsage]=useState<SessionUsage>({});
  const approvals=useRemote<Approval[]>('/api/approvals',[],active);
- const [input,setInput]=useState('');
+ const {input,setInput,carryToNew,clearNew}=useScopedChatDraft(current);
  const [agentChoice,setAgentChoice]=useState<{scope?:string;id:string}>();
  const [override,setOverride]=useState<ModelOverride>();
  const defaultAgent=agents.value.find(agent=>agent.id==='default')||agents.value.find(agent=>agent.name==='기본값')||agents.value.find(agent=>agent.id==='general');
@@ -209,6 +210,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   // Keep the typed draft and original history, but route the new agent to a
   // new conversation instead of submitting an invalid mixed-owner turn.
   if(current&&selectedSession&&selectedSession.agentId!==id){
+   carryToNew();
    onSession(undefined);
    setAgentChoice({scope:undefined,id});
    setOverride(undefined);
@@ -228,7 +230,9 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   if(window.innerWidth<768)setShowHistory(false);
  };
  const resetLocal=()=>{
-  onSession(undefined);setAgentChoice(undefined);setOverride(undefined);setInput('');setPendingUser(undefined);
+  clearNew();
+  onSession(undefined);setAgentChoice(undefined);setOverride(undefined);setPendingUser(undefined);
+  if(!current)setInput('');
   setError('');setCommandInfo('');setSlashOpen(false);
   if(window.innerWidth<768)setShowHistory(false);
   inputRef.current?.focus({preventScroll:true});
@@ -366,6 +370,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     id=session.id;
     activeTurnSession.current=id;
     if(view.current===current){
+     clearNew();
      onSession(id);setTurnSession(id);
      setPendingUser(previous=>previous?{...previous,scope:id}:previous);
      if(agentId)setAgentChoice({id:agentId,scope:id});
