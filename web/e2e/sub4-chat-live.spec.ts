@@ -558,3 +558,36 @@ test('moving to another session detaches the SSE reader while the original nativ
   await request.delete('/api/sessions/'+second.id)
  }
 })
+
+
+test('unsent drafts remain isolated when switching between conversations',
+ async({page,request})=>{
+ const firstResponse=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Draft owner A'}})
+ const secondResponse=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Draft owner B'}})
+ expect(firstResponse.status()).toBe(201)
+ expect(secondResponse.status()).toBe(201)
+ const first=await firstResponse.json() as {id:string}
+ const second=await secondResponse.json() as {id:string}
+ try{
+  await page.setViewportSize({width:1200,height:850})
+  await page.goto('/#/chat?session='+encodeURIComponent(first.id))
+  const composer=page.locator('textarea.conversation-composer-input')
+  await composer.fill('Private draft belonging only to conversation A')
+  await page.getByRole('button',{name:'Draft owner B'}).click()
+  await expect(composer).toHaveValue('')
+  await composer.fill('Different unsent draft for conversation B')
+  await page.getByRole('button',{name:'Draft owner A'}).click()
+  await expect(composer).toHaveValue('Private draft belonging only to conversation A')
+  await page.getByRole('button',{name:'Draft owner B'}).click()
+  await expect(composer).toHaveValue('Different unsent draft for conversation B')
+  const firstMessages=await (await request.get('/api/sessions/'+first.id+'/messages')).json()
+  const secondMessages=await (await request.get('/api/sessions/'+second.id+'/messages')).json()
+  expect(firstMessages).toHaveLength(0)
+  expect(secondMessages).toHaveLength(0)
+ }finally{
+  await request.delete('/api/sessions/'+first.id)
+  await request.delete('/api/sessions/'+second.id)
+ }
+})
