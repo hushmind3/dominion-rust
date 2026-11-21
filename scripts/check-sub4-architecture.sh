@@ -228,7 +228,8 @@ required_count src/addons/agent_bridge.rs 'if editing[{]"workspace-write"[}]else
 required_count src/engine/task_team.rs 'self[.]launch[(]task[.]run_id' 2
 required_count src/engine/task_team.rs 'impl Engine' 1
 required_count src/engine/task_team.rs 'async fn drive[(]|fn perform_tool[(]' 0
-required_count src/engine.rs 'run[.]team[.]is_some[(]' 3
+# Team coordinator admission, dispatch/cancel barriers and SHA-verified reconciliation barrier.
+required_count src/engine.rs 'run[.]team[.]is_some[(]' 4
 # Prevent dead pre-migration facades and mock-only handlers returning as live API.
 required_count src/product/frontend_api/agents.rs 'async fn (model_runtime|model_installed|channels)\(' 0
 required_count src/engine.rs '^[[:space:]]*pub[(]crate[)] fn from_ports\(' 0
