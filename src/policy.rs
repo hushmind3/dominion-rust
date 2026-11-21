@@ -59,7 +59,7 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
             "implementation"=>return !run.read_only&&matches!(name,
                 "list_files"|"read_file"|"read_tool_receipt"|"search_tool_receipts"|"search_files"|"git_status"|"git_diff"
                 |"read_program"|"run_program"|"write_file"|"edit_file"|"shell"
-                |"external_agent_edit"
+                |"external_agent_edit"|"remote_worker_edit"
                 |"memory_search"|"list_skills"|"load_skill"),
             "verification"=>return !run.read_only&&matches!(name,
                 "list_files"|"read_file"|"read_tool_receipt"|"search_tool_receipts"|"search_files"|"git_status"|"git_diff"
@@ -94,6 +94,9 @@ pub fn select_catalog(run:&Run,tools:Vec<Value>,has_children:bool,denied:&[Strin
         if matches!(name,"check_subagent"|"read_subagent_file"|"merge_subagent") && !has_children{return false;}
         if name=="merge_subagent" && run.repository.is_none(){return false;}
         if name=="external_agent_edit" && (run.repository.is_none()||run.parent_run_id.is_none()||run.read_only){return false;}
+        if name=="remote_worker_edit" && (run.repository.is_none()
+            ||run.parent_run_id.is_none()||run.delegation_profile!="implementation"
+            ||run.read_only){return false;}
         true
     }).collect::<Vec<_>>();
     let remaining=selected.iter().map(|t|t.to_string().len()).sum::<usize>();
@@ -145,6 +148,17 @@ mod tests{
             .and_then(Value::as_str).is_some_and(|n|allowed_tool(&child,n))));
         child.delegation_profile="implementation".into();
         assert!(allowed_tool(&child,"edit_file"));
+        assert!(allowed_tool(&child,"remote_worker_edit"));
+        assert!(!allowed_tool(&child,"remote_worker_consult"));
+        let mut top_level=Run::new(CreateRun{
+            instruction:"No detached Team writer".into(),budget_krw:None,
+            max_steps:None},5).unwrap();
+        top_level.repository=Some("projects/demo".into());
+        let (no_remote_edit,_)=select_catalog(&top_level,vec![
+            json!({"type":"function","function":{"name":"remote_worker_edit"}})
+        ],false,&[]);
+        assert!(no_remote_edit.is_empty(),
+            "ordinary Runs cannot advertise remote Team Writer grants");
         assert!(!allowed_tool(&child,"mcp__remote__write"));
         assert!(!allowed_tool(&child,"spawn_subagent"));
         child.delegation_profile="inspection".into();
