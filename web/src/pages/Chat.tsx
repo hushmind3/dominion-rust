@@ -62,7 +62,15 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const catalogue=useProviderModels(providerId);
  const {value:models,error:modelError}=catalogue;
  const selectedModel=models.find(item=>item.id===model);
- const canDisableThinking=selectedProvider?.kind!=='codex'||reasoningOptions(selectedModel,true).includes('none');
+ // Read the same exact model/protocol capability matrix that the Rust
+ // transport enforces before any paid provider call.
+ const inferenceSupport=useRemote<{thinkingDisable:boolean;reasoningEfforts:string[]}|null>(
+  providerId&&model?'/api/chat/inference-support?providerId='+encodeURIComponent(providerId)+
+   '&model='+encodeURIComponent(model):null,null,false)
+ const canDisableThinking=inferenceSupport.value?.thinkingDisable===true
+ const allowedEfforts=inferenceSupport.value?.reasoningEfforts||[]
+ const canSetEffort=allowedEfforts.length>0
+ const effortModel={...selectedModel,reasoningEfforts:allowedEfforts} as ModelOption;
  const setRoute=(providerId:string,model:string)=>setOverride({scope:current,providerId,model});
  useEffect(()=>{if(!current){setOverride(undefined);setAgentChoice(undefined)}},[initialAgent,initialProvider,initialModel]);
  const [turnSession,setTurnSession]=useState<string>();
@@ -327,9 +335,9 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     sessionId:id,agentId,providerId:manual?.providerId,model:manual?.model,input:text,
     toolsEnabled,toolsExecutionEnabled:toolsEnabled,autoLearning:autoLearn,
     reasoningLanguage:reasoningKo?'ko':'original',
-    // The native Run adapter currently does not implement per-call
-    // reasoning effort or thinking-off. Never submit fake options.
-    reasoningEffort:undefined,thinking:true,
+    // The Rust adapter exposes these settings only for verified endpoints.
+    reasoningEffort:canSetEffort?(reasoningEffort||undefined):undefined,
+    thinking:canDisableThinking?thinkingEnabled:undefined,
    },event=>{
     if(controller.signal.aborted||stoppingRef.current||stream.current!==controller)return;
     if(event.type==='assistant_saved'){saved=true;setSavedMessageId(event.messageId);refresh('/api/sessions',...(id?['/api/sessions/'+encodeURIComponent(id)+'/messages']:[]));}
@@ -447,9 +455,15 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
       <div className="chat-composer-options conversation-composer-options">
        <ExecutionPermissions active={active} open={permissionOpen} onOpenChange={open=>{setPermissionOpen(open);if(open){setShowSettings(false);setModelMenu(false)}}} onError={setError} onChanged={label=>setCommandInfo(t('chat.perm.changed',{label}))}/>
 
-       <ReasoningSelect value="" onChange={()=>{}} disabled model={selectedModel} requireCatalog={selectedProvider?.kind==='codex'} defaultLabel={loc==='ko'?'기본 추론 · 수동 지정 미지원':'Default reasoning · manual effort unavailable'} className="chat-reasoning !h-7 !w-auto !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]"/>
+       <ReasoningSelect value={canSetEffort?reasoningEffort:''} onChange={effort=>{
+        setReasoningEffort(effort);if(effort)setThinkingEnabled(true)
+       }} disabled={!canSetEffort||busy} model={effortModel} requireCatalog
+       defaultLabel={canSetEffort?(loc==='ko'?'기본 추론':'Default reasoning'):
+        (loc==='ko'?'추론 강도 · 지원 미확인':'Reasoning effort unavailable')}
+       className="chat-reasoning !h-7 !w-auto !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]"/>
        <SelectInput aria-label={t('chat.agentAria')} value={agentId} onChange={e=>chooseAgent(e.target.value)} className="chat-agent !h-7 !w-auto !max-w-[140px] !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]">{agents.value.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
-       <ConversationSettings open={showSettings} onOpenChange={open=>{setShowSettings(open);if(open){setPermissionOpen(false);setModelMenu(false)}}} showReasoning={showReasoning} setShowReasoning={setShowReasoning} reasoningKo={reasoningKo} setReasoningKo={setReasoningKo} thinkingEnabled={thinkingEnabled} setThinkingEnabled={setThinkingEnabled} canDisableThinking={false} reasoningEffort="" setReasoningEffort={()=>{}} toolsEnabled={toolsEnabled} setToolsEnabled={setToolsEnabled} autoLearn={autoLearn} setAutoLearn={setAutoLearn} learning={learning} learnDisabled={!current||Boolean(selectedSession?.roomId)||busy} onLearn={learnSession}/>
+       <ConversationSettings open={showSettings} onOpenChange={open=>{setShowSettings(open);if(open){setPermissionOpen(false);setModelMenu(false)}}} showReasoning={showReasoning} setShowReasoning={setShowReasoning} reasoningKo={reasoningKo} setReasoningKo={setReasoningKo} thinkingEnabled={thinkingEnabled} setThinkingEnabled={setThinkingEnabled} canDisableThinking={canDisableThinking&&!busy} reasoningEffort={reasoningEffort}
+        setReasoningEffort={setReasoningEffort} toolsEnabled={toolsEnabled} setToolsEnabled={setToolsEnabled} autoLearn={autoLearn} setAutoLearn={setAutoLearn} learning={learning} learnDisabled={!current||Boolean(selectedSession?.roomId)||busy} onLearn={learnSession}/>
       </div>
       <div className="ml-auto flex items-center gap-2">
        <span className="hidden text-[10px] text-[#9C9388] sm:inline">{t('chat.enterHint')}</span>
