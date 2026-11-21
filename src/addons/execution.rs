@@ -1,7 +1,7 @@
 //! Optional tool-transport adapter. The only source of Run authorization
 //! remains the native journal in Engine::perform_tool; this module begins no
 //! Run, grants no approval and never retries uncertain remote mutations.
-use super::{Host,agent_bridge,connected_tools,mcp::{McpCallOutcome,McpProgress}};
+use super::{Host,agent_bridge,remote_worker,connected_tools,mcp::{McpCallOutcome,McpProgress}};
 use crate::{config::Settings,domain::{ToolCall,ToolEffectOutcome},ports::RunStorePort};
 use serde_json::json;
 use std::sync::Arc;
@@ -17,6 +17,13 @@ pub async fn invoke(host:&Host,settings:&Settings,store:&Arc<RunStorePort>,
     }
     if matches!(call.name.as_str(),agent_bridge::TOOL|agent_bridge::EDIT_TOOL){
         return host.bridge.execute(settings,store,id,call,cancellation).await;
+    }
+    if call.name==remote_worker::TOOL{
+        return match host.remote_worker.as_ref(){
+            Some(remote)=>remote.execute(store,id,call,cancellation).await,
+            None=>Ok(ToolEffectOutcome::Settled(Err(
+                "remote worker is not configured by the operator".into())))
+        };
     }
     if call.name.starts_with("mcp__"){
         return invoke_mcp_with_progress(host,store,id,call,cancellation).await;

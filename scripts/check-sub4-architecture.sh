@@ -211,6 +211,10 @@ required_count src/domain/team.rs 'pub struct TeamGraph' 1
 required_count src/engine/task_team.rs 'pub async fn advance_task_team' 1
 required_count src/addons/agent_bridge.rs 'pub const TOOL:&str="external_agent_consult"' 1
 required_count src/addons/mod.rs 'agent_bridge::TOOL[|]agent_bridge::EDIT_TOOL' 3
+required_count src/addons/mod.rs 'remote_worker::TOOL' 3
+required_count src/addons/execution.rs 'host[.]remote_worker[.]as_ref' 1
+required_count src/product/remote_worker.rs 'run[.]read_only=true' 1
+required_count src/infrastructure/persistence/mod.rs 'pub async fn put_if_absent' 1
 required_count src/addons/execution.rs 'host[.]bridge[.]execute' 1
 required_count src/addons/agent_bridge.rs 'run[.]event[(]"external_agent_unmetered"' 1
 required_count src/addons/agent_bridge.rs 'kill_on_drop[(]true[)]' 1
