@@ -139,3 +139,39 @@ test('mobile Team editor rejects cyclic dependencies before creating a real Rust
  expect(saved.team.tasks).toHaveLength(3)
  await expect(page.getByText(saved.id,{exact:true})).toBeVisible()
 })
+
+
+test('Run details distinguish missing required test from a fresh approved test receipt',
+ async({page,request})=>{
+ await page.setViewportSize({width:375,height:760})
+ const {session,runId}=await createCompletedChatRun(request)
+ try{
+  const original=await (await request.get('/api/v1/runs/'+runId)).json()
+  const previous=original.events||[]
+  const latest=Math.max(0,...previous.map((event:{seq:number})=>event.seq))
+  let executed=false
+  await page.route('**/api/v1/runs/'+runId,route=>{
+   if(route.request().method()!=='GET')return route.continue()
+   const event={seq:latest+1,
+    kind:executed?'test_evidence_checked':'test_evidence_missing',
+    message:executed?'Approved test command succeeded after edits':'Requested tests not yet executed',
+    at_ms:Date.now(),detail:{testExecutionVerified:executed}}
+   return route.fulfill({status:200,contentType:'application/json',
+    body:JSON.stringify({...original,status:executed?'completed':'running',
+     answer:executed?original.answer:null,events:[...previous,event]})})
+  })
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  await page.getByRole('button',{name:/실행 기록|Run evidence/}).last().click()
+  const dialog=page.getByRole('dialog',{name:/에이전트 실행 증거|Agent execution evidence/})
+  const evidence=dialog.getByRole('status').filter({hasText:/요청한 테스트의 실제 실행 근거|Requested test execution evidence/})
+  await expect(evidence).toContainText(/성공 기록이 없어|No fresh successful test receipt/)
+  await evidence.getByRole('button',{name:/원본 실행 영수증 보기|Show original execution receipts/}).click()
+  await expect(dialog.getByText('test_evidence_missing',{exact:true})).toBeVisible()
+  executed=true
+  await dialog.getByRole('button',{name:/새로고침|Refresh/}).click()
+  await expect(evidence).toContainText(/성공 기록이 있습니다|approved test command succeeded/)
+  await expect(dialog.getByText('test_evidence_checked',{exact:true})).toBeVisible()
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
