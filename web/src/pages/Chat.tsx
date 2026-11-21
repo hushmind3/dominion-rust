@@ -361,6 +361,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   jumpDown();
   let id=current;
   let saved=false;
+  let admitted=false;
   try{
    if(!id){
     const session=await post<ChatSession>('/api/sessions',{title:t('chat.sessionTitle'),agentId,providerId:manual?.providerId,model:manual?.model});
@@ -399,11 +400,17 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
      if(typeof event.runId==='string'&&event.runId&&id)setFailedRun({sessionId:id,runId:event.runId})
      throw Error(event.message)
     }
-   },controller.signal);
+   },controller.signal,()=>{admitted=true});
   }catch(e){
    if(!controller.signal.aborted&&view.current===id){
     setError(translateError((e as Error).message));
-    if(!saved){setPendingUser(undefined);setInput(previous=>previous.trim()?previous:text);}
+    if(!saved){
+     setPendingUser(undefined);
+     // Once SSE was admitted, a native Run and its user message are already
+     // durable. Do not silently make a duplicate billable request one click
+     // away by restoring the original text into the composer.
+     if(!admitted)setInput(previous=>previous.trim()?previous:text);
+    }
    }
   }finally{
    if(stream.current===controller){
