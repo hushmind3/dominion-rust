@@ -66,6 +66,30 @@ async fn model_only_chat_keeps_role_preserving_context_but_never_tools(){
  server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
 }
 #[tokio::test]
+async fn native_chat_cannot_dispatch_before_exact_owner_binding(){
+ let (engine,requests,root,server)=fixture(0).await;
+ let mut run=Run::new(CreateRun{instruction:"Owner pending".into(),
+   budget_krw:Some(100.0),max_steps:Some(3)},3).unwrap();
+ run.model_only=true;
+ run.event("external_owner_admission_required","Must bind session before inference",None);
+ let id=run.id;
+ engine.store.put(run).await.unwrap();
+ let err=engine.launch(id).await.unwrap_err();
+ assert!(err.contains("owner admission"),"{err}");
+ assert_eq!(requests.requests.load(Ordering::SeqCst),0);
+ assert_eq!(engine.store.get(id).await.unwrap().status,RunStatus::Queued);
+ engine.store.mutate(id,|current|{
+  current.event("external_owner_admission_bound","Accepted exact session",None);
+  Ok(())
+ }).await.unwrap();
+ engine.launch(id).await.unwrap();
+ let answer=wait_terminal(&engine,id).await;
+ assert_eq!(answer.status,RunStatus::Completed);
+ assert_eq!(requests.requests.load(Ordering::SeqCst),1);
+ server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
 async fn model_only_chat_uses_native_worker_once_and_records_usage(){
  let (engine,requests,root,server)=fixture(25).await;
  let mut run=Run::new(CreateRun{instruction:"Answer using no tools".into(),
