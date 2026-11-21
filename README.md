@@ -23,6 +23,18 @@ The existing **Activity / Operations** view now connects directly to Sub4's Rust
 
 The UI consumes the same durable Run receipts used by the Rust SDK. SSE `job_event {id}` invalidates the matching run/operations detail and active Team board, and the native `/api/executions` adapter now returns the actual bounded instruction rather than empty task labels. For an intentionally paused Team coordinator with active children the UI renders child-derived activity, not a misleading stopped label. New UI controls are compile/contract-tested; real external-provider sessions, production approvals and multi-host workflows need separate integration checks.
 
+## Sub4 native-first UX integration (November 21, 2026)
+
+The original Chat, Rooms, Home, Connections and Activity navigation is retained, with Rust-native controls added instead of a parallel browser executor:
+
+- Transcript-linked Run evidence for chat and each room speaker, plus a shared native Run inspector for the Home/Activity panels, including actual tool receipts, per-call human approval/denial, interrupted-effect reconciliation, step/token/KRW budgets, run-scoped Skills and artifacts.
+- Mid-run owner corrections through the durable `/api/v1/runs/{id}/directive` contract; native subagent delegation uses the existing scheduler, per-child budget reservations and tool profiles.
+- Operator-scoped and secret-redacted `/api/v1/integrations/status` for configured external coding CLIs and opt-in parallel remote Worker capacity probes; no worker token or binary path is exposed.
+- Explicit MCP `/api/mcp/status?probe=true` diagnostics reuse paginated `tools/list`, reporting per-server real tool counts or bounded errors, never executing a discovered tool.
+- Nonfunctional blanket-approval UI controls were removed because the native Rust policy does not grant them. The UI now describes the actual one-time per-effect approval workflow.
+
+External CLIs, separate remote nodes, production deployment, and model-cost benchmark success depend on their real configurations and are **not** implied by a green TypeScript/Rust CI.
+
 The main Chat's manual compact command persists a bounded excerpt of older messages without deleting the original transcript. The manual Learn command saves explicit owner messages as provenance-labeled global memory. These are native projections, not hidden model summarization or a second agent scheduler.
 
 [Repository duplication audit and preserved contracts](docs/SUB4_DEDUP_AUDIT_2026-11-20.md) · [Retired subsystem and dependency audit](docs/SUB4_RETIRED_CODE_AUDIT_2026-11-20.md) · [Frontend and account-sign-in cleanup](docs/SUB4_FRONTEND_AUTH_CLEANUP_2026-11-20.md)
