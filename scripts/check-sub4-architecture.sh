@@ -176,7 +176,9 @@ required_count src/product/frontend_api.rs 'merge\(crate::frontend_channels|merg
 required_count src/product/mod.rs 'pub addons:Arc<addons::Host>' 1
 required_count src/product/group.rs 'pub struct RoomReadCursor' 1
 required_count src/product/group.rs 'room[.]read_cursors[.]insert[(]participant[.]name' 1
-required_count src/product/group.rs 'room[.]read_cursors[.]clear' 1
+required_count src/product/group/lifecycle.rs 'room[.]read_cursors[.]clear' 1
+required_count src/product/group/lifecycle.rs 'self[.]mutation_lease[(]id[)]' 4
+required_count src/product/group.rs 'mod lifecycle;' 1
 required_count src/product/coordination.rs 'unread_range[(]' 1
 required_count src/product/frontend_rooms.rs 'crate::addons::dispatch_room' 3
 required_count web/src/pages/Connections.tsx 'lazy\(\(\)=>import\(' 4
