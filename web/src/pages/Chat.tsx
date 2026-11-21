@@ -89,7 +89,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const [slashOpen,setSlashOpen]=useState(false),[slashActive,setSlashActive]=useState(0),[commandInfo,setCommandInfo]=useState('');
  const [inspectedRun,setInspectedRun]=useState('');
  const [failedRun,setFailedRun]=useState<{sessionId:string;runId:string}|null>(null);
- const recentRunId=messages.slice().reverse().find(message=>message.role==='assistant'&&message.metadata?.executionId)?.metadata?.executionId;
+ const recentRunId=messages.slice().reverse().find(message=>typeof message.metadata?.executionId==='string')?.metadata?.executionId;
  const originalRunId=selectedSession?.pendingRun||(failedRun&&failedRun.sessionId===current?failedRun.runId:undefined);
  useEffect(()=>{setInspectedRun('')},[current]);
  const inputRef=useRef<HTMLTextAreaElement>(null);
