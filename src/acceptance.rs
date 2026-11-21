@@ -282,10 +282,16 @@ pub fn requested_test_evidence(run:&Run)->Option<TestEvidence> {
             }
         }
     }
-    let satisfied=!attempts.is_empty()&&running.is_empty()
-        &&attempts.values().all(|(started,passed)|
-            *passed==Some(true)&&*started>latest_test_directive_seq
-            &&last_mutation.is_none_or(|mutation|mutation<*started));
+    // Only runs after the last repository mutation or new owner directive
+    // can establish current validity. Older suites become stale, rather than
+    // permanently vetoing a fresh post-edit verification.
+    let boundary=last_mutation.unwrap_or(0).max(latest_test_directive_seq);
+    let fresh=attempts.values().filter(|(started,_)|*started>boundary)
+        .collect::<Vec<_>>();
+    let unsettled_fresh=running.keys().any(|id|
+        starts.get(id).is_some_and(|(started,_)|*started>boundary));
+    let satisfied=!fresh.is_empty()&&!unsettled_fresh
+        &&fresh.iter().all(|attempt|attempt.1==Some(true));
     let summary=if satisfied {
         "An approved test command succeeded after the last possible repository edit. This is executed-test evidence, not semantic proof.".to_string()
     }else{
