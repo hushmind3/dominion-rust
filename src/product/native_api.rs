@@ -153,6 +153,11 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .nest("/api/v1",api)
         .nest("/api",frontend)
         .fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))
+        // A shared outer boundary covers both /api namespaces and the UI,
+        // before owner bearer authorization or any public OAuth callback.
+        // Reject browser DNS rebinding and hostile Origins on local binds.
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&engine),super::owner_access::guard))
         .with_state(engine)
 }
 
