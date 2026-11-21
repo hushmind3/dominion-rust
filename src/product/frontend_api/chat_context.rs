@@ -40,7 +40,7 @@ fn pasted_translation_is_self_contained(query:&str)->Option<bool>{
     for prefix in prefixes{
         if let Some(rest)=text.strip_prefix(prefix){
             let body=rest.trim();
-            if body.is_empty(){return Some(false);}
+            if body.is_empty(){return Some(true);}
             return Some(!translation_target_is_resource(body));
         }
     }
