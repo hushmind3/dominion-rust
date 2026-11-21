@@ -141,7 +141,7 @@ impl ModelClient {
     fn opencode_session_for(&self,settings:&ModelSettings)->Option<&str>{
         let url=reqwest::Url::parse(&settings.base_url).ok()?;
         if url.scheme()=="https" && url.host_str()==Some("opencode.ai")
-            && url.path().starts_with("/zen/"){
+            && (url.path().starts_with("/zen/") || url.path().starts_with("/inference/go/")){
             self.session_affinity.as_deref()
                 .or(Some(self.opencode_default_session.as_str()))
         }else{None}
