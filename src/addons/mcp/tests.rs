@@ -358,10 +358,19 @@ use super::*;
     }
     async fn endpoint(headers:HeaderMap,Json(body):Json<Value>)->Json<Value>{
         assert_eq!(headers.get("MCP-Protocol-Version").unwrap(),"2026-07-28");
+        assert!(headers.get("Mcp-Session-Id").is_none(),
+            "2026 stateless transport must not invent legacy session affinity");
+        let meta=&body["params"]["_meta"];
+        assert_eq!(meta["io.modelcontextprotocol/protocolVersion"],"2026-07-28");
+        assert_eq!(meta["io.modelcontextprotocol/clientInfo"]["name"],"dominion-rust");
+        assert!(meta["io.modelcontextprotocol/clientCapabilities"].is_object());
         let method=body["method"].as_str().unwrap();
+        assert_ne!(method,"initialize","modern MCP must not start a legacy handshake");
         assert_eq!(headers.get("Mcp-Method").unwrap(),method);
         let id=body["id"].clone();
         let result=if method=="tools/list"{
+            assert!(headers.get("Mcp-Name").is_none(),
+                "non-tool-name requests have no Mcp-Name routing header");
             json!({"tools":[{"name":"echo","description":"Echo value","inputSchema":{
                 "type":"object","properties":{"word":{"type":"string","x-mcp-header":"Word"}},"required":["word"]}}]})
         }else{
