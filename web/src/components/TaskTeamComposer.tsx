@@ -40,7 +40,7 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
    const created=await post<Created>('/api/v1/task-teams',{
     instruction:goal.trim(),repository:repository.trim()||null,budgetKrw:total,
     tasks:steps.map((task,i)=>({
-     id:task.id.trim(),instruction:task.instruction.trim(),workspace:task.workspace.trim()||'project',
+     id:task.id.trim(),instruction:'Team objective:\n'+goal.trim()+'\n\nWorker assignment:\n'+task.instruction.trim(),workspace:task.workspace.trim()||'project',
      role:task.role,depends_on:task.depends.split(',').map(x=>x.trim()).filter(Boolean),
      budget_krw:taskBudget[i],max_steps:Number(task.steps),acceptance_checks:[]
     }))
