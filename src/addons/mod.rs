@@ -142,9 +142,13 @@ mod tests{
         assert!(matches!(outcome,crate::domain::ToolEffectOutcome::Settled(Err(_))),
             "disabled external requests must not reach remote IO");
         let groups=Arc::new(Groups::open(root.join("groups")).await.unwrap());
-        let engine=Engine::new(settings,store,groups).unwrap();
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address=listener.local_addr().unwrap();
+        // The Owner Host gate is bound to the configured listener identity.
+        // A fixture using port :0 must pin the resolved port before opening
+        // the engine; relaxing Host validation would hide a real regression.
+        settings.bind=address;
+        let engine=Engine::new(settings,store,groups).unwrap();
         let router=crate::api::router(Arc::clone(&engine));
         let server=tokio::spawn(async move{axum::serve(listener,router).await.unwrap();});
         let client=reqwest::Client::new();
