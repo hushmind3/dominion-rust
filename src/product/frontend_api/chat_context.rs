@@ -20,50 +20,83 @@ pub(super) fn no_tools_required(query:&str)->bool{
     let cleaned=query.trim().trim_matches(|c:char|
         c.is_ascii_punctuation()||matches!(c,'！'|'？'|'。'|'~'|'～'|' '))
         .to_lowercase();
-    if matches!(cleaned.as_str(),
-        "안녕"|"안녕하세요"|"하이"|"반가워"|"고마워"|"고맙습니다"|
-        "감사합니다"|"감사해요"|"잘자"|"굿모닝"|"hello"|"hi"|
-        "thanks"|"thank you"|"good morning"){return true}
-    // Intentional ordinary text transformations do not require file, shell,
-    // browser or MCP execution. Never route a live/repository action here.
-    if cleaned.chars().count()>600{return false}
-    if ["검색","찾아","최신","최근","지금","오늘","뉴스","2026","2027",
-        "today","tonight","tomorrow","yesterday","latest","recent","this week",
-        "current","real-time","realtime","live","weather","price","pricing",
-        "cost","quote","stock","rates","currency","exchange","near me",
-        "날씨","가격","시세","주가","환율","요금","얼마","실시간","근처",
-        "파일","코드","레포","리포","브랜치","커밋","깃허브","github",
-        "프로젝트","배포","실행","도구","명령","터미널","웹","사이트",
-        "브라우저","url","http","api","mcp","문서 열","조회","수정",
-        "삭제","만들","설치","테스트","검증","실측","벤치","계속",
-        "이어","시작","진행","이전 대화","지난 대화","history",
-        "latest","current","search","browse","file","repository",
-        "deploy","run","execute","install","commit","continue"]
-        .iter().any(|word|cleaned.contains(word)){return false}
+    if cleaned.is_empty()||cleaned.chars().count()>600{return false;}
+
+    // Whole social utterances, not only one exact greeting. Do not treat
+    // arbitrary sentences beginning with hello as tool-free requests.
+    // Splitting on non-alphanumerics tolerates punctuation and emoji while
+    // requiring EVERY substantive word to be an ordinary social expression.
+    let social=cleaned.split(|c:char|!c.is_alphanumeric())
+        .filter(|part|!part.is_empty()).collect::<Vec<_>>();
+    if (1..=8).contains(&social.len()) && social.iter().all(|word|
+        matches!(*word,
+            "안녕"|"안녕하세요"|"안뇽"|"하이"|"반가워"|"반가워요"|
+            "반갑습니다"|"고마워"|"고마워요"|"고맙습니다"|
+            "감사해요"|"감사합니다"|"감사"|"좋은"|"하루"|
+            "보내세요"|"보내"|"잘자"|"잘자요"|"굿모닝"|
+            "ㅎㅎ"|"ㅋㅋ"|"hello"|"hi"|"hey"|"thanks"|"thank"|
+            "you"|"good"|"morning"|"night"|"evening")){
+        return true;
+    }
+
+    // A tool decision must err towards the normal Run for named artifacts,
+    // current facts, prior-work references and owner-authorized effects.
+    // This check is BEFORE translation/explanation shortcuts so a request
+    // like "open README and translate it" never loses retrieval context.
+    const EXTERNAL_OR_CONTINUATION:&[&str]=&[
+        "검색","찾아","최신","최근","지금","오늘","내일","어제","뉴스",
+        "2026","2027","today","tonight","tomorrow","yesterday","latest",
+        "recent","this week","current","real-time","realtime","live",
+        "weather","price","pricing","cost","quote","stock","rates",
+        "currency","exchange","near me","날씨","가격","시세","주가",
+        "환율","요금","얼마","실시간","근처",
+        "파일","첨부","업로드","readme","pdf","코드","레포","리포",
+        "브랜치","커밋","깃허브","github","프로젝트","배포","실행",
+        "도구","명령","터미널","웹","사이트","브라우저","url",
+        "http","api","mcp","문서 열","조회","수정","삭제","만들",
+        "설치","테스트","검증","실측","벤치","승인","취소","적용",
+        "계속","이어","재개","시작","진행","이전 대화","지난 대화",
+        "전에 말","지난번","아까","그때","방금","앞서","앞에서",
+        "위에서","그거","이거","저거","그 파일","history",
+        "search","browse","file","repository","deploy","run",
+        "execute","install","commit","continue","resume",
+    ];
+    if EXTERNAL_OR_CONTINUATION.iter().any(|word|cleaned.contains(word)){
+        return false;
+    }
+    if [".rs",".tsx",".ts",".js",".py",".md",".json",".toml",
+        "src/","web/","crates/","\\","~/","./"].iter()
+        .any(|path|cleaned.contains(path)){return false;}
+    if ["내 ","제가 ","우리 ","우리가 ","우리의 ","나의 ","그 ","저 "]
+        .iter().any(|prefix|cleaned.starts_with(prefix)){return false;}
+
+    // User-provided text is still a single ordinary model response.
     if ["번역해","영어로 번역","한국어로 번역","맞춤법 고쳐",
-     "문장 다듬어","문장을 다듬어","표현 다듬어",
-     "translate this","translate to","fix this sentence",
-     "rewrite this sentence"].iter()
-        .any(|prefix|cleaned.starts_with(prefix)){return true}
-    // Common timeless, self-contained conceptual questions are ordinary
-    // chat, not an autonomous repository/tool job. This whitelist is
-    // deliberately narrow: dynamic questions, ambiguous follow-ups and
-    // requests to inspect external artifacts always remain tool capable.
+        "문장 다듬어","문장을 다듬어","표현 다듬어",
+        "translate this","translate to","fix this sentence",
+        "rewrite this sentence"].iter()
+        .any(|prefix|cleaned.starts_with(prefix)){return true;}
+
+    // Timeless conceptual explanations are not autonomous code/search jobs.
+    // Permit Korean natural variants while keeping bare "explain that"
+    // follow-ups on the full context/tool-capable path.
     const KNOWLEDGE:&[&str]=&[
-        "란 무엇","이란 무엇","은 무엇","는 무엇","무슨 뜻","뜻이 뭐",
-        "뜻은 뭐","원리가 뭐","어떤 원리","원리 설명","개념 설명",
-        "차이점 설명","차이는 뭐","왜 그런","왜 그렇게",
+        "란 무엇","이란 무엇","은 무엇","는 무엇","무슨 뜻",
+        "뜻이 뭐","뜻은 뭐","원리가 뭐","어떤 원리",
+        "원리 설명","개념 설명","차이점 설명","차이는 뭐",
+        "왜 그런","왜 그렇게","설명해줘","설명해 줘",
+        "설명해주세요","설명해 주세요","설명해봐","설명해 봐",
+        "비교해줘","비교해 줘","비교해주세요",
         "what is ","what are ","what does ","explain the concept",
         "how does ","why does ","why is ","difference between ",
     ];
     if !KNOWLEDGE.iter().any(|pattern|cleaned.contains(pattern)){
         return false;
     }
-    // Code paths and user-specific files are never generalized into
-    // timeless chat even if phrased as a definition question.
-    if [".rs",".tsx",".ts",".js",".py",".md",".json",".toml",
-        "src/","web/","crates/","\\","~/","./"].iter()
-        .any(|extension|cleaned.contains(extension)){return false}
+    // A short anaphoric request must preserve the preceding turn and tools.
+    if ["그걸","그건","그것","그때","이걸","이건","이것","저걸",
+        "그 부분","위 내용","앞 내용","그 설명","같은거"].iter()
+        .any(|word|cleaned.contains(word)){return false;}
     true
 }
 
@@ -429,6 +462,37 @@ mod tests{
             evidence["content"].as_str().unwrap().split_once('\n').unwrap().1).unwrap();
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|r|r["source"]=="durable_chat_transcript"));
+    }
+    #[test]
+    fn korean_social_variants_are_tool_free_without_losing_tasks(){
+        for q in ["안녕하세요 반가워요","안녕! 반가워요 😊",
+            "안녕하세요. 좋은 하루 보내세요","반갑습니다",
+            "고마워요! 감사합니다","Hello, good morning!"]{
+            assert!(no_tools_required(q),"{q}");
+        }
+        for q in ["안녕하세요, 아까 그 파일 열어줘",
+            "안녕하세요! GitHub 브랜치 검색해줘",
+            "반가워요, 이전 작업 계속해","고마워요. 이거 승인해줘",
+            "안녕하세요, 첨부한 PDF 읽고 설명해줘",
+            "안녕하세요, 오늘 환율 알려줘"]{
+            assert!(!no_tools_required(q),"{q}");
+        }
+    }
+    #[test]
+    fn korean_explanations_skip_tools_but_followups_remain_tool_capable(){
+        for q in ["KV 캐시 동작 원리를 설명해주세요",
+            "트랜스포머와 RNN을 비교해줘",
+            "멀티에이전트 구조를 설명해 줘",
+            "왜 우주가 팽창하나요? 원리를 설명해주세요"]{
+            assert!(no_tools_required(q),"{q}");
+        }
+        for q in ["그 부분을 설명해줘","이걸 자세히 설명해주세요",
+            "앞에서 논의한 내용을 설명해줘",
+            "README 파일 내용을 설명해주세요",
+            "src/engine.rs에서 무슨 일을 하는지 설명해줘",
+            "방금 승인한 실행 결과를 설명해주세요"]{
+            assert!(!no_tools_required(q),"{q}");
+        }
     }
     #[test]
     fn direct_answer_gate_never_disables_actual_tools(){
