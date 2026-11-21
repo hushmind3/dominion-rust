@@ -458,7 +458,7 @@ test('changing agents from an existing conversation starts a correctly bound new
 })
 
 
-test('a late failed Run receipt is never shown in a different chat session',
+test('a late failed response does not create phantom Run evidence after switching chats',
  async({page,request})=>{
  const firstResponse=await request.post('/api/sessions',{
   data:{agentId:'general',title:'Late receipt owner A'}})
@@ -492,7 +492,9 @@ test('a late failed Run receipt is never shown in a different chat session',
   await expect(page.getByRole('button',{name:/원본 실행·복구 열기|Inspect original Run/})).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText('foreign-run-receipt')
   await page.getByRole('button',{name:'Late receipt owner A'}).click()
-  await expect(page.getByRole('button',{name:/원본 실행·복구 열기|Inspect original Run/})).toBeVisible()
+  // The mocked response never created a durable native Run. Navigating away
+  // aborted its reader, so it must not fabricate a Run link on return.
+  await expect(page.getByRole('button',{name:/원본 실행·복구 열기|Inspect original Run/})).toHaveCount(0)
  }finally{
   release()
   await request.delete('/api/sessions/'+first.id)
@@ -528,6 +530,12 @@ test('moving to another session detaches the SSE reader while the original nativ
   // The model call has started; leaving this chat must NOT cancel its Run.
   await page.getByRole('button',{name:'Independent chat B'}).click()
   await expect(page).toHaveURL(new RegExp('session='+second.id))
+  const pendingA=page.getByRole('button',{name:'Durable background turn A'})
+  await expect(pendingA.locator('[data-chat-pending-run]')).toBeVisible()
+  await pendingA.click()
+  await expect(page.locator('button.conversation-composer-send[type="submit"]')).toBeDisabled()
+  await expect(page.getByRole('button',{name:/원본 실행·복구 열기|Inspect original Run/})).toBeVisible()
+  await page.getByRole('button',{name:'Independent chat B'}).click()
   await expect(page.locator('button.conversation-composer-send[type="submit"]')).toBeVisible()
   await composer.fill('Answer the independent second chat')
   await page.locator('button.conversation-composer-send').click()
