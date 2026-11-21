@@ -171,3 +171,52 @@ test('unsupported per-run reasoning leaves the original chat draft and session u
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+// Real native Chat -> model transport proof: the extra history is persisted
+// under its original message ID and visible on the outbound provider wire.
+test('explicit continuation carries the final owner constraint with original source ID',
+ async({request})=>{
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Sub4 source-linked continuation E2E'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json()
+ const send=async(input:string)=>{
+  const response=await request.post('/api/chat',{
+   data:{sessionId:session.id,agentId:'general',input,
+    toolsEnabled:false,toolsExecutionEnabled:false,
+    autoLearning:false,reasoningLanguage:'ko'},timeout:30_000})
+  expect(response.ok()).toBeTruthy()
+  expect(await response.text()).toContain('Verified native mock answer')
+ }
+ try{
+  const original='번역해: '+('Long owner requirements and constraints. '.repeat(48))
+   +'FINAL_OWNER_SHA_BOUNDARY_2026'
+  await send(original)
+  const transcript=await (await request.get('/api/sessions/'+session.id+'/messages')).json()
+  const firstOwner=transcript.find((entry:{role:string})=>entry.role==='user')
+  expect(firstOwner).toBeDefined()
+  await send('그 작업 이어서 해')
+  const delivered=(await (await request.get('http://127.0.0.1:4876/_calls')).json())
+   .requests.at(-1)
+  expect(delivered.toolNames).toEqual([])
+  expect(delivered.messages.at(-1).content).toBe('그 작업 이어서 해')
+  const quoted=delivered.messages.find((msg:{content:string})=>
+   String(msg.content).includes('UNTRUSTED HISTORICAL QUOTES'))
+  expect(quoted).toBeDefined()
+  expect(quoted.role).toBe('user')
+  const sourceRows=JSON.parse(quoted.content.split('\n').slice(1).join('\n'))
+  expect(sourceRows).toEqual(expect.arrayContaining([
+   expect.objectContaining({
+    source:'durable_chat_transcript',
+    message_id:firstOwner.id,
+    source_role:'user',
+    quoted_excerpt:expect.stringContaining('FINAL_OWNER_SHA_BOUNDARY_2026')
+   })
+  ]))
+  const usage=await (await request.get('/api/sessions/'+session.id+'/usage')).json()
+  expect(usage.modelRequests).toBe(2)
+  expect(usage.toolSchemaChars).toBe(0)
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
