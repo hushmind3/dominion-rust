@@ -17,6 +17,7 @@ type NativeRun={
  output_tokens:number;events:NativeEvent[];team?:unknown;parent_run_id?:string|null;
  pending_approval?:ToolCall|null;approval_decision?:boolean|null;in_flight?:ToolCall|null;
  repository?:string|null;read_only?:boolean;reserved_budget_krw?:number;
+ model_only?:boolean;
 }
 type TeamTask={id:string;run_id:string;role:'investigator'|'writer'|'reviewer';
  workspace:string;depends_on:string[];status:string;patch_review_ready?:boolean;unmet_acceptance?:string[]}
@@ -80,6 +81,8 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const approval=run.pending_approval&&run.approval_decision==null
  const isTeam=!!run.team
  const uncertain=!isTeam&&run.status==='paused'&&!!run.in_flight
+ const uncertainModelCall=!isTeam&&run.model_only===true&&run.status==='paused'
+  &&run.events.some(event=>event.kind==='model_only_request_intent')
  const teamPatchUncertain=isTeam&&run.status==='paused'&&run.in_flight?.name==='team_patch_integrate'
  const patchArgs=run.in_flight?.arguments&&typeof run.in_flight.arguments==='object'
   ?run.in_flight.arguments as Record<string,unknown>:{}
@@ -146,6 +149,12 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
    </Button>
    {!canReconcileTeamPatch&&<Notice message={ko?'복구에 필요한 원본 패치 정보가 불완전합니다. 실행 이벤트 기록을 확인하세요.':'Original patch intent lacks verifiable task/hash fields.'}/>}
   </div>}
+  {uncertainModelCall&&<div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4" role="status">
+   <div className="flex items-center gap-2 font-semibold text-amber-900"><AlertTriangle size={16}/>{ko?'모델 응답 확인 필요':'Model response requires reconciliation'}</div>
+   <p className="mt-2 text-xs text-amber-800">{ko?
+    '이 실행은 모델 요청을 시작한 기록이 있지만 최종 응답을 확인하지 못했습니다. 이미 요금이 발생했을 가능성이 있어 같은 실행을 자동 재호출하지 않습니다. 실행 저널을 확인하고 새 요청을 작성하세요.':
+    'The Run has a durable model-send intent without a confirmed final reply. It may already have been billed, so resume will not duplicate inference. Inspect the Run journal and submit a new request.'}</p>
+  </div>}
   {uncertain&&<div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4">
    <div className="flex items-center gap-2 font-semibold text-rose-900"><AlertTriangle size={16}/>{ko?'외부 변경 결과 확인 필요':'Uncertain external effect'}</div>
    <p className="mt-2 text-xs text-rose-800">{run.in_flight?.name}: {ko?'이 작업은 자동 재실행되지 않습니다. 외부 시스템에서 실제 결과를 확인한 후 처리하세요.':'This operation will not auto-replay. Verify the real external outcome first.'}</p>
@@ -156,7 +165,7 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
    </div>
   </div>}
   <div className="mt-4 flex flex-wrap gap-2">
-   {!isTeam&&run.status==='paused'&&!run.in_flight&&!approval&&<Button disabled={busy} onClick={()=>void action(base+'/resume',{},ko?'실행을 다시 시작했습니다':'Run resumed')}><Play size={14}/>{ko?'이어 실행':'Resume'}</Button>}
+   {!isTeam&&run.status==='paused'&&!run.in_flight&&!approval&&!uncertainModelCall&&<Button disabled={busy} onClick={()=>void action(base+'/resume',{},ko?'실행을 다시 시작했습니다':'Run resumed')}><Play size={14}/>{ko?'이어 실행':'Resume'}</Button>}
    {isTeam&&run.status==='paused'&&!run.in_flight&&<Button disabled={busy} onClick={()=>void action(teamBase+'/advance',{},ko?'팀 작업을 진행했습니다':'Team advanced')}><Play size={14}/>{ko?'팀 시작 / 다음 단계':'Start / advance team'}</Button>}
    {canStop&&<Button variant="secondary" disabled={busy||Boolean(teamPatchUncertain)} onClick={()=>{if(window.confirm(ko?'이 실행을 취소하시겠습니까?':'Cancel this run?'))void action(isTeam?teamBase+'/cancel':base+'/cancel',{},ko?'취소 요청을 기록했습니다':'Cancellation requested')}}><Square size={13}/>{ko?'취소':'Cancel'}</Button>}
   </div>
