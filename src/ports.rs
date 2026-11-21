@@ -88,6 +88,9 @@ pub type RunMutation<'a>=Box<dyn FnOnce(&mut Run)->Result<(),String>+Send+'a>;
 /// be safely shared across the core and product HTTP/SDK adapters.
 pub trait RunRepository:Send+Sync{
     fn put(&self,run:Run)->StorageFuture<'_,Result<(),String>>;
+    /// Atomic create-or-observe; remote re-deliveries must not overwrite an
+    /// already-running or terminal Run, nor replay model/tool effects.
+    fn put_if_absent(&self,run:Run)->StorageFuture<'_,Result<(Run,bool),String>>;
     fn get(&self,id:Uuid)->StorageFuture<'_,Option<Run>>;
     fn has_children(&self,id:Uuid)->StorageFuture<'_,bool>;
     fn children_of(&self,id:Uuid)->StorageFuture<'_,Vec<Run>>;
@@ -113,6 +116,9 @@ pub struct RunStorePort{backend:Arc<dyn RunRepository>}
 impl RunStorePort{
     pub fn new(backend:Arc<dyn RunRepository>)->Self{Self{backend}}
     pub async fn put(&self,run:Run)->Result<(),String>{self.backend.put(run).await}
+    pub async fn put_if_absent(&self,run:Run)->Result<(Run,bool),String>{
+        self.backend.put_if_absent(run).await
+    }
     pub async fn get(&self,id:Uuid)->Option<Run>{self.backend.get(id).await}
     pub async fn has_children(&self,id:Uuid)->bool{self.backend.has_children(id).await}
     pub async fn children_of(&self,id:Uuid)->Vec<Run>{self.backend.children_of(id).await}

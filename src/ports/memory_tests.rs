@@ -24,6 +24,15 @@ impl RunRepository for VolatileRepository{
             Ok(())
         })
     }
+    fn put_if_absent(&self,run:Run)->StorageFuture<'_,Result<(Run,bool),String>>{
+        Box::pin(async move{
+            let mut guard=self.records.lock().await;
+            if let Some(existing)=guard.get(&run.id){return Ok((existing.clone(),false));}
+            guard.insert(run.id,run.clone());
+            let _=self.updates.send(RunUpdate::from_run(&run));
+            Ok((run,true))
+        })
+    }
     fn get(&self,id:Uuid)->StorageFuture<'_,Option<Run>>{
         Box::pin(async move{self.records.lock().await.get(&id).cloned()})
     }

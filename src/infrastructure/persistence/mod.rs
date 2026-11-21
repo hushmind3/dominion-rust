@@ -191,6 +191,20 @@ impl Store {
         locks.insert(id,Arc::downgrade(&active));
         active
     }
+    /// The same per-Run fsync gate fences a duplicate remote create and a
+    /// concurrent local mutation; a repeated request sees the original Run.
+    pub async fn put_if_absent(&self,run:Run)->Result<(Run,bool),String>{
+        let gate=self.gate(run.id).await;
+        let _run_write=gate.lock().await;
+        if let Some(existing)=self.state.lock().await.get(&run.id).cloned(){
+            return Ok((existing,false));
+        }
+        self.persist_current(&run).await?;
+        let update=RunUpdate::from_run(&run);
+        self.state.lock().await.insert(run.id,run.clone());
+        let _=self.updates.send(update);
+        Ok((run,true))
+    }
     pub async fn put(&self, run: Run) -> Result<(), String> {
         // Serialize same-run writes, including put vs mutate, but release the
         // global Run index before any disk I/O. No dirty value is published
@@ -333,6 +347,9 @@ impl Store {
 impl crate::ports::RunRepository for Store {
     fn put(&self,run:Run)->crate::ports::StorageFuture<'_,Result<(),String>>{
         Box::pin(Store::put(self,run))
+    }
+    fn put_if_absent(&self,run:Run)->crate::ports::StorageFuture<'_,Result<(Run,bool),String>>{
+        Box::pin(Store::put_if_absent(self,run))
     }
     fn get(&self,id:Uuid)->crate::ports::StorageFuture<'_,Option<Run>>{
         Box::pin(Store::get(self,id))
