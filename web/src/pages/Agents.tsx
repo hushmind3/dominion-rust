@@ -86,6 +86,7 @@ export function AgentsPage() {
         name: edit.name.trim(),
         aliases: edit.aliases?.map(alias => alias.trim()).filter(Boolean),
         model: edit.providerId ? model : "",
+        reasoningEffort:"",thinking:undefined,
       });
       setEdit(null);
       await agents.reload();
@@ -106,7 +107,7 @@ export function AgentsPage() {
         agentIds: selected,
         providerId: bulkProvider,
         model: bulkModel.trim(),
-        reasoningEffort: bulkEffort,
+        reasoningEffort:"",
       });
       setBulkNotice(t('agents.bulkDone', { count: r.count }));
       setBulk(false);
@@ -233,7 +234,7 @@ export function AgentsPage() {
               />
             </FormField>
             <FormField label={t('chat.reasoningEffort')}>
-              <ReasoningSelect value={bulkEffort} onChange={setBulkEffort} model={bulkModels.value.find(item=>item.id===bulkModel)} requireCatalog={enabledProviders.find(item=>item.id===bulkProvider)?.kind==='codex'} disabled={bulkBusy||!bulkModel}/>
+              <ReasoningSelect value="" onChange={()=>{}} model={bulkModels.value.find(item=>item.id===bulkModel)} requireCatalog={enabledProviders.find(item=>item.id===bulkProvider)?.kind==='codex'} disabled/>
             </FormField>
             <Action
               disabled={
@@ -402,8 +403,8 @@ export function AgentsPage() {
                   />
                 </FormField>
               </div>
-              <FormField label={t('chat.reasoningEffort')} hint="이 에이전트의 기본 추론 강도입니다. 대화나 회의실에서 지정한 값이 있으면 해당 값이 우선합니다.">
-                <ReasoningSelect value={edit.reasoningEffort||""} onChange={reasoningEffort=>setEdit({...edit,reasoningEffort,thinking:undefined})} model={editModels.value.find(item=>item.id===(edit.model||editProvider?.model))} requireCatalog={editProvider?.kind==='codex'} disabled={saving}/>
+              <FormField label={t('chat.reasoningEffort')} hint="현재 Rust 모델 어댑터에서 추론 강도의 수동 지정은 지원되지 않습니다. 기본값으로 실행합니다.">
+                <ReasoningSelect value="" onChange={()=>{}} model={editModels.value.find(item=>item.id===(edit.model||editProvider?.model))} requireCatalog={editProvider?.kind==='codex'} disabled/>
               </FormField>
               <FormField
                 label={t('agents.alias')}
