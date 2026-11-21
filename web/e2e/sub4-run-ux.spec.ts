@@ -113,3 +113,29 @@ test('mobile chat recovers source-linked paused agent Run without exposing autom
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+test('mobile Team editor rejects cyclic dependencies before creating a real Rust draft',
+ async({page})=>{
+ await page.setViewportSize({width:375,height:760})
+ await page.goto('/#/activity')
+ await page.getByRole('button',{name:/멀티에이전트 작업 팀|Multi-agent Task Team/}).click()
+ const preview=page.getByRole('region',{name:/작업 의존성 미리보기|Task dependency preview/})
+ await expect(preview.getByText('research',{exact:true})).toBeVisible()
+ await page.getByLabel(/팀 전체 목표|Team goal/).fill('Implement a small change with source evidence')
+ const dependency=page.getByLabel(/선행 작업 ID|Depends on/).nth(1)
+ await dependency.fill('verify')
+ await expect(preview.getByRole('alert')).toContainText(/순환 의존성|dependencies form a cycle/)
+ const create=page.getByRole('button',{name:/팀 초안 생성|Create team draft/})
+ await expect(create).toBeDisabled()
+ await dependency.fill('research')
+ await expect(preview.getByText(/단계 3|Stage 3/)).toBeVisible()
+ const responsePromise=page.waitForResponse(response=>
+  response.url().endsWith('/api/v1/task-teams')&&response.request().method()==='POST')
+ await create.click()
+ const response=await responsePromise
+ expect(response.status()).toBe(201)
+ const saved=await response.json()
+ expect(saved.status).toBe('paused')
+ expect(saved.team.tasks).toHaveLength(3)
+ await expect(page.getByText(saved.id,{exact:true})).toBeVisible()
+})

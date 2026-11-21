@@ -5,6 +5,7 @@ import {Button,SelectInput,TextArea,TextInput} from './Primitives'
 import {Notice,Panel,refresh,useRemote} from './UI'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {useLocale} from '../i18n'
+import {analyzeTeamDraft,type TeamDraftIssue} from '../utils/teamDraft'
 
 type Role='investigator'|'writer'|'reviewer'
 type Draft={id:string;role:Role;instruction:string;workspace:string;depends:string;budget:string;steps:string;successTools:string;auditor:boolean;providerId:string;model:string}
@@ -14,6 +15,26 @@ const initial:Draft[]=[
  {id:'implement',role:'writer',instruction:'Implement the requested changes using the verified research and record actual artifact evidence.',workspace:'project',depends:'research',budget:'1000',steps:'20',successTools:'',auditor:false,providerId:'',model:''},
  {id:'verify',role:'reviewer',instruction:'Independently verify the resulting implementation and report test evidence and remaining issues.',workspace:'project',depends:'implement',budget:'1000',steps:'12',successTools:'',auditor:false,providerId:'',model:''}
 ]
+function graphMessage(issue:TeamDraftIssue,ko:boolean){
+ const id=issue.taskId?`[${issue.taskId}] `:''
+ const dep=issue.dependency?` (${issue.dependency})`:''
+ const labels:Record<TeamDraftIssue['code'],[string,string]>={
+  task_count:['작업은 1~16개까지 만들 수 있습니다.','Create between 1 and 16 tasks.'],
+  invalid_total_budget:['전체 예산은 1~1,000,000원이어야 합니다.','Total budget must be 1–1,000,000 KRW.'],
+  invalid_id:['작업 ID는 영문·숫자·_·-만 허용하며 64자 이하여야 합니다.','Task ID requires 1–64 ASCII letters, digits, _ or -.'],
+  duplicate_id:['작업 ID가 중복됩니다.','Task ID is duplicated.'],
+  invalid_instruction:['작업 지시문이 비어 있거나 20KB를 초과합니다.','Task instruction is empty or exceeds 20KB.'],
+  invalid_workspace:['작업공간 이름은 160바이트 이하이며 .. 또는 NUL을 포함할 수 없습니다.','Workspace must be within 160 bytes without .. or NUL.'],
+  invalid_steps:['실행 단계는 1~100의 정수여야 합니다.','Step limit must be an integer from 1 to 100.'],
+  invalid_budget:['작업 예산은 0 이상의 유효한 금액이어야 합니다.','Task budget must be a valid nonnegative amount.'],
+  budget_exceeded:['작업 예산 합계가 전체 예산보다 큽니다.','Task budgets exceed the team total.'],
+  self_dependency:['자기 자신을 선행 작업으로 지정할 수 없습니다.','A task cannot depend on itself.'],
+  unknown_dependency:['존재하지 않는 선행 작업 ID입니다.','Dependency references an unknown task ID.'],
+  duplicate_dependency:['같은 선행 작업이 중복 지정됐습니다.','A dependency is listed more than once.'],
+  cycle:['작업 사이에 순환 의존성이 있습니다.','Task dependencies form a cycle.']
+ }
+ return id+labels[issue.code][ko?0:1]+dep
+}
 export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
  const ko=useLocale()==='ko'
  const [open,setOpen]=useState(false),[goal,setGoal]=useState('')
@@ -24,22 +45,16 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
  const enabledProviders=providers.value.filter(provider=>provider.enabled!==false)
  const [steps,setSteps]=useState<Draft[]>(()=>initial.map(x=>({...x})))
  const [busy,setBusy]=useState(false),[error,setError]=useState('')
+ const graph=analyzeTeamDraft(steps,budget)
  const change=(index:number,key:Exclude<keyof Draft,'auditor'>,value:string)=>setSteps(old=>old.map((task,i)=>
   i===index?{...task,[key]:value}:task))
  const submit=async()=>{
   if(busy)return
   setError('')
+  if(!goal.trim()||goal.length>20000){setError(ko?'팀 목표를 입력하세요.':'Enter a team goal.');return}
+  if(graph.issue){setError(graphMessage(graph.issue,ko));return}
   const total=Number(budget)
   const taskBudget=steps.map(task=>Number(task.budget))
-  if(!goal.trim()||goal.length>20000){setError(ko?'팀 목표를 입력하세요.':'Enter a team goal.');return}
-  if(!Number.isFinite(total)||total<=0||taskBudget.some(n=>!Number.isFinite(n)||n<0)||
-   taskBudget.reduce((a,b)=>a+b,0)>total+0.000001){
-   setError(ko?'각 작업의 예산 합계가 전체 예산을 넘지 않도록 설정하세요.':'Task budget allocation must fit the team total.');return
-  }
-  if(steps.some(task=>!task.instruction.trim()||!task.id.trim()||
-    !Number.isInteger(Number(task.steps))||Number(task.steps)<1||Number(task.steps)>100)){
-   setError(ko?'각 작업의 ID·지시문·실행 단계(1~100)를 확인하세요.':'Check each task ID, instruction and step limit.');return
-  }
   if(providerId&&(!enabledProviders.some(provider=>provider.id===providerId)||!model.trim())){
    setError(ko?'모델 제공자를 선택한 경우 실제 모델도 선택하세요.':'Select a model when selecting a model provider.');return
   }
@@ -152,12 +167,29 @@ export function TaskTeamComposer({onCreated}:{onCreated:(id:string)=>void}){
     </div>
     {task.auditor&&<p className="mt-1 text-[10px] text-[#7C7469]">{ko?'실행 서버에서 별도 모델 감사를 활성화해야 PASS 영수증을 얻을 수 있습니다.':'Separate model auditing must be enabled on the server to produce a PASS receipt.'}</p>}
    </div>)}</div>
+   <section aria-label={ko?'작업 의존성 미리보기':'Task dependency preview'}
+    className="rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+     <strong className="text-xs">{ko?'실행 순서 미리보기':'Dependency order preview'}</strong>
+     {!graph.issue&&<span className="text-[11px] text-[#7C7469]">
+      {ko?'예약 예산':'Reserved budget'}: {graph.usedBudget.toLocaleString('ko-KR')}원 / {Number(budget).toLocaleString('ko-KR')}원
+     </span>}
+    </div>
+    {graph.issue?<p role="alert" className="mt-2 break-words text-xs text-rose-700">{graphMessage(graph.issue,ko)}</p>
+     :<div className="mt-2 space-y-2">{graph.waves.map((wave,level)=><div key={level} className="flex min-w-0 flex-wrap items-center gap-2">
+      <span className="w-12 shrink-0 text-[11px] font-semibold text-[#7C7469]">{ko?'단계':'Stage'} {level+1}</span>
+      {wave.map(id=><span key={id} className="max-w-full break-all rounded-md border border-[#E2D8C8] bg-white px-2 py-1 text-[11px]">{id}</span>)}
+     </div>)}</div>}
+    <p className="mt-2 text-[10px] text-[#8A8176]">{ko?
+     '의존성 단계 표시이며 실제 동시 실행이나 완료를 보장하지 않습니다. 서버가 생성 시 다시 검사합니다.':
+     'Dependency stages are not a promise of parallel execution or completion. Rust validates again on creation.'}</p>
+   </section>
    <div className="flex flex-wrap gap-2">
     <Button variant="secondary" disabled={steps.length>=16} onClick={()=>setSteps(items=>[...items,{
      id:'task_'+(Math.max(0,...items.map(x=>Number(x.id.replace('task_',''))||0))+1),
      role:'investigator',instruction:'',workspace:'project',depends:'',budget:'0',steps:'10',successTools:'',auditor:false,
      providerId:'',model:''}])}><Plus size={14}/>{ko?'작업 추가':'Add task'}</Button>
-    <Button variant="primary" disabled={busy||!goal.trim()} onClick={()=>void submit()}>{ko?'팀 초안 생성':'Create team draft'}</Button>
+    <Button variant="primary" disabled={busy||!goal.trim()||!!graph.issue} onClick={()=>void submit()}>{ko?'팀 초안 생성':'Create team draft'}</Button>
    </div>
    {error&&<Notice message={error}/>}
   </div>}
