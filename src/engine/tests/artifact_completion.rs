@@ -273,6 +273,9 @@ class SumTest(unittest.TestCase):
     def test_sum(self):
         actual = subprocess.check_output([sys.executable, "sum.py"], text=True).strip()
         self.assertEqual(actual, "15")
+        print("PROGRAM_OUTPUT_START")
+        print("X" * 39000)
+        print("PROGRAM_OUTPUT_END")
 "#).await.unwrap();
     git(&dir,&["add","."]).await;
     git(&dir,&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid",
@@ -307,6 +310,17 @@ class SumTest(unittest.TestCase):
         event.kind=="program_completed"
             &&event.detail.as_ref().is_some_and(|data|data["successful"]==4
                 &&data["failed"]==0&&data["model_calls_inside"]==0)));
+    let test_receipt=finished.messages.iter().find(|message|
+        message["role"]=="tool" &&
+        message["tool_call_id"]=="program:program-one-turn:test")
+        .and_then(|message|message["content"].as_str())
+        .expect("actual test receipt must remain in the durable Run");
+    assert!(test_receipt.contains("output truncated:"),
+        "noisy test output should be bounded with explicit omission");
+    assert!(test_receipt.contains("PROGRAM_OUTPUT_END"),
+        "the tail of the test output must survive");
+    assert!(test_receipt.contains("exit status: 0"),
+        "successful test execution must keep its real exit status");
     assert!(finished.events.iter().any(|event|event.kind=="test_evidence_checked"));
     assert!(finished.events.iter().any(|event|event.kind=="artifact_evidence_checked"));
     assert!(finished.events.iter().all(|event|

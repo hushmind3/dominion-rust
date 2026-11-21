@@ -1,6 +1,6 @@
 use crate::{config::Settings, domain::ToolCall};
 use serde_json::{json, Value};
-use std::{path::{Component, Path, PathBuf}, time::Duration};
+use std::{collections::VecDeque,path::{Component, Path, PathBuf}, time::Duration};
 use tokio::{fs, io::{AsyncRead, AsyncReadExt, AsyncWriteExt}, process::Command};
 
 pub fn definitions(shell_enabled: bool) -> Vec<Value> {
@@ -209,12 +209,12 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
             if command.len()>512||!crate::acceptance::test_command(command){
                 return Err("run_tests accepts a single approved test command only".into());
             }
-            run_shell(root,command).await
+            run_shell(root,command,Duration::from_secs(120)).await
         }
         "shell" if settings.shell_enabled => {
             let command = required(&call.arguments,"command")?;
             if command.len() > 4096 { return Err("command exceeds 4096 bytes".into()); }
-            run_shell(root, command).await
+            run_shell(root,command,Duration::from_secs(40)).await
         }
         _ => Err(format!("unknown or disabled tool: {}",call.name)),
     }
@@ -274,24 +274,49 @@ async fn list_relative(root: &Path, starting: &Path,max_files:usize) -> Result<V
     found.truncate(max_files);
     Ok(found)
 }
+/// Drain both pipes to EOF while retaining bounded beginning and end.
+/// A verbose test's success/failure is determined by its real exit status,
+/// not by crossing an arbitrary stdout/stderr threshold. Keep the test
+/// summary near the end; mark omitted bytes so excerpts are not mistaken
+/// for an exact, complete log.
 async fn bounded<R: AsyncRead + Unpin>(mut reader: R) -> Result<String, String> {
-    let mut buf = Vec::new();
-    let mut limited = (&mut reader).take(16_385);
-    limited.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
-    if buf.len() > 16_384 { return Err("shell output exceeded 16 KB".into()); }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    const FULL:usize=16_384;
+    const HEAD:usize=4_096;
+    const TAIL:usize=8_192;
+    let mut initial=Vec::with_capacity(FULL);
+    let mut trailing=VecDeque::with_capacity(TAIL);
+    let mut total=0usize;
+    let mut chunk=[0u8;4_096];
+    loop {
+        let count=reader.read(&mut chunk).await.map_err(|e|e.to_string())?;
+        if count==0{break;}
+        total=total.saturating_add(count);
+        let keep=FULL.saturating_sub(initial.len()).min(count);
+        initial.extend_from_slice(&chunk[..keep]);
+        for &byte in &chunk[..count]{
+            if trailing.len()==TAIL{trailing.pop_front();}
+            trailing.push_back(byte);
+        }
+    }
+    if total<=FULL{return Ok(String::from_utf8_lossy(&initial).into_owned());}
+    let omitted=total.saturating_sub(HEAD+TAIL);
+    let tail=trailing.into_iter().collect::<Vec<_>>();
+    Ok(format!(
+        "{}\n[... output truncated: {omitted} bytes omitted; first {HEAD} and last {TAIL} bytes retained ...]\n{}",
+        String::from_utf8_lossy(&initial[..HEAD]),String::from_utf8_lossy(&tail)
+    ))
 }
-async fn run_shell(root: PathBuf, command: &str) -> Result<String, String> {
+async fn run_shell(root: PathBuf, command: &str, timeout:Duration) -> Result<String, String> {
     use std::process::Stdio;
     let mut child = crate::sandbox::script(&root,command)?
         .stdout(Stdio::piped()).stderr(Stdio::piped())
         .kill_on_drop(true).spawn().map_err(|e| e.to_string())?;
     let out = child.stdout.take().ok_or("stdout unavailable")?;
     let err = child.stderr.take().ok_or("stderr unavailable")?;
-    let result = tokio::time::timeout(Duration::from_secs(40), async {
+    let result = tokio::time::timeout(timeout, async {
         let (stdout, stderr, status) = tokio::try_join!(bounded(out), bounded(err), async {child.wait().await.map_err(|e| e.to_string())})?;
         Ok::<_,String>((stdout,stderr,status))
-    }).await.map_err(|_|"shell timed out".to_string())??;
+    }).await.map_err(|_|format!("shell timed out after {} seconds",timeout.as_secs()))??;
     shell_receipt(result.2.success(),&result.2.to_string(),&result.0,&result.1)
 }
 #[cfg(test)]
@@ -304,6 +329,34 @@ mod tests {
         let dir = std::env::temp_dir();
         assert!(validated_path(&dir, "../etc/passwd").is_err());
         assert!(validated_path(&dir, "/etc/passwd").is_err());
+    }
+
+    #[tokio::test]
+    async fn verbose_command_output_preserves_exit_evidence_and_failure_tail(){
+        let (mut sender,receiver)=tokio::io::duplex(512);
+        let mut bytes=b"FIRST_LINE\n".to_vec();
+        bytes.extend(vec![b'x';50_000]);
+        bytes.extend(b"\nFINAL_FAILURE_MARKER\n");
+        let produce=tokio::spawn(async move{
+            sender.write_all(&bytes).await.unwrap();
+        });
+        let result=bounded(receiver).await.unwrap();
+        produce.await.unwrap();
+        assert!(result.starts_with("FIRST_LINE"));
+        assert!(result.contains("output truncated:"));
+        assert!(result.contains("bytes omitted"));
+        assert!(result.ends_with("FINAL_FAILURE_MARKER\n"));
+        assert!(result.len()<13_000);
+        assert!(shell_receipt(false,"exit status: 1",&result,"")
+            .unwrap_err().contains("FINAL_FAILURE_MARKER"));
+        assert!(shell_receipt(true,"exit status: 0",&result,"").is_ok(),
+            "a successful command remains successful even when output was long");
+        let (mut sender,receiver)=tokio::io::duplex(64);
+        let small=tokio::spawn(async move{
+            sender.write_all(b"short test result\n").await.unwrap();
+        });
+        assert_eq!(bounded(receiver).await.unwrap(),"short test result\n");
+        small.await.unwrap();
     }
 
     #[test]
