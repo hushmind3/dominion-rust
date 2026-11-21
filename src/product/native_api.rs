@@ -375,11 +375,29 @@ async fn list_files(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
     items.truncate(limit);
     Ok(Json(json!({"files":items,"offset":offset,"limit":limit,"hasMore":has_more})))
 }
-async fn read_file(State(engine):State<Arc<Engine>>,Path((id,path)):Path<(Uuid,String)>) -> Result<Json<Value>,ApiError> {
+#[derive(Default,Deserialize)]
+struct FileReadQuery{start_line:Option<usize>}
+async fn read_file(State(engine):State<Arc<Engine>>,Path((id,path)):Path<(Uuid,String)>,
+    Query(query):Query<FileReadQuery>)->Result<Json<Value>,ApiError>{
     if engine.store.get(id).await.is_none(){return Err(not_found());}
+    if query.start_line.is_some_and(|start|!(1..=1_000_000).contains(&start)){
+        return Err(bad("start_line must be 1..1000000"));
+    }
+    let preview=query.start_line.is_some();
+    let arguments=if preview{
+        json!({"path":path,"start_line":query.start_line,"preview_page":true})
+    }else{json!({"path":path})};
     let content=tools::execute(&engine.settings,id,&crate::domain::ToolCall{
-        id:"api-read".into(),name:"read_file".into(),arguments:json!({"path":path})
+        id:"api-read".into(),name:"read_file".into(),arguments
     }).await.map_err(bad)?;
+    if preview {
+        let page:Value=serde_json::from_str(&content).map_err(|error|
+            bad(format!("invalid bounded file preview: {error}")))?;
+        return Ok(Json(json!({"path":path,"content":page["content"],
+            "startLine":page["startLine"],"endLine":page["endLine"],
+            "totalLines":page["totalLines"],"nextStartLine":page["nextStartLine"],
+            "partial":page["partial"]})));
+    }
     Ok(Json(json!({"path":path,"content":content})))
 }
 

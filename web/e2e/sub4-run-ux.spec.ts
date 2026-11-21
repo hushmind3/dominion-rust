@@ -297,6 +297,19 @@ test('Run workspace filename search reaches files beyond the first hundred',
     offset,limit,hasMore:namesForPage.length>offset+limit
    })})
   })
+  const pages:number[]=[]
+  await page.route('**/api/v1/runs/'+runId+'/files/file-250.txt?*',route=>{
+   const url=new URL(route.request().url())
+   const startLine=Number(url.searchParams.get('start_line')||1)
+   pages.push(startLine)
+   const endLine=Math.min(450,startLine+199)
+   const nextStartLine=endLine<450?endLine+1:null
+   return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+    path:'file-250.txt',
+    content:startLine+': PAGE_'+startLine+'_MARKER\n'+endLine+': PAGE_'+endLine+'_MARKER\n',
+    startLine,endLine,totalLines:450,nextStartLine,partial:nextStartLine!==null
+   })})
+  })
   await page.goto('/#/chat?session='+encodeURIComponent(session.id))
   await page.getByRole('button',{name:/실행 기록|Run evidence/}).last().click()
   const dialog=page.getByRole('dialog',{name:/에이전트 실행 증거|Agent execution evidence/})
@@ -306,6 +319,14 @@ test('Run workspace filename search reaches files beyond the first hundred',
   await search.fill('FILE-250')
   await expect(dialog.getByRole('button',{name:'file-250.txt'})).toBeVisible()
   await expect(dialog.getByRole('button',{name:'file-249.txt'})).toHaveCount(0)
+  await dialog.getByRole('button',{name:'file-250.txt'}).click()
+  await expect(dialog.getByText(/PAGE_1_MARKER/)).toBeVisible()
+  await expect(dialog.getByRole('button',{name:/다음 줄|Next lines/})).toBeVisible()
+  await dialog.getByRole('button',{name:/다음 줄|Next lines/}).click()
+  await expect(dialog.getByText(/PAGE_201_MARKER/)).toBeVisible()
+  await dialog.getByRole('button',{name:/이전 줄|Previous lines/}).click()
+  await expect(dialog.getByText(/PAGE_1_MARKER/)).toBeVisible()
+  expect(pages).toEqual([1,201,1])
   expect(seen).toContain('file-250')
   await search.fill('missing-123')
   await expect(dialog.getByText(/일치하는 파일이 없습니다|No matching workspace files/)).toBeVisible()

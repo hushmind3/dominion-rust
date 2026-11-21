@@ -33,6 +33,7 @@ export function RunEvidenceAssets({runId}:{runId:string}){
   setFileOffset(0)
   setFileSearch('');setFileFilter('')
   setPreview(null)
+  setFilePages([])
   setError('')
   setLoading(false)
  },[runId])
@@ -47,18 +48,24 @@ export function RunEvidenceAssets({runId}:{runId:string}){
  const skills=useRemote<Skill[]>(open?'/api/v1/runs/'+encodeURIComponent(runId)+'/skills':null,[])
  const files=useRemote<FileList>(open?'/api/v1/runs/'+encodeURIComponent(runId)+'/files?offset='+fileOffset+'&limit=100'
   +(fileFilter?'&name_contains='+encodeURIComponent(fileFilter):''):null,{files:[],hasMore:false})
- const [preview,setPreview]=useState<{runId:string;kind:'skill'|'file';name:string;content:string}|null>(null)
+ const [preview,setPreview]=useState<{runId:string;kind:'skill'|'file';name:string;
+  content:string;startLine?:number;endLine?:number;totalLines?:number;
+  nextStartLine?:number|null}|null>(null)
+ const [filePages,setFilePages]=useState<number[]>([])
  const [loading,setLoading]=useState(false),[error,setError]=useState('')
- const inspect=async(kind:'skill'|'file',name:string)=>{
+ const inspect=async(kind:'skill'|'file',name:string,startLine=1,history:number[]=[])=>{
   if(loading)return
   const sourceRun=runId
   setLoading(true);setError('');setPreview(null)
   try{
    const base='/api/v1/runs/'+encodeURIComponent(sourceRun)+'/'+(kind==='skill'?'skills/':'files/')
    const safePath=kind==='file'?name.split('/').map(encodeURIComponent).join('/'):encodeURIComponent(name)
-   const entry=await get<{content:string}>(base+safePath)
+   const endpoint=base+safePath+(kind==='file'?'?start_line='+startLine:'')
+   const entry=await get<{content:string;startLine?:number;endLine?:number;
+    totalLines?:number;nextStartLine?:number|null}>(endpoint)
    if(selectedRun.current===sourceRun){
-    setPreview({runId:sourceRun,kind,name,content:entry.content})
+    setPreview({runId:sourceRun,kind,name,...entry})
+    setFilePages(history)
    }
   }catch(e){
    if(selectedRun.current===sourceRun)setError((e as Error).message)
@@ -92,7 +99,14 @@ export function RunEvidenceAssets({runId}:{runId:string}){
       </div>}</section>
    </div>
    {preview?.runId===runId&&<div className="mt-3 rounded-lg border border-[#E7E0D5] bg-[#FAF7F1] p-3">
-    <div className="flex flex-wrap items-center justify-between gap-2"><strong className="break-all text-xs">{preview.name}</strong><Button size="sm" variant="ghost" onClick={()=>void navigator.clipboard.writeText(preview.content)}><Clipboard size={12}/>{ko?'내용 복사':'Copy'}</Button></div>
+    <div className="flex flex-wrap items-center justify-between gap-2"><strong className="break-all text-xs">{preview.name}</strong><Button size="sm" variant="ghost" onClick={()=>void navigator.clipboard.writeText(preview.content)}><Clipboard size={12}/>{ko?'표시된 부분 복사':'Copy excerpt'}</Button></div>
+    {preview.kind==='file'&&typeof preview.startLine==='number'&&<div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#7C7469]">
+     <span>{ko?'줄':'Lines'} {preview.totalLines===0?0:preview.startLine}–{preview.endLine} / {preview.totalLines}</span>
+     <div className="flex gap-1">
+      {filePages.length>0&&<Button size="sm" variant="secondary" disabled={loading} onClick={()=>void inspect('file',preview.name,filePages[filePages.length-1],filePages.slice(0,-1))}>{ko?'이전 줄':'Previous lines'}</Button>}
+      {preview.nextStartLine!=null&&<Button size="sm" variant="secondary" disabled={loading} onClick={()=>void inspect('file',preview.name,preview.nextStartLine!,[...filePages,preview.startLine!])}>{ko?'다음 줄':'Next lines'}</Button>}
+     </div>
+    </div>}
     <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all text-[11px]">{preview.content}</pre>
    </div>}
    <Notice message={error||skills.error||files.error}/>

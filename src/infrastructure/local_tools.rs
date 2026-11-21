@@ -118,6 +118,33 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
             let meta = fs::metadata(&path).await.map_err(|e| e.to_string())?;
             if !meta.is_file() || meta.len() > 4_194_304 { return Err("file is not regular or exceeds 4 MB".into()); }
             let content=fs::read_to_string(path).await.map_err(|e|e.to_string())?;
+            // The Run file viewer opts into a bounded, structured page.
+            // Ordinary read_file tool/SDK callers retain their original raw
+            // UTF-8 response and existing exact-line-range semantics.
+            if call.arguments.get("preview_page")==Some(&Value::Bool(true)){
+                let start=call.arguments.get("start_line").and_then(Value::as_u64)
+                    .unwrap_or(1).clamp(1,1_000_000) as usize;
+                let lines=content.lines().collect::<Vec<_>>();
+                if !lines.is_empty()&&start>lines.len(){
+                    return Err("start_line is beyond the end of this file".into());
+                }
+                let mut excerpt=String::new();
+                let mut last=0usize;
+                for (index,line) in lines.iter().enumerate().skip(start.saturating_sub(1)).take(200){
+                    let number=index+1;
+                    let item=format!("{number}: {line}\n");
+                    if item.len()>32_000{
+                        return Err(format!("line {number} is too large to preview (32 KB limit)"));
+                    }
+                    if excerpt.len()+item.len()>32_000{break;}
+                    excerpt.push_str(&item);
+                    last=number;
+                }
+                let next=(last<lines.len()).then_some(last+1);
+                return Ok(json!({"content":excerpt,"startLine":start,
+                    "endLine":last,"totalLines":lines.len(),
+                    "nextStartLine":next,"partial":next.is_some()}).to_string());
+            }
             if call.arguments.get("start_line").is_none() && call.arguments.get("end_line").is_none() && content.len()<=131_072 {
                 return Ok(content); // Preserve existing SDK/read_file semantics for small files.
             }
@@ -441,6 +468,47 @@ mod tests {
         assert!(result.contains("file-250.txt"));
         let lines=ToolCall{id:"lines".into(),name:"read_file".into(),arguments:json!({"path":"file-250.txt","start_line":1,"end_line":1})};
         assert!(execute(&settings,id,&lines).await.unwrap().contains("needle-in-late-file"));
+        fs::remove_dir_all(settings.workspace_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn paged_file_viewer_preserves_raw_sdk_reads_and_exact_next_line(){
+        let mut settings=Settings::from_env().unwrap();
+        settings.workspace_dir=std::env::temp_dir().join(
+            format!("dominion-preview-lines-{}",uuid::Uuid::new_v4()));
+        let id=uuid::Uuid::new_v4();
+        let root=settings.workspace_dir.join(id.to_string());
+        fs::create_dir_all(&root).await.unwrap();
+        let content=(1..=450).map(|line|format!("source line {line}"))
+            .collect::<Vec<_>>().join("\n");
+        fs::write(root.join("sample.md"),&content).await.unwrap();
+        let raw=ToolCall{id:"raw".into(),name:"read_file".into(),
+            arguments:json!({"path":"sample.md"})};
+        assert_eq!(execute(&settings,id,&raw).await.unwrap(),content,
+            "SDK and tool callers without preview_page must receive original bytes");
+        for (start,end,next) in [(1,200,Some(201)),(201,400,Some(401)),
+            (401,450,None)]{
+            let call=ToolCall{id:format!("page-{start}"),name:"read_file".into(),
+                arguments:json!({"path":"sample.md","start_line":start,
+                    "preview_page":true})};
+            let data:Value=serde_json::from_str(
+                &execute(&settings,id,&call).await.unwrap()).unwrap();
+            assert_eq!(data["startLine"],json!(start));
+            assert_eq!(data["endLine"],json!(end));
+            assert_eq!(data["totalLines"],json!(450));
+            assert_eq!(data["nextStartLine"],json!(next));
+            assert_eq!(data["partial"],json!(next.is_some()));
+            assert!(data["content"].as_str().unwrap().contains(
+                &format!("{end}: source line {end}")));
+        }
+        let empty=ToolCall{id:"empty".into(),name:"read_file".into(),
+            arguments:json!({"path":"empty.txt","preview_page":true})};
+        fs::write(root.join("empty.txt"),"").await.unwrap();
+        let page:Value=serde_json::from_str(
+            &execute(&settings,id,&empty).await.unwrap()).unwrap();
+        assert_eq!(page["totalLines"],0);
+        assert_eq!(page["nextStartLine"],Value::Null);
+        assert_eq!(page["content"],"");
         fs::remove_dir_all(settings.workspace_dir).await.unwrap();
     }
 
