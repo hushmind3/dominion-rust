@@ -464,6 +464,13 @@ impl Engine {
         if input.result.len()>16_384 {return Err("reconciliation result exceeds 16 KB".into());}
         self.store.mutate(id,|run|{
             if run.status!=RunStatus::Paused{return Err("execution must be paused".into());}
+            // A Team patch is an independent owner-authorized Git effect.
+            // Only reconcile_task_team_patch proves the originally approved
+            // SHA-256 via reverse apply. Generic tool reconciliation must
+            // NEVER certify or erase a Team patch integration intent.
+            if run.team.is_some(){
+                return Err("Team patch reconciliation requires the approved SHA-256 and verified Git outcome".into());
+            }
             let call=run.in_flight.clone().ok_or("no in-flight tool to reconcile")?;
             let observed=if input.succeeded{Ok(input.result.clone())}else{Err(input.result.clone())};
             journal::finish(run,&call,&observed,true)
