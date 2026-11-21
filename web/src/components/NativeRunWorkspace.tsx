@@ -1,7 +1,7 @@
 import {useState} from 'react'
 import {AlertTriangle,Check,ChevronDown,ChevronUp,Clock3,FileDiff,Play,RefreshCw,ShieldCheck,Square,Workflow} from 'lucide-react'
 import {get,post} from '../api'
-import {Button,TextArea} from './Primitives'
+import {Button,TextArea,TextInput} from './Primitives'
 import {Notice,Panel,refresh,useRemote} from './UI'
 import {useLocale} from '../i18n'
 import {RunEvidenceAssets} from './RunEvidenceAssets'
@@ -62,6 +62,9 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const [ownerNote,setOwnerNote]=useState('')
  const [patch,setPatch]=useState<{task:string;value:Patch}|null>(null)
  const [eventsOpen,setEventsOpen]=useState(false)
+ const [eventQuery,setEventQuery]=useState('')
+ const [eventPage,setEventPage]=useState(0)
+ const [focusedEventSeq,setFocusedEventSeq]=useState<number|null>(null)
  const reload=async()=>{
   await Promise.all([current.reload(),team.reload()])
   refresh('/api/executions','/api/jobs')
@@ -114,6 +117,26 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
   +Number(lastProgramDetail?.failed||0)+Number(lastProgramDetail?.skipped||0)
  const lastTestReceipt=run.events.slice().reverse().find(event=>
   event.kind==='test_evidence_checked'||event.kind==='test_evidence_missing')
+ const newestEvents=run.events.slice().reverse()
+ const matchingEvents=eventQuery.trim()
+  ?newestEvents.filter(ev=>{
+      const search=eventQuery.trim().toLowerCase()
+      return ev.kind.toLowerCase().includes(search)
+       ||ev.message.toLowerCase().includes(search)
+       ||String(ev.seq).includes(search)
+       ||(ev.detail!=null&&JSON.stringify(ev.detail).toLowerCase().includes(search))
+    })
+  :newestEvents
+ const eventPageCount=Math.max(1,Math.ceil(matchingEvents.length/35))
+ const visibleEventPage=Math.min(eventPage,eventPageCount-1)
+ const visibleEvents=matchingEvents.slice(visibleEventPage*35,(visibleEventPage+1)*35)
+ const showEvent=(seq:number)=>{
+   setEventQuery('')
+   setFocusedEventSeq(seq)
+   const index=newestEvents.findIndex(event=>event.seq===seq)
+   setEventPage(index>=0?Math.floor(index/35):0)
+   setEventsOpen(true)
+ }
  const testExecutionConfirmed=lastTestReceipt?.kind==='test_evidence_checked'
  const uncertainModelCall=!isTeam&&run.status==='paused'
   &&(pendingModelIntent!==undefined||(run.model_only===true
@@ -281,13 +304,36 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
   <p className="mt-1 text-xs text-[#5C544A]">{testExecutionConfirmed?
    (ko?'마지막 변경 이후 승인된 테스트 명령의 성공 기록이 있습니다. 실제 요구사항 충족 여부는 별도 검증 대상입니다.':'An approved test command succeeded after the latest edit. Semantic acceptance still needs separate checks.'):
    (ko?'요청한 테스트의 최신 성공 기록이 없어 완료 판정을 보류했습니다. 테스트 명령을 승인·실행하고 실패를 수정해야 합니다.':'No fresh successful test receipt. Completion is blocked until approved tests run and failures are addressed.')}</p>
-  <button type="button" onClick={()=>setEventsOpen(true)} className="mt-2 text-xs font-semibold text-[#A94E30] underline underline-offset-2">
+  <button type="button" onClick={()=>showEvent(lastTestReceipt.seq)} className="mt-2 text-xs font-semibold text-[#A94E30] underline underline-offset-2">
    {ko?'원본 실행 영수증 보기':'Show original execution receipts'} · #{lastTestReceipt.seq}</button>
  </div>}
  <RunEvidenceAssets runId={id}/>
   <div className="mt-4 border-t border-[#E7E0D5] pt-3">
    <button type="button" onClick={()=>setEventsOpen(v=>!v)} aria-expanded={eventsOpen} className="flex w-full items-center justify-between text-left text-xs font-semibold"><span><Clock3 size={14} className="mr-1 inline"/>{ko?'실행 증거 · 이벤트 기록':'Durable execution events'} ({run.events.length})</span>{eventsOpen?<ChevronUp size={15}/>:<ChevronDown size={15}/>}</button>
-   {eventsOpen&&<ol className="mt-3 max-h-96 space-y-2 overflow-auto">{run.events.slice(-35).reverse().map(ev=><li key={ev.seq} className="rounded-lg bg-[#FAF7F1] p-2 text-[11px]"><div className="flex flex-wrap justify-between gap-1"><strong>{ev.kind}</strong><span className="text-[#9C9388]">#{ev.seq} · {eventTime(ev.at_ms)}</span></div><p className="mt-1 whitespace-pre-wrap break-words">{ev.message}</p>{ev.detail!=null&&<details className="mt-1"><summary className="cursor-pointer text-[#7C7469]">{ko?'기록 세부정보':'Receipt detail'}</summary><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(ev.detail,null,2)}</pre></details>}</li>)}</ol>}
+   {eventsOpen&&<section aria-label={ko?'실행 기록 탐색':'Browse execution events'} className="mt-3">
+      <TextInput aria-label={ko?'실행 기록 검색':'Search execution events'} value={eventQuery}
+       onChange={e=>{setEventQuery(e.target.value);setEventPage(0);setFocusedEventSeq(null)}}
+       placeholder={ko?'이벤트 유형·내용·번호 검색':'Search type, message, sequence'} />
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+       <span role="status" className="text-[#8A8176]">{matchingEvents.length===0?'0':visibleEventPage*35+1}–{Math.min((visibleEventPage+1)*35,matchingEvents.length)} / {matchingEvents.length}</span>
+       <div className="flex gap-1">
+        <Button size="sm" variant="secondary" disabled={visibleEventPage===0}
+         onClick={()=>{setEventPage(p=>Math.max(0,p-1));setFocusedEventSeq(null)}}>{ko?'새 기록':'Newer'}</Button>
+        <Button size="sm" variant="secondary" disabled={visibleEventPage+1>=eventPageCount}
+         onClick={()=>{setEventPage(p=>p+1);setFocusedEventSeq(null)}}>{ko?'이전 기록':'Older'}</Button>
+       </div>
+      </div>
+      <ol className="mt-2 max-h-96 space-y-2 overflow-auto">
+       {visibleEvents.map(ev=><li key={ev.seq} id={'run-event-'+ev.seq}
+        className={'rounded-lg border p-2 text-[11px] '+(focusedEventSeq===ev.seq?
+          'border-[#A94E30] bg-[#FFF5EB]':'border-transparent bg-[#FAF7F1]')}>
+         <div className="flex flex-wrap justify-between gap-1"><strong>{ev.kind}</strong><span className="text-[#9C9388]">#{ev.seq} · {eventTime(ev.at_ms)}</span></div>
+         <p className="mt-1 whitespace-pre-wrap break-words">{ev.message}</p>
+         {ev.detail!=null&&<details className="mt-1"><summary className="cursor-pointer text-[#7C7469]">{ko?'기록 세부정보':'Receipt detail'}</summary><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(ev.detail,null,2)}</pre></details>}
+        </li>)}
+      </ol>
+      {matchingEvents.length===0&&<p className="mt-2 text-xs text-[#8A8176]">{ko?'일치하는 실행 기록이 없습니다.':'No matching events.'}</p>}
+     </section>}
   </div>
   {notice&&<p role="status" className="mt-3 text-xs text-emerald-700">{notice}</p>}
   {error&&<Notice message={error}/>}

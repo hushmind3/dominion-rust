@@ -233,3 +233,45 @@ test('mobile Run shows exact durable program cursor and approved test step',
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+
+test('mobile Run can locate an old test receipt and search the entire durable journal',
+ async({page,request})=>{
+ await page.setViewportSize({width:360,height:720})
+ const {session,runId}=await createCompletedChatRun(request)
+ try{
+  const original=await (await request.get('/api/v1/runs/'+runId)).json()
+  const events=Array.from({length:86},(_,i)=>({
+   seq:i+1,kind:i===2?'test_evidence_missing':'tool_result',
+   message:i===2?'EARLIEST_RECOVERY_RECEIPT':'step '+(i+1),
+   at_ms:Date.now(),detail:{original_call_id:'call-'+(i+1)}
+  }))
+  await page.route('**/api/v1/runs/'+runId,route=>{
+   if(route.request().method()!=='GET')return route.continue()
+   return route.fulfill({status:200,contentType:'application/json',
+    body:JSON.stringify({...original,events})})
+  })
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  await page.getByRole('button',{name:/실행 기록|Run evidence/}).last().click()
+  const dialog=page.getByRole('dialog',{name:/에이전트 실행 증거|Agent execution evidence/})
+  const evidence=dialog.getByRole('status')
+   .filter({hasText:/요청한 테스트의 실제 실행 근거|Requested test execution evidence/})
+  await evidence.getByRole('button',{name:/원본 실행 영수증 보기|Show original execution receipts/}).click()
+  const journal=dialog.getByRole('region',{name:/실행 기록 탐색|Browse execution events/})
+  await expect(journal.locator('#run-event-3')).toBeVisible()
+  await expect(journal.getByText('EARLIEST_RECOVERY_RECEIPT')).toBeVisible()
+  await expect(journal.locator('li')).toHaveCount(16)
+  await journal.getByRole('textbox',{name:/실행 기록 검색|Search execution events/}).fill('call-47')
+  await expect(journal.locator('li')).toHaveCount(1)
+  await expect(journal.locator('#run-event-47')).toBeVisible()
+  await journal.getByRole('textbox',{name:/실행 기록 검색|Search execution events/}).fill('')
+  await expect(journal.locator('#run-event-86')).toBeVisible()
+  await expect(journal.locator('#run-event-3')).toHaveCount(0)
+  await journal.getByRole('button',{name:/이전 기록|Older/}).click()
+  await expect(journal.locator('#run-event-50')).toBeVisible()
+  await journal.getByRole('button',{name:/새 기록|Newer/}).click()
+  await expect(journal.locator('#run-event-86')).toBeVisible()
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
