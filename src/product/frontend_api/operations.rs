@@ -331,7 +331,11 @@ mod resume_tests{
   // Resume schedules a real native worker. Cancel before removing its store:
   // a final journal fsync otherwise races directory teardown on Linux.
   if store.get(id).await.is_some_and(|run|!run.terminal()){
-      engine.cancel(id).await.unwrap();
+      // Completion can win the race with cancellation after the snapshot.
+      if let Err(error)=engine.cancel(id).await{
+          assert!(store.get(id).await.is_some_and(|run|run.terminal()),
+              "cancellation failed before the worker settled: {error}");
+      }
   }
   for _ in 0..100{
       if !engine.worker_active_for_test(id).await{break;}
