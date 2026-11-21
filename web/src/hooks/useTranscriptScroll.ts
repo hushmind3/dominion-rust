@@ -27,7 +27,8 @@ export function useTranscriptScroll(scope: string | undefined, revision: string,
   const el = scrollRef.current
   if (!el) return
   following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100
-  if (following.current) onMore?.(false)
+  // Emit both states: scrolling away must reveal the jump-to-latest action.
+  onMore?.(!following.current)
  }
 
  function jumpDown() {
