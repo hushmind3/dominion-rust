@@ -89,10 +89,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const [modelMenu,setModelMenu]=useState(false),[installed,setInstalled]=useState<InstalledModel[]>([]),[modelsLoading,setModelsLoading]=useState(false),[runtime,setRuntime]=useState<Runtime>({status:'idle'}),[modelBusy,setModelBusy]=useState(''),[unloading,setUnloading]=useState(false),[learning,setLearning]=useState(false),[menuError,setMenuError]=useState('');
  const [slashOpen,setSlashOpen]=useState(false),[slashActive,setSlashActive]=useState(0),[commandInfo,setCommandInfo]=useState('');
  const [inspectedRun,setInspectedRun]=useState('');
- const [failedRunId,setFailedRunId]=useState('');
+ const [failedRun,setFailedRun]=useState<{sessionId:string;runId:string}|null>(null);
  const recentRunId=messages.slice().reverse().find(message=>message.role==='assistant'&&message.metadata?.executionId)?.metadata?.executionId;
- const originalRunId=selectedSession?.pendingRun||failedRunId;
- useEffect(()=>{setInspectedRun('');setFailedRunId('')},[current]);
+ const originalRunId=selectedSession?.pendingRun||(failedRun?.sessionId===current?failedRun.runId:undefined);
+ useEffect(()=>{setInspectedRun('')},[current]);
  const inputRef=useRef<HTMLTextAreaElement>(null);
  const stream=useRef<AbortController|null>(null);
  const activeTurnSession=useRef<string|undefined>(undefined);
@@ -337,7 +337,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
   activeTurnSession.current=current;
   setTurnSession(current);setSavedMessageId(undefined);
   setPendingUser({scope:current,content:text,baseline:messages.length});
-  setBusy(true);setError('');setFailedRunId('');setCommandInfo('');setLive('');setThought('');setSlashOpen(false);setToolStatus('');
+  setBusy(true);setError('');setFailedRun(null);setCommandInfo('');setLive('');setThought('');setSlashOpen(false);setToolStatus('');
   jumpDown();
   let id=current;
   let saved=false;
@@ -375,7 +375,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     if(event.type==='tool_error')setToolStatus(t('chat.tool.error',{error:translateError(event.error)}));
     if(event.type==='goal_progress')setToolStatus(t('chat.tool.goal',{event:event.event,status:event.status}));
     if(event.type==='error'){
-     if(typeof event.runId==='string'&&event.runId)setFailedRunId(event.runId)
+     if(typeof event.runId==='string'&&event.runId&&id)setFailedRun({sessionId:id,runId:event.runId})
      throw Error(event.message)
     }
    },controller.signal);
