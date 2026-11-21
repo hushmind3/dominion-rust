@@ -25,7 +25,21 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
     // Federated worker requests are lower-trust remote instructions. Even
     // if an old snapshot has a corrupted read_only flag, they cannot spawn
     // agents, chain gateways, mutate a workspace or use unknown MCP tools.
-    if run.events.iter().any(|event|event.kind=="remote_worker_admitted"){
+    if let Some(remote)=run.events.iter().find(|event|
+        event.kind=="remote_worker_admitted"){
+        let writer=remote.detail.as_ref().is_some_and(|d|d["writer"]==true);
+        if writer{
+            // A separately scoped writer token authorizes this isolated
+            // remote checkout, but never delegation, OAuth, MCP or relay.
+            // Shell still requires the native journal approval and sandbox.
+            return !run.read_only&&run.repository.is_some()
+                &&run.base_commit.is_some()&&matches!(name,
+                    "list_files"|"read_file"|"read_tool_receipt"|
+                    "search_tool_receipts"|"search_files"|"git_status"|
+                    "git_diff"|"read_program"|"write_file"|"edit_file"|
+                    "shell"|"run_program"|"memory_search"|
+                    "list_skills"|"load_skill"|"tool_search");
+        }
         return run.read_only&&matches!(name,
             "list_files"|"read_file"|"read_tool_receipt"|"search_tool_receipts"|
             "search_files"|"git_status"|"git_diff"|"read_program"|
@@ -150,6 +164,28 @@ mod tests{
         legacy.read_only=true;
         assert!(!allowed_tool(&legacy,"write_file"));
     }
+    #[test]
+    fn separately_authorized_remote_writer_remains_isolated_from_gateways(){
+        let mut run=Run::new(CreateRun{
+            instruction:"Edit source in detached checkout".into(),
+            budget_krw:Some(100.0),max_steps:Some(3)},3).unwrap();
+        run.repository=Some("projects/demo".into());
+        run.base_commit=Some("1".repeat(40));
+        run.delegation_profile="implementation".into();
+        run.event("remote_worker_admitted","restricted Writer",
+            Some(serde_json::json!({"writer":true})));
+        for allowed in ["read_file","edit_file","write_file","git_diff"]{
+            assert!(admitted_tool(&run,allowed,&[]),"{allowed} should be available");
+        }
+        for blocked in ["spawn_subagent","remote_worker_consult",
+            "remote_worker_edit","external_agent_edit",
+            "mcp__host__execute","github_commit_file","merge_subagent"]{
+            assert!(!admitted_tool(&run,blocked,&[]),"{blocked} escaped remote scope");
+        }
+        run.read_only=true;
+        assert!(!admitted_tool(&run,"edit_file",&[]));
+    }
+
     #[test]
     fn remote_worker_events_never_grant_recursive_delegation_or_mutation(){
         let mut run=Run::new(CreateRun{instruction:"remote audit".into(),
