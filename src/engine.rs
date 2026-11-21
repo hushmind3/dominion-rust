@@ -158,6 +158,10 @@ impl Engine {
         }
         let started = self.store.mutate(id, |run| {
             if run.terminal() { return Err("cannot restart finished execution".into()); }
+            if run.events.iter().any(|e|e.kind=="external_owner_admission_required")
+                && !run.events.iter().any(|e|e.kind=="external_owner_admission_bound"){
+                return Err("native Run has no durable owner admission; no model or tool may execute".into());
+            }
             // A provider request may have been billed before a crash, even when
             // no reply was durably received. Never replay that uncertain
             // model-only invocation on launch or after a scheduler wake.
