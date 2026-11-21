@@ -39,7 +39,7 @@ jobs:
           ./web/node_modules/.bin/tsc -p sdk/typescript/tsconfig.json
           node --test sdk/typescript/tests/*.test.mjs
       - name: Production frontend bundle (manual release gate)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[sub4-browser-e2e]')
         run: npm run build --prefix web
       - name: UI and Cloud Worker integration regressions
         working-directory: web
@@ -56,6 +56,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Architecture and retired runtime guard
         run: bash scripts/check-sub4-architecture.sh
+      - name: Source complexity budget (900 lines per executable file)
+        run: node scripts/check-source-size.mjs
       - name: Check cloud D1 schema and atomic operator allowance
         run: |
           python3 - <<'PY'
@@ -77,7 +79,7 @@ jobs:
       - name: All Rust targets compile
         run: cargo check --locked --all-targets
       - name: Real backend unit/integration-path regressions
-        run: cargo test --locked --lib
+        run: cargo test --locked --workspace --lib
       - name: Independent kernel/algorithm crate contracts
         run: cargo test --locked -p dominion-agent-core -p dominion-agent-algo
       - name: Coding benchmark CLI contract
