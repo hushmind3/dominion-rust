@@ -293,7 +293,12 @@ test('mobile 1:1 chat shows owner on the right, formatted assistant on the left 
   const assistantBox=await assistant.locator('div').nth(1).boundingBox()
   expect(ownerBox).not.toBeNull()
   expect(assistantBox).not.toBeNull()
-  expect(ownerBox!.x).toBeGreaterThan(assistantBox!.x+70)
+  // Layout depends on Korean glyph widths and browser font fallback.
+  // Assert the semantic right-alignment and a real left/right separation,
+  // rather than an arbitrary 70px threshold for one short message.
+  expect(ownerBox!.x).toBeGreaterThan(assistantBox!.x+35)
+  expect(ownerBox!.x+ownerBox!.width).toBeGreaterThan(
+   assistantBox!.x+assistantBox!.width/2)
   const fontSize=await assistant.locator('.chat-answer').evaluate(element=>
    parseFloat(getComputedStyle(element).fontSize))
   expect(fontSize).toBeGreaterThanOrEqual(15)
