@@ -851,14 +851,23 @@ impl Groups {
                 }else{"participant_suggested_end"}.into();
             }
         }else if !over_cost&&!over_tokens{
-            room.last_provider_failure=Some(RoomProviderFailure{
-                occurred_at_ms:now_ms(),participant:participant.name.clone(),
-                model:run.model_name.clone(),http_status:None,upstream_code:None,
-                category:if run.status==RunStatus::Cancelled{
+            // Native model-only Runs record the original upstream transport
+            // error as a durable event; preserve its structured HTTP/code
+            // classification in Room state instead of reporting a generic
+            // native_run_failed and losing the exact retryable 400 receipt.
+            let upstream=run.events.iter().rev()
+                .find(|event|event.kind=="provider_error")
+                .map(|event|classified_provider_failure(&event.message));
+            let (http_status,upstream_code,category)=upstream.unwrap_or_else(||(
+                None,None,if run.status==RunStatus::Cancelled{
                     "native_run_cancelled"
                 }else if run.status==RunStatus::Failed{
                     "native_run_failed"
-                }else{"native_room_response_rejected"}.into(),
+                }else{"native_room_response_rejected"}.to_owned()));
+            room.last_provider_failure=Some(RoomProviderFailure{
+                occurred_at_ms:now_ms(),participant:participant.name.clone(),
+                model:run.model_name.clone(),http_status,upstream_code,
+                category,
                 completed_messages:room.messages.len(),
                 system_chars:num("common_prefix_chars"),
                 context_chars:num("projected_context_chars"),
