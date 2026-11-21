@@ -5,6 +5,7 @@ import {Button,TextArea} from './Primitives'
 import {Notice,Panel,refresh,useRemote} from './UI'
 import {useLocale} from '../i18n'
 import {RunEvidenceAssets} from './RunEvidenceAssets'
+import {RunDelegationPanel} from './RunDelegationPanel'
 
 type RunStatus='queued'|'running'|'awaiting_approval'|'paused'|'completed'|'failed'|'cancelled'
 type NativeEvent={seq:number;kind:string;message:string;at_ms:number;detail?:unknown}
@@ -39,6 +40,7 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const team=useRemote<TeamView|null>(run?.team?'/api/v1/task-teams/'+encodeURIComponent(id):null,null)
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('')
  const [effectEvidence,setEffectEvidence]=useState('')
+ const [ownerNote,setOwnerNote]=useState('')
  const [patch,setPatch]=useState<{task:string;value:Patch}|null>(null)
  const [eventsOpen,setEventsOpen]=useState(false)
  const reload=async()=>{
@@ -50,6 +52,17 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
   setBusy(true);setError('');setNotice('')
   try{await post(url,body);setNotice(success);setPatch(null);await reload()}
   catch(e){setError((e as Error).message)}
+  finally{setBusy(false)}
+ }
+ async function directive(){
+  if(busy||!ownerNote.trim()||ownerNote.length>10000)return
+  setBusy(true);setError('');setNotice('')
+  try{
+   await post('/api/v1/runs/'+encodeURIComponent(id)+'/directive',{instruction:ownerNote.trim()})
+   setOwnerNote('')
+   setNotice(ko?'지시가 실행 저널에 기록됐습니다. 다음 안전한 판단 시점에 적용됩니다.':'Directive recorded in the durable Run journal.')
+   await reload()
+  }catch(e){setError((e as Error).message)}
   finally{setBusy(false)}
  }
  const base='/api/v1/runs/'+encodeURIComponent(id)
@@ -127,7 +140,15 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
    {isTeam&&run.status==='paused'&&!run.in_flight&&<Button disabled={busy} onClick={()=>void action(teamBase+'/advance',{},ko?'팀 작업을 진행했습니다':'Team advanced')}><Play size={14}/>{ko?'팀 시작 / 다음 단계':'Start / advance team'}</Button>}
    {canStop&&<Button variant="secondary" disabled={busy} onClick={()=>{if(window.confirm(ko?'이 실행을 취소하시겠습니까?':'Cancel this run?'))void action(isTeam?teamBase+'/cancel':base+'/cancel',{},ko?'취소 요청을 기록했습니다':'Cancellation requested')}}><Square size={13}/>{ko?'취소':'Cancel'}</Button>}
   </div>
-  {team.value&&<div className="mt-5 border-t border-[#E7E0D5] pt-4">
+  {!isTeam&&run.status==='running'&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+    <strong className="text-xs">{ko?'실행 중 지시 변경':'Give the running agent new instructions'}</strong>
+    <p className="mt-1 text-[11px] text-[#7C7469]">{ko?'새 지시는 기존 실행 ID와 도구 영수증을 유지하면서 저널에 기록됩니다. 진행 중인 외부 변경은 영수증이 확정될 때까지 보존됩니다.':'The same Run ID and effects are preserved; started external writes settle before new instructions take effect.'}</p>
+    <TextArea rows={2} maxLength={10000} className="mt-2" value={ownerNote} onChange={e=>setOwnerNote(e.target.value)}
+     placeholder={ko?'변경할 목표 또는 추가 확인사항':'Add corrections or updated acceptance requirements'}/>
+    <Button size="sm" disabled={busy||!ownerNote.trim()} onClick={()=>void directive()}>{ko?'실행에 지시 전달':'Send directive'}</Button>
+   </div>}
+   {!isTeam&&<RunDelegationPanel runId={id} parentStatus={run.status} isTeam={isTeam} onSelect={onSelect}/>}
+   {team.value&&<div className="mt-5 border-t border-[#E7E0D5] pt-4">
    <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-semibold"><Workflow size={15} className="mr-1 inline"/>{ko?'팀 작업 보드':'Team task board'}</h4><span className="text-xs text-[#7C7469]">{team.value.completed}/{team.value.tasks.length} {ko?'완료':'completed'}</span></div>
    <ol className="mt-3 grid gap-2">
     {team.value.tasks.map((task,index)=><li key={task.id} className="rounded-xl border border-[#E7E0D5] bg-white p-3">
