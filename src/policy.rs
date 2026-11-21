@@ -22,6 +22,15 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
             "google_drive_search"|"google_drive_read_text"|
             "google_docs_get"|"google_sheets_get"|"tool_search");
     }
+    // Federated worker requests are lower-trust remote instructions. Even
+    // if an old snapshot has a corrupted read_only flag, they cannot spawn
+    // agents, chain gateways, mutate a workspace or use unknown MCP tools.
+    if run.events.iter().any(|event|event.kind=="remote_worker_admitted"){
+        return run.read_only&&matches!(name,
+            "list_files"|"read_file"|"read_tool_receipt"|"search_tool_receipts"|
+            "search_files"|"git_status"|"git_diff"|"read_program"|
+            "memory_search"|"list_skills"|"load_skill"|"tool_search");
+    }
     // Task-oriented children share the parent model/runtime but expose only
     // task-relevant tool classes. Unknown tools never bypass this scope.
     if run.parent_run_id.is_some(){
@@ -140,6 +149,21 @@ mod tests{
             "ordinary legacy delegation must retain its previous capabilities");
         legacy.read_only=true;
         assert!(!allowed_tool(&legacy,"write_file"));
+    }
+    #[test]
+    fn remote_worker_events_never_grant_recursive_delegation_or_mutation(){
+        let mut run=Run::new(CreateRun{instruction:"remote audit".into(),
+            budget_krw:Some(100.0),max_steps:Some(4)},4).unwrap();
+        run.event("remote_worker_admitted","scoped remote agent",None);
+        run.read_only=true;
+        for tool in ["spawn_subagent","external_agent_consult",
+            "remote_worker_consult","mcp__remote__read","shell",
+            "write_file","edit_file","run_program","merge_subagent"]{
+            assert!(!admitted_tool(&run,tool,&[]),"{tool} escaped remote inspection");
+        }
+        assert!(admitted_tool(&run,"read_file",&[]));
+        run.read_only=false;
+        assert!(!admitted_tool(&run,"read_file",&[]));
     }
     #[test]
     fn reserved_child_budgets_reduce_parent_effective_limit(){
