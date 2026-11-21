@@ -32,6 +32,14 @@ const server=createServer(async(req,res)=>{
   calls.push({model:input.model,messages:input.messages,
    toolNames:(input.tools||[]).map(t=>t?.function?.name).filter(Boolean),
    promptCacheKey:input.prompt_cache_key??null})
+  // A syntactically valid HTTP provider response with an invalid empty
+  // completion must end the real Rust Run without inventing an assistant.
+  if(input.messages.some(message=>typeof message.content==='string'
+      &&message.content.includes('DOMINION_E2E_FAILED_CHAT_RECEIPT'))){
+   return send(res,200,{id:'dominion-e2e-empty-'+index,model:input.model,
+    choices:[{index:0,message:{role:'assistant',content:''},finish_reason:'stop'}],
+    usage:{prompt_tokens:40,completion_tokens:0,total_tokens:40}})
+  }
   // Deterministic one-shot latency fixture: exercise navigation away from a
   // real Rust Run while its provider call is still outstanding. No live API.
   if(input.messages.some(message=>typeof message.content==='string'
