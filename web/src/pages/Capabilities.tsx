@@ -4,6 +4,7 @@ import {Button,TextInput} from '../components/Primitives'
 import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {Headline,Notice,Panel,StateTag,useRemote} from '../components/UI'
 import {t,useLocale} from '../i18n'
+import {IntegrationStatusPanel} from '../components/IntegrationStatusPanel'
 
 type Capability={id:string;name:string;description?:string;namespace:string;available?:boolean}
 type Channel=Omit<Capability,'namespace'>&{mode:string;features?:string[];docs?:string;requiresRoom?:boolean;maxRoomParticipants?:number}
@@ -36,6 +37,7 @@ export function CapabilitiesPage({navigate,embedded=false}:{navigate:(page:Page)
  return <div className={embedded?"min-w-0":"mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8"}>
   <Headline eyebrow={t('ui.eyebrow.capabilities')} title={t('cap.title')} description={t('cap.description')} actions={<Button variant="secondary" disabled={refreshing} onClick={()=>void reload()}><RefreshCw size={16}/> {t('cap.refresh')}</Button>}/>
   <Notice message={data.error||catalog.error}/>
+  <IntegrationStatusPanel/>
   <div className="mb-4 flex items-center gap-2"><Search size={16}/><TextInput aria-label={t('cap.searchAria')} value={query} onChange={event=>setQuery(event.target.value)} placeholder={t('cap.searchPlaceholder')}/></div>
   <div className="mb-5 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3">
    {families.map(({id,label,icon:Icon})=><Button key={id} variant={id===family?'primary':'ghost'} aria-pressed={id===family} onClick={()=>setFamily(id)}><Icon size={16}/>{label} {items.filter(item=>id==='all'||item.namespace===id).length}</Button>)}
