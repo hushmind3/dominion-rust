@@ -734,7 +734,12 @@ impl Groups {
         let mut messages=vec![json!({"role":"system","content":Self::shared_prefix(room)})];
         for (index,source) in projected.messages.iter().enumerate(){
             let mut message=source.clone();
-            if matches!(index,0|4|8){
+            // A query-dependent older-owner lookup is an uncached suffix.
+            // Never mark it as a reusable provider cache breakpoint just
+            // because its message index happens to be four or eight.
+            let lookup_suffix=projected.older_owner_lookup.is_some()
+                &&index+1==projected.messages.len();
+            if matches!(index,0|4|8)&&!lookup_suffix{
                 message["dominion_cache_anchor"]=json!(true);
             }
             messages.push(message);
@@ -1329,6 +1334,80 @@ mod tests {
         fs::remove_dir_all(root).await.unwrap();
     }
 
+    #[test]
+    fn three_and_nine_member_rooms_recall_exact_old_owner_evidence_without_leaking_peer_memory(){
+        for member_count in [3usize,9]{
+            for owner_turns in [10usize,100]{
+                let participants=(0..member_count).map(|i|Participant{
+                    name:format!("agent-{i}"),
+                    role:format!("reviewer-{i}"),economy:false
+                }).collect::<Vec<_>>();
+                let mut room=Room{
+                    id:Uuid::new_v4(),topic:"건축 문맥 회상".into(),
+                    participants:participants.clone(),messages:vec![],
+                    status:RoomStatus::Open,rounds:0,max_rounds:1000,
+                    cost_krw:0.0,budget_krw:1000.0,
+                    created_at_ms:0,updated_at_ms:0,revision:0,
+                    used_tokens:0,usage_receipts:vec![],
+                    remote_continuations:HashMap::new(),read_cursors:HashMap::new(),
+                    finish_reason:String::new(),last_provider_failure:None,
+                    frontend:None,client_messages:HashMap::new(),recipients:vec![]
+                };
+                for i in 0..owner_turns{
+                    let content=if i==3{
+                        "남산 건축 기록은 버밀리언 외벽과 북쪽 진입로를 포함합니다"
+                            .to_string()
+                    }else if i==owner_turns-1{
+                        "지난번 남산 건축 기록 원문이 뭐였죠?".to_string()
+                    }else{format!("진행 상황 {i}: {}", "반복 관찰 ".repeat(12))};
+                    room.messages.push(Utterance{
+                        speaker:"user".into(),content,at_ms:(i*2) as u64,model:None
+                    });
+                    let peer_content=if i==3{
+                        "UNSHARED_PEER_MEMORY_002 private planning".into()
+                    }else{format!("Peer {i} {}", "일반 분석 ".repeat(15))};
+                    room.messages.push(Utterance{
+                        speaker:participants[i%member_count].name.clone(),
+                        content:peer_content,at_ms:(i*2+1) as u64,
+                        model:Some("mock".into())
+                    });
+                }
+                let original=room.messages.clone();
+                let mut shared=None::<Vec<Value>>;
+                for participant in &participants{
+                    let projection=project_room_context(&room,participant,6500);
+                    let text=projected_text(&projection);
+                    assert!(text.contains("버밀리언 외벽"),
+                        "Room {member_count}/{owner_turns} lost older owner text");
+                    assert!(text.contains("[6] owner:"),
+                        "Room {member_count}/{owner_turns} lost durable source index");
+                    assert!(projection.projected_chars<=6500);
+                    assert!(!text.contains("UNSHARED_PEER_MEMORY_002"),
+                        "other participant memory cannot enter cold owner lookup");
+                    let wire=Groups::model_messages(&room,participant,&projection);
+                    let shared_section=wire[..projection.messages.len()+1].to_vec();
+                    if let Some(old)=&shared{
+                        assert_eq!(&shared_section,old,
+                            "participant-private continuation must follow shared evidence");
+                    }else{shared=Some(shared_section);}
+                    if owner_turns==100{
+                        assert!(projection.checkpoint_end>6);
+                        assert!(text.contains("Retrieved older ROOM OWNER evidence")
+                            ||text.contains("Indexed older room evidence"),
+                            "old source must remain citeable after a checkpoint rollover");
+                    }
+                }
+                assert_eq!(room.messages.len(),original.len());
+                assert_eq!(room.messages[6].content,original[6].content);
+                let regenerated=project_room_context(&room,&participants[0],6500);
+                let restored:Room=serde_json::from_value(
+                    serde_json::to_value(&room).unwrap()).unwrap();
+                assert_eq!(regenerated.messages,
+                    project_room_context(&restored,&participants[0],6500).messages,
+                    "Room replay must be deterministic across durable reload");
+            }
+        }
+    }
     #[test]
     fn common_group_prefix_is_identical_across_nine_roles_and_varies_only_in_suffix(){
         let roles=(0..9).map(|i|Participant{
