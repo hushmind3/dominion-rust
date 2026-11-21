@@ -35,6 +35,63 @@ async fn mock_engine()->(Arc<Engine>,Arc<Store>,std::path::PathBuf){
     (engine,store,root)
 }
 #[tokio::test]
+async fn ordinary_agent_persists_matching_paid_model_intent_and_usage_before_completion(){
+    let (engine,store,path)=mock_engine().await;
+    let initial=Run::new(CreateRun{
+        instruction:"Answer with one concise result".into(),
+        budget_krw:Some(100.0),max_steps:Some(3)},3).unwrap();
+    let id=initial.id;
+    store.put(initial).await.unwrap();
+    engine.launch(id).await.unwrap();
+    let sdk=Dominion::from_engine(Arc::clone(&engine));
+    let done=sdk.wait(id,Duration::from_secs(12)).await.unwrap();
+    assert_eq!(done.status,RunStatus::Completed);
+    let intents=done.events.iter().filter(|e|e.kind=="model_request_intent")
+        .map(|e|e.seq).collect::<Vec<_>>();
+    let settled=done.events.iter().filter(|e|e.kind=="model_request_settled")
+        .map(|e|e.detail.as_ref().unwrap()["intent_seq"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert!(!intents.is_empty());
+    assert_eq!(intents,settled,
+        "each billable agent call must settle its exact intent with usage");
+    assert!(done.input_tokens>0);
+    assert!(crate::journal::unsettled_model_request(&done).is_none());
+    let reloaded=Store::open(path.join("data/runs")).await.unwrap();
+    assert!(crate::journal::unsettled_model_request(
+        &reloaded.get(id).await.unwrap()).is_none());
+    drop(reloaded);drop(sdk);drop(engine);drop(store);
+    tokio::fs::remove_dir_all(path).await.unwrap();
+}
+
+#[tokio::test]
+async fn crashed_agent_model_send_stays_uncertain_and_cannot_automatically_rebill(){
+    let (engine,store,path)=mock_engine().await;
+    let mut run=Run::new(CreateRun{
+        instruction:"Do not repeat this paid provider call".into(),
+        budget_krw:Some(100.0),max_steps:Some(3)},3).unwrap();
+    run.status=RunStatus::Running;
+    run.event("model_request_intent","Paid request was sent before the crash",
+        Some(json!({"stage":"agent_turn","automatic_replay":false})));
+    let id=run.id;
+    let intent=crate::journal::unsettled_model_request(&run).unwrap();
+    store.put(run).await.unwrap();
+    let reloaded=Store::open(path.join("data/runs")).await.unwrap();
+    let restored=reloaded.get(id).await.unwrap();
+    assert_eq!(restored.status,RunStatus::Paused);
+    assert_eq!(crate::journal::unsettled_model_request(&restored),Some(intent));
+    assert!(restored.events.iter().any(|e|e.kind=="model_outcome_unknown"));
+    assert!(engine.launch(id).await.is_err(),
+        "neither a scheduler retry nor a user resume can reissue unknown billing");
+    // A receipt for another request cannot clear the original fence.
+    let mut forged=restored.clone();
+    forged.event("model_request_settled","unrelated receipt",
+        Some(json!({"intent_seq":intent+1})));
+    assert_eq!(crate::journal::unsettled_model_request(&forged),Some(intent));
+    drop(reloaded);drop(engine);drop(store);
+    tokio::fs::remove_dir_all(path).await.unwrap();
+}
+
+#[tokio::test]
 async fn worker_specific_provider_routing_is_owner_bound_and_survives_run_reload(){
     use crate::engine::WorkerModelRoute;
     use std::collections::HashMap;
