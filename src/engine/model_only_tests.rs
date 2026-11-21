@@ -108,3 +108,44 @@ async fn model_only_cancellation_interrupts_provider_without_duplicate_call(){
  }).await.unwrap();
  server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+#[tokio::test]
+async fn model_only_reserved_budget_failure_cannot_become_completed(){
+ let (engine,requests,root,server)=fixture(0).await;
+ let mut run=Run::new(CreateRun{instruction:"Budget-constrained answer".into(),
+   budget_krw:Some(20.0),max_steps:Some(2)},2).unwrap();
+ run.model_only=true;
+ // Model receipt is 20 KRW, but delegated reservations leave only 8 KRW.
+ // account() must win over the later success branch.
+ run.reserved_budget_krw=12.0;
+ let id=run.id;engine.store.put(run).await.unwrap();
+ engine.launch(id).await.unwrap();
+ let result=wait_terminal(&engine,id).await;
+ assert_eq!(result.status,RunStatus::Failed);
+ assert!(result.answer.is_none());
+ assert!((result.cost_krw-20.0).abs()<0.00001);
+ assert_eq!(requests.requests.load(Ordering::SeqCst),1);
+ assert!(result.events.iter().any(|e|e.kind=="budget_exceeded"));
+ assert!(!result.events.iter().any(|e|e.kind=="completed"));
+ server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
+async fn model_only_uncertain_request_is_never_replayed_after_restart(){
+ let (engine,requests,root,server)=fixture(0).await;
+ let mut run=Run::new(CreateRun{instruction:"Do not charge twice".into(),
+   budget_krw:Some(100.0),max_steps:Some(2)},2).unwrap();
+ run.model_only=true;
+ // The process died after its durable send-intent and before receiving any
+ // model receipt. A resumed scheduler must not send a second paid request.
+ run.status=RunStatus::Paused;
+ run.event("model_only_request_intent","uncertain provider request",None);
+ let id=run.id;engine.store.put(run).await.unwrap();
+ let error=engine.launch(id).await.unwrap_err();
+ assert!(error.contains("reconcile"),"{error}");
+ assert_eq!(requests.requests.load(Ordering::SeqCst),0);
+ let persisted=engine.store.get(id).await.unwrap();
+ assert_eq!(persisted.status,RunStatus::Paused);
+ assert!(persisted.events.iter().any(|e|e.kind=="model_only_request_intent"));
+ server.abort();drop(engine);tokio::fs::remove_dir_all(root).await.unwrap();
+}
