@@ -196,6 +196,8 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
                 // decision. End this stream; the original Run stays durable.
                 let reason=if run.in_flight.is_some(){
                     "Tool outcome is uncertain; reconcile the native Run before proceeding."
+                }else if crate::journal::unsettled_model_request(&run).is_some(){
+                    "Agent model request may already have been billed. Original Run is frozen; never repeat its plan, action turn or audit before independent review."
                 }else if run.model_only&&run.events.iter().any(|e|
                     e.kind=="model_only_request_intent"){
                     "Model-only provider outcome is uncertain and may have been billed. Open the original Run; inference will not be replayed."
