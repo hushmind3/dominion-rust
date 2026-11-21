@@ -658,8 +658,13 @@ impl crate::runtime_services::RuntimeServices for DenyOnlyServices{
             tool_calling:self.tool_calling,..Default::default()
         }
     }
-    fn select_model(&self,_settings:&Settings,_base:&ModelClient,
-        _provider:&str,_model:&str)->Result<ModelClient,String>{
+    fn select_model(&self,settings:&Settings,base:&ModelClient,
+        provider:&str,model:&str)->Result<ModelClient,String>{
+        // Integration fixture accepts only the exact configured native model.
+        // Arbitrary vendor/model selection remains denied by the injection.
+        if provider=="dominion-native" && model==settings.main.name{
+            return Ok(base.clone());
+        }
         Err("injected model route selected".into())
     }
     fn complete<'a>(&'a self,_settings:&'a Settings,_base:&'a ModelClient,
