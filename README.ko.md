@@ -1,4 +1,4 @@
-# DOMINION
+# 도미니언 러스트
 
 [English](README.md) · [구조](docs/ARCHITECTURE.md) · [Rust SDK](docs/RUST_SDK.md) · [TypeScript SDK](sdk/typescript/README.md)
 

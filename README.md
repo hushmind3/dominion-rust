@@ -1,4 +1,4 @@
-# DOMINION
+# DOMINION Rust
 
 **[한국어 README](README.ko.md)** · [Architecture](docs/ARCHITECTURE.md) · [Rust SDK](docs/RUST_SDK.md) · [TypeScript SDK](sdk/typescript/README.md)
 
