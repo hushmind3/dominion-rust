@@ -670,6 +670,30 @@ mod tests{
         assert_eq!(writing.0,"up");
         down.abort();up.abort();
     }
+    #[tokio::test]
+    async fn passive_remote_topology_never_discloses_scoped_secrets(){
+        let token="redacted-operator-credential-".repeat(2);
+        let mut worker=RemoteWorker::configured(
+            "http://127.0.0.1:65530",token.clone()).unwrap();
+        worker.nodes=vec![RegistryNode{
+            id:"node_a".into(),url:"http://127.0.0.1:65530".into(),
+            token:token.clone(),writer_token:Some("writer-private-".repeat(4)),
+            weight:3
+        }];
+        let view=worker.operator_topology(false).await;
+        assert_eq!(view["configured"],true);
+        assert_eq!(view["probed"],false);
+        assert_eq!(view["nodes"][0]["state"],"not_probed");
+        assert_eq!(view["nodes"][0]["writerConfigured"],true);
+        assert_eq!(view["nodes"][0]["weight"],3);
+        assert!(!view.to_string().contains(&token));
+        assert!(!view.to_string().contains("writer-private-"));
+        // An explicit connection probe must be read-only: an unreachable
+        // worker does not cause model calls, retries or credential disclosure.
+        let inspected=worker.operator_topology(true).await;
+        assert_ne!(inspected["nodes"][0]["state"],"ready");
+        assert!(!inspected.to_string().contains(&token));
+    }
     #[test]
     fn remote_worker_url_is_operator_scoped_and_rejects_unsafe_targets(){
         let token="a".repeat(40);
