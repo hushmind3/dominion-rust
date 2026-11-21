@@ -34,6 +34,9 @@ jobs:
         run: npm ci --prefix web --no-audit --no-fund
       - name: TypeScript strict check
         run: npm run typecheck --prefix web
+      - name: Parse all Playwright specs before expensive Rust and browser jobs
+        working-directory: web
+        run: npx playwright test --list
       - name: SDK typecheck and endpoint contract tests
         run: |
           ./web/node_modules/.bin/tsc -p sdk/typescript/tsconfig.json
