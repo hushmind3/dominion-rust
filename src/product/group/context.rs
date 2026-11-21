@@ -118,6 +118,34 @@ fn needs_owner_lookup(question:&str)->bool{
      "전에 말","전에 정한","과거","earlier","previously","last time",
      "what did we decide","remember"].iter().any(|term|q.contains(term))
 }
+/// A source can be relevant for words in its middle, even if the shared
+/// checkpoint clipped that middle away. Keep its original transcript index.
+fn matched_owner_excerpt(index:usize,body:&str,terms:&[String],cap:usize)->String{
+    let label=format!("[{index}] owner: ");
+    let complete=format!("{label}{body}");
+    if complete.chars().count()<=cap{return complete}
+    let lower=body.to_lowercase();
+    let target=terms.iter().filter_map(|term|lower.find(term).map(|byte|{
+        (term.chars().count(),lower[..byte].chars().count())
+    })).max_by_key(|(length,_)|*length);
+    let Some((_,hit))=target else{return excerpt(&complete,cap)};
+    let characters=body.chars().collect::<Vec<_>>();
+    // Show the exact query hit AND the final owner correction. Spending the
+    // whole allowance near the hit would drop source constraints in the tail.
+    let span=cap.saturating_sub(label.chars().count()+3);
+    if span<12{return excerpt(&complete,cap)}
+    let focus=(span*3/4).max(1);
+    let tail=span-focus;
+    let start=hit.saturating_sub(focus/3)
+        .min(characters.len().saturating_sub(focus));
+    let end=(start+focus).min(characters.len());
+    let tail_start=characters.len().saturating_sub(tail);
+    if end>=tail_start{return excerpt(&complete,cap)}
+    format!("{label}{}{}…{}",
+        if start>0{"…"}else{""},
+        characters[start..end].iter().collect::<String>(),
+        characters[tail_start..].iter().collect::<String>())
+}
 fn relevant_owner_lookup(room:&Room,through:usize,stable:&str,
     question:&str,budget:usize)->Option<String>{
     if through==0||budget<210{return None;}
@@ -154,8 +182,8 @@ fn relevant_owner_lookup(room:&Room,through:usize,stable:&str,
         let capacity=budget.saturating_sub(output.chars().count()+1);
         if capacity<70{break;}
         let message=&room.messages[index];
-        let quote=excerpt(&format!("[{index}] owner: {}",message.content),
-            capacity.min(260));
+        let quote=matched_owner_excerpt(index,&message.content,
+            &terms,capacity.min(260));
         output.push_str(&quote);output.push('\n');
     }
     (output.lines().count()>1).then_some(output)
@@ -328,5 +356,16 @@ mod context_lookup_tests{
         assert!(relevant_owner_lookup(&room,1,&full,
             "예전에 버밀리언 외벽 최종 기록은?",520).is_none(),
             "a fully included owner quote must not be repeated");
+        let centered=format!("{} 연속차폐설정 17층 {}",
+            "일반 설계 검토 ".repeat(120),
+            "추가 관련 설명 ".repeat(120));
+        room.messages[0].content=centered;
+        let centered_hit=relevant_owner_lookup(&room,1,&sealed,
+            "예전에 연속차폐설정 관련 조건은?",520)
+            .expect("query-matching content in the middle must be recoverable");
+        assert!(centered_hit.contains("연속차폐설정 17층"),
+            "the relevant middle must not be hidden by head/tail clipping");
+        assert!(centered_hit.chars().count()<=520);
+
     }
 }
