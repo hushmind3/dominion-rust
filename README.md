@@ -21,11 +21,37 @@ The main Chat's manual compact command persists a bounded excerpt of older messa
 
 [Repository duplication audit and preserved contracts](docs/SUB4_DEDUP_AUDIT_2026-11-20.md) · [Retired subsystem and dependency audit](docs/SUB4_RETIRED_CODE_AUDIT_2026-11-20.md) · [Frontend and account-sign-in cleanup](docs/SUB4_FRONTEND_AUTH_CLEANUP_2026-11-20.md)
 
-## Optional distributed read-only worker (P3, November 21, 2026)
+## P3 distributed native Harness workers (opt-in, November 21, 2026)
 
-Remote node: configure `DOMINION_REMOTE_WORKER_ACCEPT_TOKEN` (a dedicated secret of 32+ bytes) and expose the Rust API over trusted HTTPS transport. The default loopback bind remains unchanged; use a correctly authenticated TLS gateway if the other machine cannot reach loopback. Coordinator: set `DOMINION_REMOTE_WORKER_URL=https://worker.example.com` and `DOMINION_REMOTE_WORKER_TOKEN` to the same secret. The optional `remote_worker_consult` tool is then advertised only while add-ons are enabled. The caller must explicitly approve the tool through the native journal.
+The coordinator advertises `remote_worker_consult` (read-only) and, if a separate Writer credential is configured, `remote_worker_edit` (owner-approved isolated Team Writer). Both reuse the **single native Rust Run/approval/SQLite journal**. The remote server accepts only scoped capability tokens, not the coordinator's unrestricted bearer credentials. No automatic replay is performed after a potentially billable or mutating request.
 
-The remote node provides `POST /api/v1/remote-worker/runs` and `GET /api/v1/remote-worker/runs/{id}` with a *separate* `x-dominion-worker-token` capability, not the unrestricted owner bearer token. Request identity is deterministic; `put_if_absent` atomically preserves the first submitted Run across duplicates and SQLite restarts. Source-selected tools are restricted by Rust policy to read-only inspection, without recursive delegation. Ambiguous network failures and remote approval pauses are reported as uncertain and require reconciliation, never implicit re-submission. Remote accounting is reported separately in KRW; it is **not** automatically charged against the coordinator's budget. External TLS provisioning, provider credentials, distributed Writer worktrees and live multi-device benchmarking remain deployment/integration work, not a claimed production release.
+**Per-node configuration:** Set `DOMINION_REMOTE_WORKER_ACCEPT_TOKEN` (32+ characters) on each worker. Writer nodes additionally require `DOMINION_REMOTE_WORKER_ENABLE_WRITER=true`, `DOMINION_REMOTE_WORKER_WRITER_TOKEN` (separate secret) and an explicit relative-repository allowlist in `DOMINION_REMOTE_WRITER_REPOSITORIES`. The same Git source revision must exist on the remote node. The coordinator can keep the legacy single `DOMINION_REMOTE_WORKER_URL` / `DOMINION_REMOTE_WORKER_TOKEN`, optionally adding `DOMINION_REMOTE_WORKER_WRITER_TOKEN`, or configure a 1–16-node **static discovery registry**, such as:
+
+```json
+[
+  {
+    "id": "node-a",
+    "url": "https://node-a.example.com",
+    "token": "<worker-read-token-32-plus-chars>",
+    "writerToken": "<distinct-writer-token-32-plus-chars>",
+    "weight": 2
+  },
+  {
+    "id": "node-b",
+    "url": "https://node-b.example.com",
+    "token": "<worker-read-token-32-plus-chars>",
+    "weight": 1
+  }
+]
+```
+
+Put the JSON string into `DOMINION_REMOTE_WORKERS_JSON` on the coordinator; do not check real secrets into Git. The gateway probes each remote `/api/v1/remote-worker/capabilities` (auth, available slots, Writer permission, allowed repository) and selects a live matching node by deterministic weighted rendezvous. The destination is bound in the originating Run journal **before dispatch**. A disconnect or uncertain outcome never triggers automatic rerouting.
+
+**Remote Writer:** The native journal first approves `remote_worker_edit` for an owner-authored Task Team **Writer**. The source coordinator ships the bounded exact Git seed from the Team's original revision to the remote node's detached worktree. The remote native Harness produces a SHA-256-pinned regular-file patch (max 128 KiB), which is transferred back and installed in the originating **Writer child worktree only**, under an already journaled effect intent. The original user checkout and Team coordinator remain untouched. A separate existing `preview_task_team_patch` / `approve_task_team_patch` owner approval is still mandatory to merge those edits into the Team coordinator.
+
+**Cost and cancellation:** Remote reported KRW charges are journaled exactly once into `Run.remote_cost_krw` and reduce the available hierarchical budget; these are distinct from the local model's `Run.cost_krw`. A remote Run may still incur an uncertain provider invoice after a disconnect. Cancellation is forwarded to the original remote Run ID and remains uncertain until the source journal confirms it. The remote node and coordinator keep independent provider receipts.
+
+**Two-machine smoke test:** `node scripts/sub4-distributed-smoke.mjs` checks **at least 2 authenticated real endpoints** from `DOMINION_REMOTE_WORKERS_JSON` without executing a billable task. Set `DOMINION_REMOTE_SMOKE_EXECUTE=true` explicitly to submit a bounded native task to both nodes and check their distinct Run IDs, statuses and reported KRW. This cannot provision remote devices, TLS certificates, Git repository clones, or provider credentials for the operator; CI mocks do not establish real hardware readiness.
 
 ## Develop and verify
 

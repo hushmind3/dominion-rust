@@ -13,11 +13,17 @@
 
 [중복 전수 점검·정리 내역](docs/SUB4_DEDUP_AUDIT_2026-11-20.md) · [폐기 기능·설치 잔재 전수 점검](docs/SUB4_RETIRED_CODE_AUDIT_2026-11-20.md) · [프런트·이전 로그인 잔재 정리](docs/SUB4_FRONTEND_AUTH_CLEANUP_2026-11-20.md)
 
-## P3 원격 Worker (기본 비활성화)
+## P3 다중 Rust Worker / 원격 Writer
 
-원격 실행 장치에는 32자 이상의 `DOMINION_REMOTE_WORKER_ACCEPT_TOKEN`을 설정하고 기존 Rust 서버를 HTTPS로 접근 가능하게 구성합니다. 호출 장치에는 `DOMINION_REMOTE_WORKER_URL=https://원격주소`와 같은 값의 `DOMINION_REMOTE_WORKER_TOKEN`을 설정합니다. `remote_worker_consult`는 기존 Rust 도구 승인·저널을 통과해야 하며, 원격 API는 사용자 전체 권한 토큰 대신 별도의 제한된 토큰을 요구합니다. 네트워크 결과가 불분명하면 자동 재실행하지 않으며 원격 실행 영수증을 확인해야 합니다.
+- **읽기 전용 분산 실행:** `remote_worker_consult`. 원격 장치의 네이티브 Rust Harness와 SQLite 저널을 사용합니다.
+- **원격 Writer:** `remote_worker_edit`. 기존 Task Team에서 승인된 Writer만 이용할 수 있습니다. 원격 장치에는 별도 Writer 토큰과 Git 저장소 허용목록을 설정하고, 원본 리비전과 기존 승인된 변경분을 복제해 분리된 워크트리에서 실행합니다.
+- **수정 결과 회수:** 변경 파일을 최대 128 KiB Git 패치로 가져와 SHA-256을 검증하고 **로컬 Writer의 격리 작업공간에만 반영**합니다. 부모 Team에 병합하려면 기존 패치 미리보기와 추가 소유자 승인이 필요합니다. 원본 Git 체크아웃은 직접 수정하지 않습니다.
+- **다중 노드 탐색·분배:** `DOMINION_REMOTE_WORKERS_JSON`에 1~16개 노드의 주소, 전용 토큰, 가중치를 등록합니다. `/api/v1/remote-worker/capabilities`에서 생존 상태·용량·Writer 허용 저장소를 확인한 후 실행을 배정합니다. 한 번 전송한 작업은 통신 오류가 나도 자동으로 다른 노드에 중복 전송하지 않습니다.
+- **비용과 취소:** 원격 실행 비용은 `remote_cost_krw`에 별도 원화 장부로 기록하고 전체 실행 예산 잔여액에서 차감합니다. 취소도 원격 실행 ID로 전달하고 확정되지 않은 결과는 재조정 대상으로 남깁니다.
 
-현재 원격 Worker는 **읽기 전용 조사 전용**입니다. 원격 파일 변경·자동 패치 병합·실기기 간 성능 측정·HTTPS 배포 설정은 포함하지 않습니다. 원격 사용량은 원화로 별도 기록하며 로컬 예산에 합산되지 않습니다.
+설정은 원격 노드의 `DOMINION_REMOTE_WORKER_ACCEPT_TOKEN`, Writer용 `DOMINION_REMOTE_WORKER_ENABLE_WRITER=true`, `DOMINION_REMOTE_WORKER_WRITER_TOKEN`, `DOMINION_REMOTE_WRITER_REPOSITORIES`와 호출 측의 `DOMINION_REMOTE_WORKERS_JSON`을 사용합니다. 오래된 단일 노드 `DOMINION_REMOTE_WORKER_URL` 및 `DOMINION_REMOTE_WORKER_TOKEN`도 유지됩니다. 장치 사이 연결에는 신뢰할 수 있는 HTTPS를 별도로 준비해야 합니다.
+
+**실기기 검증 도구:** `node scripts/sub4-distributed-smoke.mjs`는 환경변수의 서로 다른 2개 원격 노드에 인증된 상태 점검을 실행합니다. `DOMINION_REMOTE_SMOKE_EXECUTE=true`일 때만 실제 모델 추론 작업을 전송합니다(원격 모델 비용 발생 가능). 이 코드는 실제 PC나 인증서·클라우드 장치를 자동 설치하지 않으며, 운영 환경의 2대 연결 성공을 테스트 코드만으로 단정하지 않습니다.
 
 ## 실행·점검
 
