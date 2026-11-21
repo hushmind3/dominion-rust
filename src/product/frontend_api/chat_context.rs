@@ -32,7 +32,7 @@ fn translation_target_is_resource(body:&str)->bool{
 
 /// An explicit pasted translation is data, not a request to search for the
 /// words inside that data. Path/URL-only targets retain retrieval capability.
-fn pasted_translation_is_self_contained(query:&str)->bool{
+fn pasted_translation_is_self_contained(query:&str)->Option<bool>{
     let text=query.trim().to_lowercase();
     let prefixes=["번역해:","번역해：","번역해줘:","번역해 줘:",
         "영어로 번역:","한국어로 번역:","translate this:",
@@ -40,9 +40,8 @@ fn pasted_translation_is_self_contained(query:&str)->bool{
     for prefix in prefixes{
         if let Some(rest)=text.strip_prefix(prefix){
             let body=rest.trim();
-            if body.is_empty(){return false;}
-            if translation_target_is_resource(body){return false;}
-            return true;
+            if body.is_empty(){return Some(false);}
+            return Some(!translation_target_is_resource(body));
         }
     }
     for quote in ['\'','"','“']{
@@ -53,13 +52,12 @@ fn pasted_translation_is_self_contained(query:&str)->bool{
         if let Some(body)=starts.iter().find_map(|prefix|text.strip_prefix(prefix)){
             if text.ends_with(closing)&&text.chars().count()>12{
                 let target=body.strip_suffix(closing).unwrap_or(body);
-                return !translation_target_is_resource(target);
+                return Some(!translation_target_is_resource(target));
             }
         }
     }
-    false
+    None
 }
-
 /// Exactly matched greetings are never a reason to send code/write/shell
 /// schemas. Ambiguous follow-ups and time-sensitive questions stay toolful.
 pub(super) fn no_tools_required(query:&str)->bool{
@@ -85,7 +83,7 @@ pub(super) fn no_tools_required(query:&str)->bool{
         return true;
     }
 
-    if pasted_translation_is_self_contained(query){return true;}
+    if let Some(tool_free)=pasted_translation_is_self_contained(query){return tool_free;}
 
     // A tool decision must err towards the normal Run for named artifacts,
     // current facts, prior-work references and owner-authorized effects.
