@@ -540,6 +540,35 @@ mod tests{
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]
+    async fn remote_failure_usage_is_metered_incrementally_without_double_charge(){
+        use crate::{domain::{CreateRun,Run},store::Store};
+        let root=std::env::temp_dir().join(format!(
+            "dominion-remote-usage-{}",Uuid::new_v4()));
+        let store=Arc::new(RunStorePort::new(Arc::new(
+            Store::open(root.clone()).await.unwrap())));
+        let mut run=Run::new(CreateRun{
+            instruction:"Remote usage ledger".into(),
+            budget_krw:Some(15.0),max_steps:Some(3)},3).unwrap();
+        let id=run.id;
+        let call=ToolCall{id:"billing-1".into(),name:TOOL.into(),
+            arguments:json!({"instruction":"inspect"})};
+        run.in_flight=Some(call.clone());
+        store.put(run).await.unwrap();
+        let remote_id=Uuid::new_v4();
+        for cost in [1.0,3.5,3.5]{
+            RemoteWorker::record_remote_charge(&store,id,&call,remote_id,
+                &json!({"status":"failed","costKrw":cost,
+                    "inputTokens":50,"outputTokens":9})).await.unwrap();
+        }
+        let end=store.get(id).await.unwrap();
+        assert_eq!(end.remote_cost_krw,3.5);
+        assert_eq!(crate::policy::effective_budget_krw(&end),11.5);
+        assert_eq!(end.events.iter().filter(|e|e.kind=="remote_worker_metered").count(),2);
+        assert!(RemoteWorker::record_remote_charge(&store,id,&call,remote_id,
+            &json!({"status":"failed","costKrw":2.0})).await.is_err());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
     async fn authenticated_pool_rejects_unhealthy_node_and_routes_to_healthy_peer(){
         use axum::{extract::State,http::StatusCode,routing::get,Json,Router};
         async fn capabilities(State(healthy):State<bool>)
