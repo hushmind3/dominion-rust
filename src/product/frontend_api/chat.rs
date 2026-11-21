@@ -13,6 +13,20 @@ pub(super) struct ChatInput {
     reasoning_language:Option<String>,
     thinking:Option<bool>
 }
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub(super) struct InferenceSupportQuery{
+    provider_id:String,
+    model:String
+}
+pub(super) async fn inference_support(
+    State(engine):State<Arc<Engine>>,Query(input):Query<InferenceSupportQuery>
+)->Result<Json<Value>,Fault>{
+    let model=engine.model_for_selection(&input.provider_id,&input.model)
+        .map_err(bad)?;
+    Ok(Json(model.run_reasoning_support()))
+}
+
 pub(super) fn yes()->bool{true}
 
 /// 2026 cache-aware chat projection: role-preserving, non-generative, and
