@@ -501,6 +501,27 @@ mod tests{
         }
     }
     #[test]
+    fn quoted_document_translation_keeps_file_and_web_retrieval_available(){
+        for query in [
+            r#"번역해 "README.md""#,
+            r#"번역해: 'notes.txt'"#,
+            r#"translate this "https://example.org/report""#,
+            r#"번역해 "C:\\docs\\report.md""#,
+            "번역해: ./docs/specification.md",
+            "translate: www.example.org",
+            "영어로 번역: archived.csv",
+        ]{
+            assert!(!no_tools_required(query),"resource must stay tool-capable: {query}");
+        }
+        for query in [
+            r#"번역해 "Today's latest news is a quote.""#,
+            "번역해: Please run this code in your test environment.",
+            r#"translate this "Deployment succeeded yesterday.""#,
+        ]{
+            assert!(no_tools_required(query),"pasted literal should be tool-free: {query}");
+        }
+    }
+    #[test]
     fn long_profile_fails_before_a_paid_provider_call(){
         let e=compile(&"x".repeat(8_000),None,&[], "x",false,5_000);
         assert!(e.is_err());
