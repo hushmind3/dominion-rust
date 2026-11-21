@@ -32,12 +32,6 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     // A model-only turn makes exactly one no-tools request. The autonomous
     // harness is not launched, so tool disabled cannot silently execute tools.
     // Per-run learning is enforced by Run.strategy_learning in the Rust core.
-    if input.reasoning_effort.as_deref().is_some_and(|x|!x.is_empty()){
-        return Err(unsupported("Per-run reasoning effort is not yet supported by the configured Rust model adapter."));
-    }
-    if input.thinking==Some(false){
-        return Err(unsupported("Per-run thinking disable is not yet supported by the configured Rust model adapter."));
-    }
     sync_session(&engine,&input.session_id).await.map_err(broken)?;
     let record=engine.frontend.session(&input.session_id).await.ok_or_else(||missing("session not found"))?;
     if record.room_id.is_some(){return Err(bad("post room messages through the room API; direct chat is disabled for a room-linked session"));}
@@ -48,6 +42,16 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     let (selected_provider,selected_model)=chosen(&engine,
         input.provider_id.as_deref().or(Some(record.provider_id.as_str())),
         input.model.as_deref().or(Some(record.model.as_str())))?;
+    // Admission and transport share the same exact endpoint+model matrix.
+    // An unsupported override is rejected before creating a durable Run or
+    // charging a provider; supported fields are frozen with the Run receipt.
+    let requested_effort=input.reasoning_effort.as_deref()
+        .filter(|level|!level.is_empty());
+    let requested_thinking=input.thinking.filter(|enabled|!*enabled);
+    engine.model_for_selection(&selected_provider,&selected_model)
+        .map_err(bad)?
+        .with_run_reasoning(requested_effort,requested_thinking)
+        .map_err(unsupported)?;
     // Old chat packed profile + transcript + current request into one new
     // opaque user string on EVERY turn. The changing string invalidated
     // provider prefix caches and made earlier assistant replies look like
@@ -74,6 +78,8 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     let suffix=identity[..16].iter().map(|v|format!("{v:02x}")).collect::<String>();
     engine.store.mutate(run.id,|current|{
         current.provider_session_affinity=format!("dominion-chat-{suffix}");
+        current.reasoning_effort=requested_effort.map(str::to_owned);
+        current.thinking=requested_thinking;
         current.chat_context=profile.messages;
         current.event("chat_context_attached","Role-preserving, bounded chat context attached",
             Some(json!({"messages":current.chat_context.len(),
