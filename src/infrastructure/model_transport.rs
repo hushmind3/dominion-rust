@@ -17,6 +17,9 @@ pub struct ModelClient {
     /// Inert per-client fallback. First-party OpenCode Go still gets a stable
     /// non-global session ID if a raw caller did not supply Run/Room identity.
     opencode_default_session:String,
+    /// Frozen for one native Run. Defaults never emit model-specific knobs.
+    run_reasoning_effort:Option<String>,
+    run_thinking:Option<bool>,
 }
 /// A Responses API continuation receipt. Legacy Chat Completions has no
 /// remote session handle, so response_id is None and keeps full prompts.
@@ -52,7 +55,8 @@ impl ModelClient {
         Ok(Self { http, strong: settings.main.clone(), economy: settings.economy.clone(),
             strong_protocol:"openai".into(),economy_protocol:"openai".into(),
             session_affinity:None,
-            opencode_default_session:uuid::Uuid::new_v4().to_string() })
+            opencode_default_session:uuid::Uuid::new_v4().to_string(),
+            run_reasoning_effort:None,run_thinking:None })
     }
     /// Snapshot the selected provider for a single native Run. Requests
     /// never fall back to a different vendor or model without user choice.
@@ -60,7 +64,9 @@ impl ModelClient {
         Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
             strong_protocol:"openai".into(),economy_protocol:"openai".into(),
             session_affinity:self.session_affinity.clone(),
-            opencode_default_session:self.opencode_default_session.clone()}
+            opencode_default_session:self.opencode_default_session.clone(),
+            run_reasoning_effort:self.run_reasoning_effort.clone(),
+            run_thinking:self.run_thinking}
     }
     pub fn with_primary_protocol(&self,selected:ModelSettings,protocol:&str)->Result<Self,String>{
         if !matches!(protocol,"openai"|"ollama"|"anthropic"|"responses"){
@@ -69,8 +75,64 @@ impl ModelClient {
         Ok(Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
             strong_protocol:protocol.to_owned(),economy_protocol:protocol.to_owned(),
             session_affinity:self.session_affinity.clone(),
-            opencode_default_session:self.opencode_default_session.clone()})
+            opencode_default_session:self.opencode_default_session.clone(),
+            run_reasoning_effort:self.run_reasoning_effort.clone(),
+            run_thinking:self.run_thinking})
     }
+    /// Only verified first-party transport/model combinations expose Run
+    /// inference overrides. "Unknown" or operator-declared generic reasoning
+    /// capability never justifies sending arbitrary vendor-specific fields.
+    pub fn with_run_reasoning(&self,effort:Option<&str>,thinking:Option<bool>)
+        ->Result<Self,String>{
+        let effort=effort.filter(|value|!value.is_empty());
+        let protocol=self.strong_protocol.as_str();
+        let model=self.strong.name.to_ascii_lowercase();
+        let official=self.strong.base_url=="https://api.openai.com/v1";
+        let openai_reasoning=official
+            &&matches!(protocol,"openai"|"responses")
+            &&(model=="gpt-5.6"||model=="gpt-6");
+        let ollama_boolean=protocol=="ollama" &&
+            (model.starts_with("qwen3")||model.starts_with("deepseek-r1"));
+        let ollama_levels=protocol=="ollama" && model.starts_with("gpt-oss");
+        if thinking==Some(false) && effort.is_some(){
+            return Err("choose either thinking disable or reasoning effort for one Run".into());
+        }
+        if thinking==Some(false) && !ollama_boolean{
+            return Err("per-Run thinking disable unsupported by this exact model/endpoint".into());
+        }
+        if let Some(level)=effort{
+            let allowed=matches!(level,"low"|"medium"|"high");
+            if !allowed || !(openai_reasoning || ollama_levels){
+                return Err("per-Run reasoning effort unsupported by this exact model/endpoint".into());
+            }
+        }
+        let mut result=self.clone();
+        result.run_reasoning_effort=effort.map(str::to_owned);
+        result.run_thinking=thinking.filter(|enabled|!*enabled);
+        Ok(result)
+    }
+    /// Apply ONLY provider-recognized fields to the exact outbound request.
+    /// A proxy or unsupported model must not receive guessed settings.
+    fn apply_run_reasoning(&self,body:&mut Value)->Result<(),String>{
+        // The same validation is applied at Chat admission and here before
+        // any paid request so a changed provider cannot bypass the contract.
+        self.with_run_reasoning(self.run_reasoning_effort.as_deref(),
+            self.run_thinking)?;
+        if self.run_thinking==Some(false){
+            body["think"]=json!(false);
+        }
+        if let Some(level)=self.run_reasoning_effort.as_deref(){
+            if self.strong_protocol=="ollama"{
+                body["think"]=json!(level);
+            }else if self.strong_protocol=="responses"{
+                body["reasoning"]=json!({"effort":level});
+            }else{
+                body["reasoning_effort"]=json!(level);
+            }
+        }
+        Ok(())
+    }
+
     /// Keep the same UUID-derived routing hint across participants in one
     /// room. Only Cloudflare's documented Workers AI endpoint receives it.
     pub fn with_session_affinity(&self,identifier:&str)->Self{
@@ -220,6 +282,7 @@ impl ModelClient {
             items.push(message);
         }
         let mut body=json!({"model":settings.name,"input":items,"store":true});
+        self.apply_run_reasoning(&mut body)?;
         if let Some(id)=previous_response_id{
             if id.is_empty(){return Err("empty previous_response_id".into());}
             body["previous_response_id"]=json!(id);
@@ -331,6 +394,7 @@ impl ModelClient {
             return self.request_ollama(settings,messages,tools).await;
         }
         let mut body = json!({"model": settings.name, "messages": messages, "stream": false});
+        self.apply_run_reasoning(&mut body)?;
         // GPT-5.6+ requires an explicit stable-prefix boundary to avoid
         // repeatedly charging cache writes for a changing final message.
         // Compatibility gateways and earlier OpenAI models only see the
@@ -402,6 +466,7 @@ impl ModelClient {
         ->Result<Reply,String>{
         let mut body=json!({"model":settings.name,
             "messages":ollama_messages(messages)?,"stream":false});
+        self.apply_run_reasoning(&mut body)?;
         if !tools.is_empty(){body["tools"]=Value::Array(tools.to_vec());}
         let root=settings.base_url.trim_end_matches('/');
         let root=root.strip_suffix("/v1").unwrap_or(root);
