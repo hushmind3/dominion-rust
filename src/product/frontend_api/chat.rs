@@ -51,7 +51,7 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     engine.model_for_selection(&selected_provider,&selected_model)
         .map_err(bad)?
         .with_run_reasoning(requested_effort,requested_thinking)
-        .map_err(unsupported)?;
+        .map_err(|error|unsupported(&error))?;
     // Old chat packed profile + transcript + current request into one new
     // opaque user string on EVERY turn. The changing string invalidated
     // provider prefix caches and made earlier assistant replies look like
