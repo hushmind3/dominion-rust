@@ -214,7 +214,10 @@ required_count src/addons/mod.rs 'agent_bridge::TOOL[|]agent_bridge::EDIT_TOOL' 
 required_count src/addons/execution.rs 'host[.]bridge[.]execute' 1
 required_count src/addons/agent_bridge.rs 'run[.]event[(]"external_agent_unmetered"' 1
 required_count src/addons/agent_bridge.rs 'kill_on_drop[(]true[)]' 1
-required_count src/addons/agent_bridge.rs 'Command::new[(]"(sh|bash)"[)]|workspace-write|dangerously-skip-permissions' 0
+required_count src/addons/agent_bridge.rs 'Command::new[(]"(sh|bash)"[)]|dangerously-skip-permissions' 0
+# The only write-capable external bridge is an approved isolated Team Writer.
+required_count src/addons/agent_bridge.rs 'verified_external_writer_worktree' 1
+required_count src/addons/agent_bridge.rs 'if editing[{]"workspace-write"[}]else[{]"read-only"[}]' 1
 required_count src/engine/task_team.rs 'self[.]launch[(]task[.]run_id' 2
 required_count src/engine/task_team.rs 'impl Engine' 1
 required_count src/engine/task_team.rs 'async fn drive[(]|fn perform_tool[(]' 0
