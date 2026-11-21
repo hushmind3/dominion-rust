@@ -209,6 +209,33 @@ impl RemoteWorker{
             return Ok(ToolEffectOutcome::Settled(Err(
                 "a Room peer cannot authorize a remote worker".into())));
         }
+        // A remote Writer must originate from an owner-created Task Team.
+        // It can change only the Writer's detached child worktree. The
+        // coordinator root still requires a separate SHA-pinned human merge.
+        let writer_context=if editing{
+            let parent_id=origin.parent_run_id
+                .ok_or("remote Writer requires a Task Team parent")?;
+            let parent=store.get(parent_id).await
+                .ok_or("remote Writer coordinator missing")?;
+            let approved=parent.team.as_ref().is_some_and(|team|
+                team.tasks.iter().any(|task|task.run_id==id &&
+                    task.spec.role==crate::domain::team::TeamRole::Writer));
+            if !approved||origin.read_only||origin.room_binding.is_some()
+                ||origin.delegation_profile!="implementation"
+                ||origin.repository.is_none()||origin.repository!=parent.repository
+                ||origin.base_commit.is_none()||parent.base_commit.is_none(){
+                return Ok(ToolEffectOutcome::Settled(Err(
+                    "remote Writer requires an isolated, owner-authored Team lease".into())));
+            }
+            let parent_sha=parent.base_commit.as_deref().unwrap();
+            let child_sha=origin.base_commit.as_deref().unwrap();
+            crate::workspace::verified_external_writer_worktree(
+                settings,parent_id,id,parent_sha,child_sha).await?;
+            let (seed,seed_hash)=crate::workspace::remote_team_seed(
+                settings,parent_id,id,parent_sha,child_sha).await?;
+            Some((parent_id,parent_sha.to_owned(),child_sha.to_owned(),
+                origin.repository.clone().unwrap(),seed,seed_hash))
+        }else{None};
         let remaining=(crate::policy::effective_budget_krw(&origin)-origin.cost_krw)
             .max(0.0).min(10000.0);
         if remaining==0.0{
@@ -230,10 +257,17 @@ impl RemoteWorker{
             Ok(())
         }).await?;
         let execute=async {
-            let request=json!({"runId":remote_id,"instruction":instruction,
+            let mut request=json!({"runId":remote_id,"instruction":instruction,
                 "budgetKrw":remaining,
                 "maxSteps":origin.max_steps.min(20).max(1),
                 "writer":editing});
+            if let Some((_,ref parent_sha,_,ref repository,ref seed,ref seed_hash))
+                =writer_context{
+                request["repository"]=json!(repository);
+                request["baseCommit"]=json!(parent_sha);
+                request["seedPatch"]=json!(seed);
+                request["seedSha256"]=json!(seed_hash);
+            }
             let mut post=self.client.post(Self::url_for(&endpoint,None))
                 .header(AUTH_HEADER,&worker_token);
             if let Some(secret)=writer_token.as_ref(){
@@ -308,9 +342,69 @@ impl RemoteWorker{
                             return ToolEffectOutcome::Uncertain(format!(
                                 "remote cost receipt could not be journalled: {error}"));
                         }
+                        let mut patch_meta=Value::Null;
+                        if let Some((parent_id,ref parent_sha,ref child_sha,
+                            _,_,_))=writer_context{
+                            if view["writer"]!=true{
+                                return ToolEffectOutcome::Uncertain(
+                                    "remote worker did not attest Writer mode".into());
+                            }
+                            let Some(patch)=view["patch"].as_str() else{
+                                return ToolEffectOutcome::Uncertain(
+                                    "remote writer omitted the exact Git patch".into());
+                            };
+                            let Some(digest)=view["patchSha256"].as_str() else{
+                                return ToolEffectOutcome::Uncertain(
+                                    "remote writer omitted patch digest".into());
+                            };
+                            if patch.len()>131_072||patch.is_empty()
+                                ||format!("{:x}",Sha256::digest(patch.as_bytes()))!=digest{
+                                return ToolEffectOutcome::Uncertain(
+                                    "remote writer patch digest or length invalid".into());
+                            }
+                            let intent=store.mutate(id,|run|{
+                                if run.in_flight.as_ref().is_none_or(|pending|
+                                    pending.id!=call.id||pending.name!=EDIT_TOOL){
+                                    return Err("remote Writer lost approved tool intent".into());
+                                }
+                                run.event("remote_writer_patch_apply_intent",
+                                    "Approved isolated Team Writer patch SHA journalled before Git apply",
+                                    Some(json!({"remoteRunId":remote_id,
+                                        "sha256":digest,"parentId":parent_id,
+                                        "workerId":id})));
+                                Ok(())
+                            }).await;
+                            if let Err(error)=intent{
+                                return ToolEffectOutcome::Uncertain(format!(
+                                    "remote patch intent not durable: {error}"));
+                            }
+                            let installed=crate::workspace::apply_remote_writer_patch(
+                                settings,parent_id,id,parent_sha,child_sha,patch,digest).await;
+                            let changed=match installed{
+                                Ok(paths)=>paths,
+                                Err(error)=>return ToolEffectOutcome::Uncertain(format!(
+                                    "remote Writer Git apply outcome requires reconciliation: {error}"))
+                            };
+                            let receipt=store.mutate(id,|run|{
+                                run.event("remote_writer_patch_installed",
+                                    "Remote Writer patch applied only to isolated Team child",
+                                    Some(json!({"remoteRunId":remote_id,"sha256":digest,
+                                        "changedPaths":changed,
+                                        "requiresTeamMergeApproval":true})));
+                                Ok(())
+                            }).await;
+                            if receipt.is_err(){
+                                return ToolEffectOutcome::Uncertain(
+                                    "remote patch applied but durable receipt failed; reconcile".into());
+                            }
+                            patch_meta=json!({"sha256":digest,
+                                "changedPaths":changed,
+                                "installedInIsolatedWorker":true,
+                                "requiresTeamMergeApproval":true});
+                        }
                         return ToolEffectOutcome::Settled(Ok(json!({
                             "source":"dominion_remote_worker","remoteRunId":remote_id,
-                            "nodeId":node_id,
+                            "nodeId":node_id,"remoteWriterPatch":patch_meta,
                             "answer":answer.chars().take(20000).collect::<String>(),
                             "remoteCostKrw":view["costKrw"],
                             "remoteInputTokens":view["inputTokens"],
