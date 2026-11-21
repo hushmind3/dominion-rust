@@ -8,7 +8,7 @@ use crate::{
     sdk::Dominion,
 };
 use axum::{
-    extract::{Path,State},http::StatusCode,
+    extract::{Path,Query,State},http::StatusCode,
     response::sse::{Event,KeepAlive,Sse},
     routing::{get,post},Json,Router,
 };
@@ -54,6 +54,7 @@ pub fn router(addons_enabled:bool)->Router<Arc<Engine>>{
         .route("/sessions/{id}/fork",post(fork_session))
         .route("/sessions/{id}/cancel",post(cancel_session))
         .route("/chat",post(chat))
+        .route("/chat/inference-support",get(inference_support))
         .route("/approvals",get(approvals).post(resolve_approval))
         .route("/policy",get(policy).post(save_policy))
         .route("/jobs",get(jobs).post(create_job))
