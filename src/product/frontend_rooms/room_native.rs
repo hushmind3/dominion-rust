@@ -19,6 +19,27 @@ pub(super) fn identity(room:&Room,participant:&str)->Option<(Uuid,RoomRunBinding
     digest.update((owner_message_index as u64).to_be_bytes());
     digest.update(owner.at_ms.to_be_bytes());
     digest.update(participant.as_bytes());
+    // A definitive provider HTTP 400 failure is rejected before model
+    // inference. Only that classified failure may start a new native Run
+    // for the SAME owner message. Every retry gets a different durable Run
+    // ID; an ambiguous transport/5xx or billed failure never auto-replays.
+    let prior=room.usage_receipts.iter()
+        .filter(|receipt|receipt.participant==participant
+            &&receipt.message_index>owner_message_index
+            &&receipt.origin_run_id.is_some())
+        .collect::<Vec<_>>();
+    if let Some(accepted)=prior.iter().rev().find(|receipt|receipt.accepted){
+        return Some((accepted.origin_run_id?,binding));
+    }
+    let retries=if room.last_provider_failure.as_ref().is_some_and(|failure|
+        failure.participant==participant&&failure.http_status==Some(400)
+            &&failure.category=="upstream_bad_request"){
+        prior.len()
+    }else{0};
+    if retries>0{
+        // Preserve the original deterministic UUID for attempt zero.
+        digest.update((retries as u64).to_be_bytes());
+    }
     let hash=digest.finalize();
     let mut uuid=[0u8;16];
     uuid.copy_from_slice(&hash[..16]);
