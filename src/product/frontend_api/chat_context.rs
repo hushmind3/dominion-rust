@@ -18,12 +18,12 @@ const COLD_CHARS:usize=240;
 /// marks. A filename is not self-contained translation source text.
 fn translation_target_is_resource(body:&str)->bool{
     let value=body.trim().trim_matches(|c:char|
-        matches!(c,'\\''|'"'|'“'|'”'|'\u0060')).trim();
+        matches!(c,'“'|'”'|'`')||c==char::from(34u8)||c==char::from(39u8)).trim();
     if value.is_empty(){return false;}
     if ["http://","https://","www.","file://","/","./","../","~/"]
         .iter().any(|prefix|value.starts_with(prefix)){return true;}
     if !value.chars().any(char::is_whitespace){
-        if value.contains('/')||value.contains('\\'){return true;}
+        if value.contains('/')||value.contains(char::from(92u8)){return true;}
         return [".pdf",".md",".rs",".py",".tsx",".json",".txt",".docx",
             ".csv",".xlsx",".pptx",".html"].iter().any(|ending|value.ends_with(ending));
     }
