@@ -215,7 +215,7 @@ required_count src/addons/mod.rs 'remote_worker::TOOL' 3
 required_count src/addons/execution.rs 'host[.]remote_worker[.]as_ref' 1
 required_count src/product/remote_worker.rs 'run[.]read_only=!req[.]writer' 1
 required_count src/product/remote_worker.rs 'writer_authorized[(]&headers[)]' 1
-required_count src/policy.rs 'remote_worker_admitted' 2
+required_count src/policy.rs 'remote_worker_admitted' 3
 required_count src/addons/remote_worker.rs 'remote_writer_patch_apply_intent' 1
 required_count src/infrastructure/persistence/mod.rs 'pub async fn put_if_absent' 1
 required_count src/addons/execution.rs 'host[.]bridge[.]execute' 1
