@@ -506,7 +506,8 @@ impl RemoteWorker{
                             "remoteCostKrw":view["costKrw"],
                             "remoteInputTokens":view["inputTokens"],
                             "remoteOutputTokens":view["outputTokens"],
-                            "billing":"remote_separately_metered","readOnly":true
+                            "billing":"remote_separately_metered",
+                            "readOnly":!editing,"writer":editing
                         }).to_string()));
                     }
                     Some("failed"|"cancelled")=>return ToolEffectOutcome::Settled(Err(format!(
@@ -595,6 +596,7 @@ mod tests{
                 assert_eq!(receipt["answer"],"observed native evidence");
                 assert_eq!(receipt["remoteCostKrw"],2.5);
                 assert_eq!(receipt["readOnly"],true);
+                assert_eq!(receipt["writer"],false);
             }
             other=>panic!("remote native inspection was not settled: {other:?}")
         }
