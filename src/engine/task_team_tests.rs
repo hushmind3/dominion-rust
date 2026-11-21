@@ -35,6 +35,53 @@ async fn mock_engine()->(Arc<Engine>,Arc<Store>,std::path::PathBuf){
     (engine,store,root)
 }
 #[tokio::test]
+async fn worker_specific_provider_routing_is_owner_bound_and_survives_run_reload(){
+    use crate::engine::WorkerModelRoute;
+    use std::collections::HashMap;
+    let (engine,store,path)=mock_engine().await;
+    let model=engine.settings.main.name.clone();
+    let mut routes=HashMap::new();
+    routes.insert("writer".into(),WorkerModelRoute{
+        provider_id:"dominion-native".into(),model:model.clone()
+    });
+    let unknown=HashMap::from([("not-in-graph".into(),WorkerModelRoute{
+        provider_id:"dominion-native".into(),model:model.clone()
+    })]);
+    assert!(engine.create_task_team_with_routes("Invalid route".into(),
+        vec![spec("writer",&[],TeamRole::Writer)],30.0,
+        RunOptions::default(),None,unknown).await.is_err(),
+        "a route for a non-existent Worker cannot become a real task");
+    let invalid=HashMap::from([("writer".into(),WorkerModelRoute{
+        provider_id:"dominion-native".into(),model:"unregistered-model".into()
+    })]);
+    assert!(engine.create_task_team_with_routes("Invalid model".into(),
+        vec![spec("writer",&[],TeamRole::Writer)],30.0,
+        RunOptions::default(),None,invalid).await.is_err(),
+        "invalid provider/model bindings must fail before Team creation");
+    let root=engine.create_task_team_with_routes("Owner-bound worker model".into(),
+        vec![spec("writer",&[],TeamRole::Writer)],30.0,
+        RunOptions::default(),None,routes).await.unwrap();
+    assert!(root.events.iter().any(|e|e.kind=="team_worker_routes_bound"));
+    let worker_id=root.team.as_ref().unwrap().tasks[0].run_id;
+    engine.advance_task_team(root.id).await.unwrap();
+    let child=store.get(worker_id).await.unwrap();
+    assert_eq!(child.provider_id,"dominion-native");
+    assert_eq!(child.model_name,model);
+    assert_eq!(child.parent_run_id,Some(root.id));
+    assert_eq!(child.events.iter().filter(|e|
+        e.kind=="team_worker_route_bound").count(),1);
+    let sdk=Dominion::from_engine(Arc::clone(&engine));
+    let done=sdk.wait(worker_id,Duration::from_secs(12)).await.unwrap();
+    assert_eq!(done.status,RunStatus::Completed);
+    let reloaded=Store::open(path.join("data/runs")).await.unwrap();
+    assert_eq!(reloaded.get(worker_id).await.unwrap().model_name,model);
+    assert_eq!(reloaded.get(root.id).await.unwrap().events.iter()
+        .filter(|e|e.kind=="team_worker_routes_bound").count(),1);
+    drop(reloaded);drop(sdk);drop(engine);drop(store);
+    tokio::fs::remove_dir_all(path).await.unwrap();
+}
+
+#[tokio::test]
 async fn durable_team_runs_real_workers_in_dependency_order_and_never_launches_root(){
     let (engine,store,path)=mock_engine().await;
     let sdk=Dominion::from_engine(Arc::clone(&engine));
