@@ -363,6 +363,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn crash_before_chat_session_binding_never_auto_runs_a_queued_agent(){
+        let root=std::env::temp_dir().join(format!("dominion-unbound-chat-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let sdk=Dominion::open(settings.clone()).await.unwrap();
+        let pending=sdk.prepare_chat_run(CreateRun{
+            instruction:"Unbound agent must never become a paid request".into(),
+            budget_krw:Some(50.0),max_steps:Some(4),
+        },RunOptions::default()).await.unwrap();
+        assert_eq!(pending.status,RunStatus::Queued);
+        assert!(pending.events.iter().any(|e|e.kind=="external_owner_admission_required"));
+        assert!(!pending.events.iter().any(|e|e.kind=="external_owner_admission_bound"));
+        drop(sdk);
+        let recovered=Dominion::open(settings).await.unwrap();
+        let run=recovered.get(pending.id).await.unwrap();
+        assert_eq!(run.status,RunStatus::Failed);
+        assert_eq!(run.input_tokens,0);
+        assert!(run.events.iter().any(|e|e.kind=="external_owner_admission_aborted"));
+        assert!(recovered.resume(pending.id).await.is_err());
+        drop(recovered);
+        cleanup_test_dir(root).await;
+    }
+
+    #[tokio::test]
     async fn sdk_wait_returns_on_durable_approval_event_without_polling(){
         let root=std::env::temp_dir().join(format!("dominion-sdk-wait-{}",Uuid::new_v4()));
         let mut settings=Settings::from_env().unwrap();
