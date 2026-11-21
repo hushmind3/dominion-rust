@@ -20,7 +20,8 @@ type NativeRun={
  model_only?:boolean;
 }
 type TeamTask={id:string;run_id:string;role:'investigator'|'writer'|'reviewer';
- workspace:string;depends_on:string[];status:string;patch_review_ready?:boolean;unmet_acceptance?:string[]}
+ workspace:string;depends_on:string[];status:string;patch_review_ready?:boolean;unmet_acceptance?:string[];
+ provider_id?:string;model_name?:string}
 type TeamView={root_run_id:string;tasks:TeamTask[];completed:number;all_complete:boolean;failed:boolean}
 type Patch={source_run_id:string;sha256:string;changed_paths:string[];patch_bytes:number;diff:string;can_apply:boolean;conflict?:string|null}
 const money=(n:number|undefined)=>new Intl.NumberFormat('ko-KR',{maximumFractionDigits:2}).format(n||0)+'원'
@@ -181,7 +182,8 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
    <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-semibold"><Workflow size={15} className="mr-1 inline"/>{ko?'팀 작업 보드':'Team task board'}</h4><span className="text-xs text-[#7C7469]">{team.value.completed}/{team.value.tasks.length} {ko?'완료':'completed'}</span></div>
    <ol className="mt-3 grid gap-2">
     {team.value.tasks.map((task,index)=><li key={task.id} className="rounded-xl border border-[#E7E0D5] bg-white p-3">
-     <div className="flex flex-wrap items-start gap-2"><span className="rounded bg-[#F3EEE5] px-1.5 py-0.5 text-[10px]">{index+1}</span><div className="min-w-0 flex-1"><strong className="text-xs">{task.id}</strong><p className="text-[11px] text-[#7C7469]">{task.role} · {task.workspace}{task.depends_on.length?' · '+(ko?'선행':'After')+': '+task.depends_on.join(', '):''}</p></div><span className="rounded-lg bg-[#F3EEE5] px-2 py-1 text-[11px]">{statusName(task.status,ko)}</span></div>
+     <div className="flex flex-wrap items-start gap-2"><span className="rounded bg-[#F3EEE5] px-1.5 py-0.5 text-[10px]">{index+1}</span><div className="min-w-0 flex-1"><strong className="text-xs">{task.id}</strong><p className="text-[11px] text-[#7C7469]">{task.role} · {task.workspace}{task.depends_on.length?' · '+(ko?'선행':'After')+': '+task.depends_on.join(', '):''}</p>{task.model_name&&
+     <p className="mt-1 break-all text-[11px] text-[#7C7469]">{ko?'실제 모델':'Bound model'}: {task.provider_id||'dominion-native'} · {task.model_name}</p>}</div><span className="rounded-lg bg-[#F3EEE5] px-2 py-1 text-[11px]">{statusName(task.status,ko)}</span></div>
      {!!task.unmet_acceptance?.length&&<p className="mt-2 text-[11px] text-rose-700">{task.unmet_acceptance.join(', ')}</p>}
      <div className="mt-2 flex flex-wrap gap-2">
       <Button size="sm" variant="ghost" onClick={()=>onSelect(task.run_id)}>{ko?'Worker 기록':'Worker run'}</Button>
