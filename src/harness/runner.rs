@@ -27,6 +27,25 @@ impl Engine {
             Ok(())
         }).await?;
         self.services.throttle(&run.provider_id).await;
+        if *cancellation.borrow(){return Ok(());}
+        // Persist intent before dispatching a potentially billable call.
+        // A crashed request with no saved receipt is uncertain: replay must
+        // require a fresh Run rather than silently charging the owner twice.
+        let admitted=self.store.mutate(id,|current|{
+            if current.terminal()||current.status!=RunStatus::Running{
+                return Ok(false);
+            }
+            if current.events.iter().any(|event|
+                event.kind=="model_only_request_intent"){
+                return Err("model-only inference was already dispatched".into());
+            }
+            current.event("model_only_request_intent",
+                "Model-only inference may be billed after this durable checkpoint",
+                Some(json!({"provider_id":current.provider_id,
+                    "model":current.model_name,"tool_count":0})));
+            Ok(true)
+        }).await?;
+        if !admitted{return Ok(());}
         let reply=tokio::select!{
             biased;
             _=cancellation.changed()=>return Ok(()),
@@ -44,9 +63,10 @@ impl Engine {
                         run.status=RunStatus::Failed;
                         run.event("model_only_tool_denied",
                             "Provider returned tool calls despite a tool-free request",None);
-                    }else if run.cost_krw>run.budget_krw{
-                        run.status=RunStatus::Failed;
-                        run.event("budget_exceeded","Tool-free provider response exceeded the configured budget",None);
+                    }else if run.status==RunStatus::Failed{
+                        // account() uses effective_budget_krw, including
+                        // delegated reservations. Preserve that failure;
+                        // never overwrite it with Completed on the next arm.
                     }else if result.text.trim().is_empty(){
                         run.status=RunStatus::Failed;
                         run.event("model_empty","Provider returned no chat response",None);
