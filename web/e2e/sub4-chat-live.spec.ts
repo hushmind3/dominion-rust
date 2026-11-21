@@ -764,3 +764,44 @@ test('concurrent chat sends admit one owner Run and never leave a queued orphan'
   await request.delete('/api/sessions/'+session.id)
  }
 })
+
+
+test('tool-free Chat cannot silently reactivate automatic learning after mode switches',
+ async({page,request})=>{
+ const created=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Explicit learning mode regression'}})
+ expect(created.status()).toBe(201)
+ const session=await created.json() as {id:string}
+ try{
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  const modes=page.getByRole('group',{name:/대화 실행 방식|Conversation execution mode/})
+  const plain=modes.getByRole('button',{name:/일반 채팅|Chat/})
+  const agent=modes.getByRole('button',{name:/에이전트|Agent/})
+  const trigger=page.getByRole('button',{name:'대화 설정'})
+  const dialog=page.getByRole('dialog',{name:'대화 설정'})
+  const learning=dialog.locator('label')
+   .filter({hasText:'자동 학습'}).locator('input[type="checkbox"]')
+  await expect(plain).toHaveAttribute('aria-pressed','true')
+  await trigger.click()
+  await expect(learning).toBeDisabled()
+  await expect(learning).not.toBeChecked()
+  await trigger.click()
+  await agent.click()
+  await trigger.click()
+  await expect(learning).toBeEnabled()
+  await learning.check()
+  await expect(learning).toBeChecked()
+  await trigger.click()
+  await plain.click()
+  await trigger.click()
+  await expect(learning).toBeDisabled()
+  await expect(learning).not.toBeChecked()
+  await trigger.click()
+  await agent.click()
+  await trigger.click()
+  await expect(learning).toBeEnabled()
+  await expect(learning).not.toBeChecked()
+ }finally{
+  await request.delete('/api/sessions/'+session.id)
+ }
+})
