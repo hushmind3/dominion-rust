@@ -130,6 +130,19 @@ async fn worker_specific_provider_routing_is_owner_bound_and_survives_run_reload
     let sdk=Dominion::from_engine(Arc::clone(&engine));
     let done=sdk.wait(worker_id,Duration::from_secs(12)).await.unwrap();
     assert_eq!(done.status,RunStatus::Completed);
+    // A worker's terminal snapshot precedes the asynchronous parent budget
+    // settlement and Team wake. Do not delete the persistence directory while
+    // the native scheduler is still committing the parent journal.
+    let coordinator=tokio::time::timeout(Duration::from_secs(12),async{
+        loop {
+            let current=store.get(root.id).await.unwrap();
+            if current.terminal(){break current;}
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    }).await.expect("Team parent did not settle after worker completion");
+    assert_eq!(coordinator.status,RunStatus::Completed,
+        "owner-bound Worker route must finish the actual Team DAG");
+    assert!(coordinator.events.iter().any(|event|event.kind=="team_completed"));
     let reloaded=Store::open(path.join("data/runs")).await.unwrap();
     assert_eq!(reloaded.get(worker_id).await.unwrap().model_name,model);
     assert_eq!(reloaded.get(root.id).await.unwrap().events.iter()
