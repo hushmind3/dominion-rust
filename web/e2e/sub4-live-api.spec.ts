@@ -129,6 +129,7 @@ test('Room quick settings save through the Rust full-draft contract without rese
    return route.continue()
   })
   await page.goto('/#/rooms')
+  await page.getByRole('button',{name:'대화방 목록 보기'}).click()
   const listEntry=page.locator('.room-list-item')
    .filter({hasText:'Sub4 room option persistence'})
   await expect(listEntry).toBeVisible()
