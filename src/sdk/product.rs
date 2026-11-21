@@ -25,6 +25,21 @@ impl Dominion {
         // mutating side effect. A previously approved call that never reached
         // the execution-intent checkpoint is also safe to start.
         for id in safe_to_resume {
+            // Restart is not an implicit owner authorization. A queued
+            // chat-owned Run could have crashed before the separate session
+            // record was committed; never launch an orphan on boot.
+            let unbound=engine.store.get(id).await.is_some_and(|run|
+                run.events.iter().any(|e|e.kind=="external_owner_admission_required")
+                && !run.events.iter().any(|e|e.kind=="external_owner_admission_bound"));
+            if unbound {
+                engine.store.mutate(id,|run|{
+                    run.status=RunStatus::Failed;
+                    run.event("external_owner_admission_aborted",
+                        "Restart quarantined a Run without a committed owner; no model or tool dispatched",None);
+                    Ok(())
+                }).await?;
+                continue;
+            }
             let archived=engine.store.get(id).await.is_some_and(|run|
                 run.events.iter().any(|event|matches!(event.kind.as_str(),
                     "reserved_unlaunched"|"strategy_candidate"
