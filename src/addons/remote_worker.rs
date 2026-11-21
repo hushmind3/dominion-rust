@@ -235,14 +235,23 @@ impl RemoteWorker{
             node.token.clone(),node.writer_token.clone()))
             .ok_or("no authenticated remote workers have capacity".into())
     }
-    async fn response_json(response:reqwest::Response)->Result<Value,String>{
+    async fn response_json(mut response:reqwest::Response)->Result<Value,String>{
         if response.content_length().is_some_and(|n|n>MAX_REMOTE_BODY){
             return Err("remote worker response exceeded byte cap".into());
         }
         let status=response.status();
         if !status.is_success(){return Err(format!("remote worker HTTP {status}"));}
-        let bytes=response.bytes().await.map_err(|e|format!("remote worker body: {e}"))?;
-        if bytes.len() as u64>MAX_REMOTE_BODY{return Err("remote worker response too large".into());}
+        // Chunked HTTP can omit Content-Length. Refuse oversized bodies
+        // BEFORE allocating their full contents, just as the primary model
+        // transport and MCP HTTP adapter do.
+        let mut bytes=Vec::new();
+        while let Some(chunk)=response.chunk().await.map_err(|e|
+            format!("remote worker body: {e}"))?{
+            if (bytes.len() as u64).saturating_add(chunk.len() as u64)>MAX_REMOTE_BODY{
+                return Err("remote worker response too large".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         serde_json::from_slice::<Value>(&bytes)
             .map_err(|e|format!("invalid remote worker protocol: {e}"))
     }
