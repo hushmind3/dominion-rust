@@ -34,6 +34,18 @@ const statusName=(s:string,ko:boolean)=>({
  blocked:ko?'선행 작업 대기':'Blocked'
 } as Record<string,string>)[s]||s
 function eventTime(ms:number){return Number.isFinite(ms)&&ms>0?new Date(ms).toLocaleString():'—'}
+function unresolvedAgentModelRequest(events:NativeEvent[]):number|undefined{
+ let pending:number|undefined
+ for(const event of events){
+  if(event.kind==='model_request_intent')pending=event.seq
+  if(event.kind==='model_request_settled'){
+   const details=event.detail&&typeof event.detail==='object'
+    ?event.detail as Record<string,unknown>:null
+   if(details?.intent_seq===pending)pending=undefined
+  }
+ }
+ return pending
+}
 
 export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)=>void}){
  const loc=useLocale(),ko=loc==='ko'
@@ -82,8 +94,10 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const approval=run.pending_approval&&run.approval_decision==null
  const isTeam=!!run.team
  const uncertain=!isTeam&&run.status==='paused'&&!!run.in_flight
- const uncertainModelCall=!isTeam&&run.model_only===true&&run.status==='paused'
-  &&run.events.some(event=>event.kind==='model_only_request_intent')
+ const pendingModelIntent=unresolvedAgentModelRequest(run.events)
+ const uncertainModelCall=!isTeam&&run.status==='paused'
+  &&(pendingModelIntent!==undefined||(run.model_only===true
+    &&run.events.some(event=>event.kind==='model_only_request_intent')))
  const teamPatchUncertain=isTeam&&run.status==='paused'&&run.in_flight?.name==='team_patch_integrate'
  const patchArgs=run.in_flight?.arguments&&typeof run.in_flight.arguments==='object'
   ?run.in_flight.arguments as Record<string,unknown>:{}
@@ -153,8 +167,8 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
   {uncertainModelCall&&<div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4" role="status">
    <div className="flex items-center gap-2 font-semibold text-amber-900"><AlertTriangle size={16}/>{ko?'모델 응답 확인 필요':'Model response requires reconciliation'}</div>
    <p className="mt-2 text-xs text-amber-800">{ko?
-    '이 실행은 모델 요청을 시작한 기록이 있지만 최종 응답을 확인하지 못했습니다. 이미 요금이 발생했을 가능성이 있어 같은 실행을 자동 재호출하지 않습니다. 실행 저널을 확인하고 새 요청을 작성하세요.':
-    'The Run has a durable model-send intent without a confirmed final reply. It may already have been billed, so resume will not duplicate inference. Inspect the Run journal and submit a new request.'}</p>
+    '모델 요청을 시작한 기록은 있지만 응답 및 사용량 영수증을 확인하지 못했습니다. 계획·에이전트 판단·검증 호출도 같은 실행에서 자동 재호출하지 않습니다. 원본 실행 기록을 확인하고 새 요청을 작성하세요.':
+    'A model request has an unresolved billing outcome. Planning, agent turns and verification cannot replay that paid request automatically. Inspect the original Run journal and submit a fresh request.'}</p>
   </div>}
   {uncertain&&<div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4">
    <div className="flex items-center gap-2 font-semibold text-rose-900"><AlertTriangle size={16}/>{ko?'외부 변경 결과 확인 필요':'Uncertain external effect'}</div>
