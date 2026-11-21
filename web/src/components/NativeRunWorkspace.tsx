@@ -95,6 +95,9 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const isTeam=!!run.team
  const uncertain=!isTeam&&run.status==='paused'&&!!run.in_flight
  const pendingModelIntent=unresolvedAgentModelRequest(run.events)
+ const lastTestReceipt=run.events.slice().reverse().find(event=>
+  event.kind==='test_evidence_checked'||event.kind==='test_evidence_missing')
+ const testExecutionConfirmed=lastTestReceipt?.kind==='test_evidence_checked'
  const uncertainModelCall=!isTeam&&run.status==='paused'
   &&(pendingModelIntent!==undefined||(run.model_only===true
     &&run.events.some(event=>event.kind==='model_only_request_intent')))
@@ -221,7 +224,16 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
   </div>}
   {run.plan&&<details className="mt-4 border-t border-[#E7E0D5] pt-3"><summary className="cursor-pointer text-xs font-semibold">{ko?'실행 계획':'Execution plan'}</summary><p className="mt-2 whitespace-pre-wrap break-words text-xs text-[#5C544A]">{run.plan}</p></details>}
   {run.answer&&<div className="mt-4 rounded-xl border border-[#D5E6D5] bg-[#F5FAF4] p-3"><strong className="text-xs text-[#28663E]">{ko?'최종 결과':'Final result'}</strong><p className="mt-2 whitespace-pre-wrap break-words text-xs">{run.answer}</p></div>}
-  <RunEvidenceAssets runId={id}/>
+  {lastTestReceipt&&<div role="status" className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+  <strong className="flex items-center gap-2 text-xs">{testExecutionConfirmed?<ShieldCheck size={15}/>:<AlertTriangle size={15}/>}
+   {ko?'요청한 테스트의 실제 실행 근거':'Requested test execution evidence'}</strong>
+  <p className="mt-1 text-xs text-[#5C544A]">{testExecutionConfirmed?
+   (ko?'마지막 변경 이후 승인된 테스트 명령의 성공 기록이 있습니다. 실제 요구사항 충족 여부는 별도 검증 대상입니다.':'An approved test command succeeded after the latest edit. Semantic acceptance still needs separate checks.'):
+   (ko?'요청한 테스트의 최신 성공 기록이 없어 완료 판정을 보류했습니다. 테스트 명령을 승인·실행하고 실패를 수정해야 합니다.':'No fresh successful test receipt. Completion is blocked until approved tests run and failures are addressed.')}</p>
+  <button type="button" onClick={()=>setEventsOpen(true)} className="mt-2 text-xs font-semibold text-[#A94E30] underline underline-offset-2">
+   {ko?'원본 실행 영수증 보기':'Show original execution receipts'} · #{lastTestReceipt.seq}</button>
+ </div>}
+ <RunEvidenceAssets runId={id}/>
   <div className="mt-4 border-t border-[#E7E0D5] pt-3">
    <button type="button" onClick={()=>setEventsOpen(v=>!v)} aria-expanded={eventsOpen} className="flex w-full items-center justify-between text-left text-xs font-semibold"><span><Clock3 size={14} className="mr-1 inline"/>{ko?'실행 증거 · 이벤트 기록':'Durable execution events'} ({run.events.length})</span>{eventsOpen?<ChevronUp size={15}/>:<ChevronDown size={15}/>}</button>
    {eventsOpen&&<ol className="mt-3 max-h-96 space-y-2 overflow-auto">{run.events.slice(-35).reverse().map(ev=><li key={ev.seq} className="rounded-lg bg-[#FAF7F1] p-2 text-[11px]"><div className="flex flex-wrap justify-between gap-1"><strong>{ev.kind}</strong><span className="text-[#9C9388]">#{ev.seq} · {eventTime(ev.at_ms)}</span></div><p className="mt-1 whitespace-pre-wrap break-words">{ev.message}</p>{ev.detail!=null&&<details className="mt-1"><summary className="cursor-pointer text-[#7C7469]">{ko?'기록 세부정보':'Receipt detail'}</summary><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(ev.detail,null,2)}</pre></details>}</li>)}</ol>}

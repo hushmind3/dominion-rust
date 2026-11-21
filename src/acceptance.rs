@@ -150,17 +150,25 @@ impl TestEvidence {
             "testExecutionVerified":self.satisfied})
     }
 }
-fn tests_requested(instruction:&str)->bool {
+/// Only an owner's explicit execution directive changes the test obligation.
+/// A later "do not run" directive clears an earlier requirement.
+fn test_directive(instruction:&str)->Option<bool> {
     let text=instruction.to_lowercase();
     if ["do not run tests","don't run tests","without running tests",
-        "테스트 실행하지","테스트 돌리지","테스트는 하지"]
-        .iter().any(|negation|text.contains(negation)){return false;}
+        "tests must not run","테스트 실행하지","테스트를 실행하지",
+        "테스트 돌리지","테스트는 하지","테스트 하지 마"]
+        .iter().any(|negation|text.contains(negation)){return Some(false);}
+    if ["how to run tests","how to execute tests","explain how to run",
+        "document how to run","describe how to run","테스트 실행 방법",
+        "테스트를 실행하는 방법","테스트 돌리는 방법","테스트 실행법"]
+        .iter().any(|explanation|text.contains(explanation)){return None;}
     ["run tests","run the tests","run unit tests","execute tests",
         "run pytest","run cargo test","run npm test","run the test suite",
+        "rerun tests","re-run tests",
         "테스트 실행","테스트를 실행","테스트 돌려","테스트를 돌려",
         "테스트까지 돌려","테스트까지 실행","테스트 통과시켜",
-        "테스트를 통과","검증 테스트 실행"]
-        .iter().any(|request|text.contains(request))
+        "테스트를 통과","테스트 다시","검증 테스트 실행"]
+        .iter().any(|request|text.contains(request)).then_some(true)
 }
 fn test_command(command:&str)->bool {
     let command=command.trim();
@@ -197,11 +205,26 @@ fn potential_mutation(name:&str,arguments:&Value)->bool {
 /// A requested test with no fresh receipt rejects model-only completion and
 /// asks the existing approval-gated tool path to run it.
 pub fn requested_test_evidence(run:&Run)->Option<TestEvidence> {
-    let explicitly_requested=tests_requested(&run.instruction)
-        ||run.messages.iter().any(|message|message["role"]=="user"
-            &&message["content"].as_str()
-                .and_then(|text|text.strip_prefix("New user instruction:"))
-                .is_some_and(tests_requested));
+    let mut explicitly_requested=test_directive(&run.instruction).unwrap_or(false);
+    // Owner corrections are durable source messages; directive journal
+    // events additionally provide exact ordering against completed tests.
+    for message in &run.messages {
+        if message["role"]!="user"{continue;}
+        if let Some(text)=message["content"].as_str()
+            .and_then(|text|text.strip_prefix("New user instruction:")){
+            if let Some(required)=test_directive(text){explicitly_requested=required;}
+        }
+    }
+    let mut latest_test_directive_seq=0u64;
+    for event in &run.events {
+        if event.kind!="directive"{continue;}
+        if let Some(required)=event.detail.as_ref()
+            .and_then(|detail|detail["text"].as_str())
+            .and_then(test_directive){
+            explicitly_requested=required;
+            if required{latest_test_directive_seq=event.seq;}
+        }
+    }
     if run.repository.is_none()||!explicitly_requested{return None;}
     let mut starts=std::collections::HashMap::<String,(u64,String,Value)>::new();
     let mut last_mutation=None::<u64>;
@@ -225,6 +248,7 @@ pub fn requested_test_evidence(run:&Run)->Option<TestEvidence> {
                 if detail["name"]=="shell"&&detail["succeeded"]==true{
                     if let Some((start,name,arguments))=starts.get(call_id){
                         if name=="shell"&&test_command(arguments["command"].as_str().unwrap_or(""))
+                            &&*start>latest_test_directive_seq
                             &&last_mutation.is_none_or(|mutation|mutation<*start){
                             last_test=Some(event.seq);
                         }
@@ -302,6 +326,34 @@ mod tests{
         started(&mut run,"compound","shell",json!({"command":"cargo test && echo changed"}));
         finished(&mut run,"compound",true);
         assert!(!requested_test_evidence(&run).unwrap().satisfied);
+    }
+    #[test]
+    fn owner_can_cancel_or_renew_test_obligation_without_stale_success(){
+        use serde_json::json;
+        let mut run=Run::new(crate::domain::CreateRun{
+            instruction:"Edit lib.rs and run tests".into(),
+            budget_krw:None,max_steps:None
+        },5).unwrap();
+        run.repository=Some("fixture".into());
+        run.event("tool_started","test",Some(json!({"id":"t","name":"shell",
+            "arguments":{"command":"cargo test"}})));
+        run.event("tool_result","test ok",Some(json!({"call_id":"t",
+            "name":"shell","succeeded":true})));
+        assert!(requested_test_evidence(&run).unwrap().satisfied);
+        run.event("directive","Owner updated instructions",
+            Some(json!({"text":"Do not run tests; just explain the output"})));
+        assert!(requested_test_evidence(&run).is_none());
+        run.event("directive","Owner updated instructions",
+            Some(json!({"text":"Now rerun tests after the correction"})));
+        assert!(!requested_test_evidence(&run).unwrap().satisfied,
+            "a test before the latest owner request cannot satisfy a rerun");
+        run.event("tool_started","fresh test",Some(json!({"id":"t2","name":"shell",
+            "arguments":{"command":"cargo test"}})));
+        run.event("tool_result","test ok",Some(json!({"call_id":"t2",
+            "name":"shell","succeeded":true})));
+        assert!(requested_test_evidence(&run).unwrap().satisfied);
+        assert_eq!(test_directive("Explain how to run tests"),None);
+        assert_eq!(test_directive("테스트 실행 방법을 알려줘"),None);
     }
     #[test]
     fn test_execution_gate_only_applies_to_explicit_owner_requests(){
