@@ -23,6 +23,14 @@ fn not_found() -> ApiError {
 /// OAuth provider redirects are ordinary browser navigations, so the browser
 /// cannot attach DOMINION's API bearer header. Only this fixed GET callback
 /// endpoint is exempt; its one-use 256-bit state is verified in the handler.
+/// Scoped remote-worker API uses a separate capability token, never the
+/// full owner bearer token. Only these exact methods may bypass owner auth.
+fn is_remote_worker_path(method:&axum::http::Method,path:&str)->bool{
+    use axum::http::Method;
+    if *method==Method::POST && path=="/api/v1/remote-worker/runs"{return true;}
+    *method==Method::GET && path.strip_prefix("/api/v1/remote-worker/runs/")
+        .is_some_and(|id|Uuid::parse_str(id).is_ok())
+}
 fn is_oauth_callback(method:&axum::http::Method,path:&str)->bool{
     if method!=axum::http::Method::GET{return false;}
     let path=path.strip_prefix("/api").unwrap_or(path);
@@ -32,7 +40,8 @@ fn is_oauth_callback(method:&axum::http::Method,path:&str)->bool{
 }
 async fn authorize(State(engine): State<Arc<Engine>>, request: axum::extract::Request, next: Next) -> Response {
     if let Some(token) = engine.settings.token.as_ref() {
-        let callback=is_oauth_callback(request.method(),request.uri().path());
+        let callback=is_oauth_callback(request.method(),request.uri().path())
+            ||is_remote_worker_path(request.method(),request.uri().path());
         if !callback {
         let expected = format!("Bearer {token}");
         if request.headers().get(header::AUTHORIZATION).and_then(|h|h.to_str().ok()) != Some(expected.as_str()) && request.headers().get("x-dominion-token").and_then(|h|h.to_str().ok()) != Some(token.as_str()) {
@@ -74,6 +83,7 @@ fn frontend_dist(home:&std::path::Path, built:&std::path::Path, explicit:Option<
 pub fn router(engine: Arc<Engine>) -> Router {
     let launch_nonce=std::env::var("DOMINION_LAUNCH_NONCE").unwrap_or_default();
     let api = Router::new()
+        .merge(crate::product::remote_worker::routes())
         .route("/health",get(move ||{
             let launch_nonce=launch_nonce.clone();
             async move{Json(json!({"ok":true,"name":"dominion","api":"v1",
