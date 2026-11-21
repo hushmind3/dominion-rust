@@ -456,3 +456,46 @@ test('changing agents from an existing conversation starts a correctly bound new
   await request.delete('/api/sessions/'+original.id)
  }
 })
+
+
+test('a late failed Run receipt is never shown in a different chat session',
+ async({page,request})=>{
+ const firstResponse=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Late receipt owner A'}})
+ const secondResponse=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Late receipt owner B'}})
+ expect(firstResponse.status()).toBe(201)
+ expect(secondResponse.status()).toBe(201)
+ const first=await firstResponse.json() as {id:string}
+ const second=await secondResponse.json() as {id:string}
+ let release!:()=>void
+ const gate=new Promise<void>(resolve=>{release=resolve})
+ let intercepted=0
+ try{
+  await page.setViewportSize({width:1200,height:850})
+  await page.goto('/#/chat?session='+encodeURIComponent(first.id))
+  await page.route('**/api/chat',async route=>{
+   if(route.request().method()!=='POST')return route.continue()
+   intercepted++
+   await gate
+   await route.fulfill({status:200,contentType:'text/event-stream',
+    body:'data: {"type":"error","message":"late owner A failure","runId":"foreign-run-receipt","status":"paused"}\\n\\n'+
+     'data: {"type":"done"}\\n\\n'})
+  })
+  await page.locator('textarea.conversation-composer-input').fill('First owner request')
+  await page.locator('button.conversation-composer-send').click()
+  await expect.poll(()=>intercepted).toBe(1)
+  await page.getByRole('button',{name:'Late receipt owner B'}).click()
+  await expect(page).toHaveURL(new RegExp('session='+second.id))
+  release()
+  await expect(page.locator('button.conversation-composer-send[type="submit"]')).toBeVisible()
+  await expect(page.getByRole('button',{name:/원본 실행·복구 열기|Inspect original Run/})).toHaveCount(0)
+  await expect(page.locator('body')).not.toContainText('foreign-run-receipt')
+  await page.getByRole('button',{name:'Late receipt owner A'}).click()
+  await expect(page.getByRole('button',{name:/원본 실행·복구 열기|Inspect original Run/})).toBeVisible()
+ }finally{
+  release()
+  await request.delete('/api/sessions/'+first.id)
+  await request.delete('/api/sessions/'+second.id)
+ }
+})
