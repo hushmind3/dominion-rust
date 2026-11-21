@@ -497,6 +497,11 @@ impl Mcp {
         }
         Ok(tools)
     }
+    /// Owner-facing diagnostic uses the same bounded paginated tools/list
+    /// path as the native tool registry. It does not execute any tool.
+    pub async fn operator_tool_count(&self,server:&str)->Result<usize,String>{
+        self.list(server).await.map(|tools|tools.len())
+    }
     pub async fn definitions(&self)->Vec<Value>{
         let mut combined=vec![];
         for server in self.servers_snapshot() {
