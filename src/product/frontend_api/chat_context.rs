@@ -22,12 +22,12 @@ fn translation_target_is_resource(body:&str)->bool{
     if value.is_empty(){return false;}
     if ["http://","https://","www.","file://","/","./","../","~/"]
         .iter().any(|prefix|value.starts_with(prefix)){return true;}
-    if !value.chars().any(char::is_whitespace){
-        if value.contains('/')||value.contains(char::from(92u8)){return true;}
-        return [".pdf",".md",".rs",".py",".tsx",".json",".txt",".docx",
-            ".csv",".xlsx",".pptx",".html"].iter().any(|ending|value.ends_with(ending));
+    if [".pdf",".md",".rs",".py",".tsx",".json",".txt",".docx",
+        ".csv",".xlsx",".pptx",".html"].iter().any(|ending|value.ends_with(ending)){
+        return true;
     }
-    false
+    !value.chars().any(char::is_whitespace) &&
+        (value.contains('/')||value.contains(char::from(92u8)))
 }
 
 /// An explicit pasted translation is data, not a request to search for the
