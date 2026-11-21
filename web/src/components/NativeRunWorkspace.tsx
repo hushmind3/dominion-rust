@@ -10,6 +10,11 @@ import {RunDelegationPanel} from './RunDelegationPanel'
 type RunStatus='queued'|'running'|'awaiting_approval'|'paused'|'completed'|'failed'|'cancelled'
 type NativeEvent={seq:number;kind:string;message:string;at_ms:number;detail?:unknown}
 type ToolCall={id:string;name:string;arguments:unknown}
+type NativeProgram={
+ id:string;cursor:number;pending_step?:string|null;halt_requested?:boolean;
+ steps:{id:string;tool:string}[];
+ observations?:Record<string,{status?:string}>;
+}
 type NativeRun={
  id:string;instruction:string;status:RunStatus;plan?:string|null;answer?:string|null;
  steps:number;max_steps:number;budget_krw:number;cost_krw:number;remote_cost_krw?:number;
@@ -17,7 +22,7 @@ type NativeRun={
  output_tokens:number;events:NativeEvent[];team?:unknown;parent_run_id?:string|null;
  pending_approval?:ToolCall|null;approval_decision?:boolean|null;in_flight?:ToolCall|null;
  repository?:string|null;read_only?:boolean;reserved_budget_krw?:number;
- model_only?:boolean;
+ model_only?:boolean;program_session?:NativeProgram|null;
 }
 type TeamTask={id:string;run_id:string;role:'investigator'|'writer'|'reviewer';
  workspace:string;depends_on:string[];status:string;patch_review_ready?:boolean;unmet_acceptance?:string[];
@@ -95,6 +100,18 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
  const isTeam=!!run.team
  const uncertain=!isTeam&&run.status==='paused'&&!!run.in_flight
  const pendingModelIntent=unresolvedAgentModelRequest(run.events)
+
+ // Each program step is the actual Run journal cursor, never a UI-only plan.
+ const program=run.program_session
+ const programDone=program?.steps.filter(step=>
+  program.observations?.[step.id]?.status!=null).length||0
+ const lastProgram=program?undefined:run.events.slice().reverse().find(event=>
+  ['program_completed','program_completed_with_errors','program_stopped',
+   'program_superseded','program_evidence_objective'].includes(event.kind))
+ const lastProgramDetail=lastProgram?.detail&&typeof lastProgram.detail==='object'
+  ?lastProgram.detail as Record<string,unknown>:null
+ const lastProgramTotal=Number(lastProgramDetail?.successful||0)
+  +Number(lastProgramDetail?.failed||0)+Number(lastProgramDetail?.skipped||0)
  const lastTestReceipt=run.events.slice().reverse().find(event=>
   event.kind==='test_evidence_checked'||event.kind==='test_evidence_missing')
  const testExecutionConfirmed=lastTestReceipt?.kind==='test_evidence_checked'
@@ -146,6 +163,40 @@ export function NativeRunWorkspace({id,onSelect}:{id:string;onSelect:(id:string)
   </div>
   {run.parent_run_id&&<Button size="sm" variant="ghost" onClick={()=>onSelect(run.parent_run_id!)} className="mt-2">{ko?'상위 팀 / 실행으로 돌아가기':'Back to parent run'}</Button>}
   {run.repository&&<p className="mt-3 break-all text-xs text-[#7C7469]">{ko?'작업 저장소':'Repository'}: {run.repository}</p>}
+
+  {program&&<section aria-label={ko?'실행 프로그램 단계':'Native program progress'} className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+   <div className="flex flex-wrap items-center justify-between gap-2">
+    <strong className="flex items-center gap-1 text-xs"><Workflow size={15}/>{ko?'작업 프로그램 진행':'Native program progress'}</strong>
+    <span className="text-xs font-semibold">{programDone} / {program.steps.length}</span>
+   </div>
+   <ol className="mt-2 grid gap-1 sm:grid-cols-2">
+    {program.steps.map((step,index)=>{
+     const observed=program.observations?.[step.id]?.status
+     const active=program.cursor===index&&!!program.pending_step
+     const approvalNeeded=active&&run.status==='awaiting_approval'
+      &&run.pending_approval?.id===program.pending_step
+     const status=observed==='ok'?(ko?'성공':'Done')
+      :observed==='error'?(ko?'실패':'Failed')
+      :observed==='skipped'?(ko?'건너뜀':'Skipped')
+      :approvalNeeded?(ko?'승인 대기':'Approval needed')
+      :active?(ko?'실행 중':'Running'):(ko?'대기':'Pending')
+     return <li key={step.id} className="flex min-w-0 items-center gap-2 rounded-lg bg-white px-2 py-1.5 text-xs">
+      <span className="shrink-0 text-[#8A8176]">{index+1}.</span>
+      <span className="min-w-0 flex-1 break-words">{step.id} · {step.tool}</span>
+      <span className="shrink-0 font-semibold">{status}</span>
+     </li>
+    })}
+   </ol>
+   {program.halt_requested&&<p className="mt-2 text-xs text-amber-800">{ko?'새 지시가 들어와 이미 시작한 효과의 기록을 확정한 뒤 나머지 단계를 멈춥니다.':'An owner directive superseded future steps; started effects still require original receipts.'}</p>}
+  </section>}
+  {!program&&lastProgram&&<div role="status" className="mt-4 rounded-lg border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-xs">
+   <strong className="flex items-center gap-1"><Workflow size={15}/>{ko?'마지막 작업 프로그램 기록':'Last native program receipt'}</strong>
+   <p className="mt-1 text-[#5C544A]">{lastProgram.kind==='program_completed'
+    ?(ko?'프로그램 도구 단계가 정상 종료됐습니다. 전체 사용자 작업의 완료 판정과는 별개입니다.':'Program tool steps settled successfully. This is not overall task acceptance.')
+    :(ko?'프로그램이 중단되거나 일부 실패했습니다. 원본 도구 기록을 확인하세요.':'Program stopped or reported partial failure. Inspect durable tool receipts.')}
+    {lastProgramTotal>0?' · '+lastProgramTotal+(ko?'단계':' steps'):''}
+   </p>
+  </div>}
   {approval&&<div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
    <div className="flex items-center gap-2 font-semibold text-amber-900"><ShieldCheck size={17}/>{ko?'도구 실행 승인 대기':'Tool approval required'}</div>
    <p className="mt-1 text-xs text-amber-800">{run.pending_approval?.name}</p>

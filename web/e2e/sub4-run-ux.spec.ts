@@ -175,3 +175,61 @@ test('Run details distinguish missing required test from a fresh approved test r
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+
+test('mobile Run shows exact durable program cursor and approved test step',
+ async({page,request})=>{
+ await page.setViewportSize({width:360,height:720})
+ const {session,runId}=await createCompletedChatRun(request)
+ try{
+  const original=await (await request.get('/api/v1/runs/'+runId)).json()
+  const previous=original.events||[]
+  const latest=Math.max(0,...previous.map((event:{seq:number})=>event.seq))
+  let finished=false
+  let approvalPosts=0
+  await page.route('**/api/v1/runs/'+runId,route=>{
+   if(route.request().method()==='POST'){
+    approvalPosts++
+    return route.abort()
+   }
+   if(route.request().method()!=='GET')return route.continue()
+   const program={id:'program-one-turn',cursor:3,
+    pending_step:'program:program-one-turn:test',halt_requested:false,
+    steps:[{id:'inspect',tool:'read_file'},
+     {id:'edit',tool:'edit_file'},{id:'write',tool:'write_file'},
+     {id:'test',tool:'run_tests'}],
+    observations:{inspect:{status:'ok'},edit:{status:'ok'},write:{status:'ok'}}}
+   const finalEvent={seq:latest+1,kind:'program_completed',
+    message:'4 successful, 0 failed, 0 skipped',
+    at_ms:Date.now(),detail:{successful:4,failed:0,skipped:0,model_calls_inside:0}}
+   return route.fulfill({status:200,contentType:'application/json',
+    body:JSON.stringify({...original,
+     status:finished?'completed':'awaiting_approval',
+     program_session:finished?null:program,
+     pending_approval:finished?null:{id:'program:program-one-turn:test',
+      name:'run_tests',arguments:{command:'python3 -m unittest discover'}},
+     approval_decision:null,
+     events:finished?[...previous,finalEvent]:previous})})
+  })
+  await page.goto('/#/chat?session='+encodeURIComponent(session.id))
+  await page.getByRole('button',{name:/실행 기록|Run evidence/}).last().click()
+  const dialog=page.getByRole('dialog',{name:/에이전트 실행 증거|Agent execution evidence/})
+  const progress=dialog.getByRole('region',{name:/실행 프로그램 단계|Native program progress/})
+  await expect(progress).toBeVisible()
+  await expect(progress).toContainText('3 / 4')
+  await expect(progress).toContainText(/test · run_tests/)
+  await expect(progress).toContainText(/승인 대기|Approval needed/)
+  await expect(dialog.getByRole('button',{name:/이 작업 승인|Approve tool/})).toBeVisible()
+  await expect(dialog.getByRole('button',{name:/거절|Deny/})).toBeVisible()
+  expect(approvalPosts).toBe(0,'viewing program progress must not authorize a tool')
+  finished=true
+  await dialog.getByRole('button',{name:/새로고침|Refresh/}).click()
+  await expect(progress).toHaveCount(0)
+  const receipt=dialog.getByRole('status').filter({hasText:/마지막 작업 프로그램 기록|Last native program receipt/})
+  await expect(receipt).toContainText(/4단계|4 steps/)
+  await expect(receipt).toContainText(/별개입니다|not overall task acceptance/)
+  expect(approvalPosts).toBe(0)
+ }finally{
+  expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
+ }
+})
