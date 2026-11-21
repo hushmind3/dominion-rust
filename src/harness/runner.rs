@@ -539,6 +539,27 @@ impl Engine {
                 if observed.terminal(){return Ok(());}
                 if observed.messages.len()!=expected_history+1{continue;}
             }
+            // The owner may require actual tests, not simply changed files.
+            // Reuse existing repair steps and explicit shell approval.
+            if let Some(tests)=crate::acceptance::requested_test_evidence(&run){
+                let checked=self.store.mutate(id,|current|{
+                    if current.terminal()||current.status!=RunStatus::Running
+                        ||current.messages.len()!=expected_history+1{return Ok(());}
+                    current.event(if tests.satisfied{"test_evidence_checked"}
+                        else{"test_evidence_missing"},tests.summary.clone(),
+                        Some(tests.json()));
+                    if !tests.satisfied{
+                        current.messages.push(json!({"role":"user",
+                            "content":format!("Verifier requested corrections. {}",
+                                tests.summary)}));
+                        current.event("replan",
+                            "Explicit owner test execution requirement remains unverified",None);
+                    }
+                    Ok(())
+                }).await?;
+                if checked.terminal(){return Ok(());}
+                if checked.messages.len()!=expected_history+1{continue;}
+            }
             if !self.settings.separate_model_audit_enabled {
                 // External judge is distinct from the harness. Do not pay for
                 // another model to rubber-stamp the model's final answer.

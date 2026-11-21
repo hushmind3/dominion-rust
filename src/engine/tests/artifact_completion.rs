@@ -41,7 +41,7 @@ async fn git(dir:&std::path::Path,args:&[&str]){
     assert!(output.status.success(),"git: {}",
         String::from_utf8_lossy(&output.stderr));
 }
-async fn completion_scenario(repair:bool)->(Run,String,usize){
+async fn completion_scenario(repair:bool,run_tests:bool)->(Run,String,usize){
     let port=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address=port.local_addr().unwrap();
     let count=Arc::new(AtomicUsize::new(0));
@@ -65,8 +65,9 @@ async fn completion_scenario(repair:bool)->(Run,String,usize){
         settings.data_dir.join("groups")).await.unwrap());
     let engine=Engine::new(settings.clone(),store.clone(),groups).unwrap();
     let mut run=Run::new(CreateRun{
-        instruction:"Change sum.py to print 15 instead of 10".into(),
-        budget_krw:Some(500.0),max_steps:Some(if repair{5}else{2})
+        instruction:if run_tests{"Change sum.py to print 15 instead of 10 and run tests"}else{
+            "Change sum.py to print 15 instead of 10"}.into(),
+        budget_krw:Some(500.0),max_steps:Some(if repair&&run_tests{4}else if repair{5}else{2})
     },5).unwrap();
     run.plan=Some(String::new());
     run.repository=Some("fixture".into());
@@ -105,7 +106,7 @@ async fn completion_scenario(repair:bool)->(Run,String,usize){
 }
 #[tokio::test]
 async fn unmodified_sum_py_cannot_complete_without_actual_artifact_receipt(){
-    let (run,file,requests)=completion_scenario(false).await;
+    let (run,file,requests)=completion_scenario(false,false).await;
     assert_eq!(run.status,RunStatus::Failed,"events: {:?}",run.events);
     assert_eq!(file,"print(sum(range(1, 5)))\n");
     assert_eq!(requests,2);
@@ -115,7 +116,7 @@ async fn unmodified_sum_py_cannot_complete_without_actual_artifact_receipt(){
 }
 #[tokio::test]
 async fn false_completion_is_repaired_by_edit_file_and_only_then_completed(){
-    let (run,file,requests)=completion_scenario(true).await;
+    let (run,file,requests)=completion_scenario(true,false).await;
     assert_eq!(run.status,RunStatus::Completed,"events: {:?}",run.events);
     assert_eq!(file,"print(sum(range(1, 6)))\n");
     assert_eq!(requests,3);
@@ -127,4 +128,16 @@ async fn false_completion_is_repaired_by_edit_file_and_only_then_completed(){
     assert!(run.events.iter().any(|e|e.kind=="completed"));
     assert_eq!(run.input_tokens,180);
     assert_eq!(run.output_tokens,36);
+}
+
+#[tokio::test]
+async fn completed_edit_cannot_skip_explicit_owner_test_requirement(){
+    let (run,file,requests)=completion_scenario(true,true).await;
+    assert_eq!(run.status,RunStatus::Failed,
+        "a model assertion alone must not satisfy explicitly requested tests");
+    assert_eq!(file,"print(sum(range(1, 6)))\n");
+    assert_eq!(requests,4);
+    assert!(run.events.iter().any(|e|e.kind=="artifact_evidence_checked"));
+    assert!(run.events.iter().any(|e|e.kind=="test_evidence_missing"));
+    assert!(run.events.iter().all(|e|e.kind!="completed"));
 }
