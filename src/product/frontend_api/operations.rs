@@ -229,6 +229,9 @@ pub(super) async fn executions(State(engine):State<Arc<Engine>>)->Json<Value>{
     let list=engine.store.headers().await.into_iter().map(|run|{
         json!({
             "id":run.id.to_string(),"sessionId":run.id.to_string(),
+            // The activity list must identify the task, not render every
+            // native Run as the same generic "execution" placeholder.
+            "request":run.instruction.chars().take(300).collect::<String>(),
             "providerId":if run.provider_id.is_empty(){"dominion-native"}else{&run.provider_id},
             "model":if run.model_name.is_empty(){&engine.settings.main.name}else{&run.model_name},
             "status":run.status,
