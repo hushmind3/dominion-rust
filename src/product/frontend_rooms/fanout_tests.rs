@@ -421,13 +421,15 @@ async fn third_owner_turn_upstream_400_retains_exact_failed_speaker_and_resumes_
     assert_eq!(rejected.1.0["expectedResponses"],9);
     let interrupted=engine.groups.get(id).await.unwrap();
     assert_eq!(interrupted.messages.len(),21);
-    assert_eq!(interrupted.usage_receipts.len(),18);
+    assert_eq!(interrupted.usage_receipts.len(),19,
+        "a pre-inference rejected Run still has a durable non-delivered receipt");
+    assert!(!interrupted.usage_receipts[18].accepted);
     assert_eq!(interrupted.used_tokens,1800);
     assert_eq!(interrupted.last_provider_failure.as_ref().unwrap().participant,
         "agent-0");
     let meta=state(State(engine.clone()),Path(id)).await.unwrap().0;
     assert_eq!(meta["status"],"interrupted");
-    assert_eq!(meta["usage"]["calls"],18);
+    assert_eq!(meta["usage"]["calls"],19);
     assert_eq!(meta["lastProviderFailure"]["providerStatus"],Value::Null,
         "status field is named http_status for a durable Rust receipt");
     assert_eq!(meta["lastProviderFailure"]["http_status"],400);
@@ -441,7 +443,8 @@ async fn third_owner_turn_upstream_400_retains_exact_failed_speaker_and_resumes_
     assert_eq!(resumed["job"]["result"]["actualResponses"],9);
     let finished=engine.groups.get(id).await.unwrap();
     assert_eq!(finished.messages.len(),30);
-    assert_eq!(finished.usage_receipts.len(),27);
+    assert_eq!(finished.usage_receipts.len(),28);
+    assert_eq!(finished.usage_receipts.iter().filter(|r|r.accepted).count(),27);
     assert_eq!(finished.used_tokens,2700);
     assert!(finished.last_provider_failure.is_none());
     assert_eq!(finished.messages.iter().filter(|m|m.speaker=="user").count(),3);
