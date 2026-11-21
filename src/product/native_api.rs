@@ -407,6 +407,8 @@ struct TaskTeamCreate {
     #[serde(default)]provider_id:String,
     #[serde(default)]model:String,
     #[serde(default)]strategy_learning:bool,
+    #[serde(default)]worker_routes:std::collections::HashMap<String,
+        crate::engine::task_team::WorkerModelRoute>,
 }
 async fn create_task_team(State(engine):State<Arc<Engine>>,
     Json(req):Json<TaskTeamCreate>)->Result<(StatusCode,Json<Run>),ApiError>{
@@ -415,12 +417,9 @@ async fn create_task_team(State(engine):State<Arc<Engine>>,
         model:req.model,strategy_learning:req.strategy_learning,
         model_only:false
     };
-    let run=if let Some(repository)=req.repository{
-        engine.create_task_team_from_repository(req.instruction,req.tasks,
-            req.budget_krw,options,&repository).await
-    }else{
-        engine.create_task_team(req.instruction,req.tasks,req.budget_krw,options).await
-    }.map_err(bad)?;
+    let run=engine.create_task_team_with_routes(req.instruction,req.tasks,
+        req.budget_krw,options,req.repository.as_deref(),req.worker_routes)
+        .await.map_err(bad)?;
     Ok((StatusCode::CREATED,Json(run)))
 }
 async fn task_team(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
