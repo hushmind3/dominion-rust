@@ -190,7 +190,10 @@ impl FrontendStore {
     pub async fn begin_turn(&self,id:&str,input:&str,run:Uuid)->Result<UiSession,String>{
         let message=UiMessage{id:Uuid::new_v4().to_string(),session_id:id.into(),
             role:"user".into(),content:input.into(),created_at:timestamp(now_ms()),
-            agent_id:None,metadata:None};
+            agent_id:None,
+            // The original Run must remain discoverable even if inference
+            // fails and no assistant response is ever persisted.
+            metadata:Some(serde_json::json!({"executionId":run}))};
         self.mutate(|state|{
             let session=state.sessions.get_mut(id).ok_or("session not found")?;
             if session.pending_run.is_some(){return Err("session already has an active run".into());}
