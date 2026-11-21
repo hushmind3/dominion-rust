@@ -81,12 +81,15 @@ export type ChatRequest = {
  reasoningLanguage?: string; reasoningEffort?: string; thinking?: boolean;
 }
 
-export async function streamChat(data: ChatRequest, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
+export async function streamChat(data: ChatRequest, onEvent: (e: StreamEvent) => void, signal: AbortSignal, onAccepted?: () => void) {
  const res = await apiFetch('/api/chat', {method: 'POST', body: JSON.stringify(data), signal})
  if (!res.ok) throw new ApiError(res.status, translateError((await readJson(res))?.error || 'HTTP ' + res.status))
  if (!res.body || !res.headers.get('Content-Type')?.startsWith('text/event-stream')) {
   throw Error('No streaming response')
  }
+ // Rust returned SSE only after the native Run and owner turn were made
+ // durable. A later stream error cannot safely be treated as an unsent draft.
+ onAccepted?.()
  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
  let buffer = ''
  try {
