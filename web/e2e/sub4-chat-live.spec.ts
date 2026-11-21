@@ -392,3 +392,67 @@ test('plain chat is the default and Agent mode requires an explicit owner choice
   expect((await request.delete('/api/sessions/'+session.id)).ok()).toBeTruthy()
  }
 })
+
+
+test('changing agents from an existing conversation starts a correctly bound new chat without losing the draft',
+ async({page,request})=>{
+ const agentsResponse=await request.get('/api/agents')
+ expect(agentsResponse.ok()).toBeTruthy()
+ const agents=await agentsResponse.json() as Array<{
+  id:string;providerId:string;model:string
+ }>
+ const general=agents.find(agent=>agent.id==='general')
+ expect(general).toBeDefined()
+ const originalResponse=await request.post('/api/sessions',{
+  data:{agentId:'general',title:'Agent-bound original conversation'}})
+ expect(originalResponse.status()).toBe(201)
+ const original=await originalResponse.json() as {id:string;agentId:string}
+ let alternateId=''
+ try{
+  const agentResponse=await request.post('/api/agents',{
+   data:{name:'Sub4 isolated agent switch regression',
+    providerId:general!.providerId,model:general!.model,
+    systemPrompt:'Answer the current conversation only.'}})
+  expect(agentResponse.ok()).toBeTruthy()
+  const alternate=await agentResponse.json() as {id:string}
+  alternateId=alternate.id
+  await page.goto('/#/chat?session='+encodeURIComponent(original.id))
+  const modes=page.getByRole('group',{name:/대화 실행 방식|Conversation execution mode/})
+  await modes.getByRole('button',{name:/에이전트|Agent/}).click()
+  const chooser=page.locator('select.chat-agent')
+  await expect(chooser).toHaveValue('general')
+  const composer=page.locator('textarea.conversation-composer-input')
+  await composer.fill('새 에이전트에게 전달할 작성 중인 초안')
+  await chooser.selectOption(alternate.id)
+  await expect(page).toHaveURL(/#\\/chat$/)
+  await expect(chooser).toHaveValue(alternate.id)
+  await expect(composer).toHaveValue('새 에이전트에게 전달할 작성 중인 초안')
+  await expect(page.getByRole('status').filter({hasText:/기존 대화는 보존|previous conversation is preserved/})).toBeVisible()
+  const originalAfter=await (await request.get('/api/sessions/'+original.id)).json()
+  expect(originalAfter.agentId).toBe('general')
+  await page.locator('button.conversation-composer-send').click()
+  await expect.poll(()=>page.evaluate(()=>
+   new URLSearchParams(location.hash.split('?')[1]||'').get('session')||'')).not.toBe('')
+  const newId=await page.evaluate(()=>
+   new URLSearchParams(location.hash.split('?')[1]||'').get('session')||'')
+  expect(newId).not.toBe(original.id)
+  const newSession=await (await request.get('/api/sessions/'+newId)).json()
+  expect(newSession.agentId).toBe(alternate.id)
+  await expect(page.locator('[data-message-role="assistant"]')).toHaveCount(1,{timeout:30000})
+  const newMessages=await (await request.get('/api/sessions/'+newId+'/messages')).json()
+  expect(newMessages.some((message:{role:string;content:string})=>
+   message.role==='user'&&message.content==='새 에이전트에게 전달할 작성 중인 초안')).toBe(true)
+ }finally{
+  if(alternateId){
+   const allResponse=await request.get('/api/sessions')
+   if(allResponse.ok()){
+    const all=await allResponse.json() as Array<{id:string;agentId:string}>
+    for(const session of all.filter(item=>item.agentId===alternateId)){
+     await request.delete('/api/sessions/'+session.id)
+    }
+   }
+   await request.delete('/api/agents/'+alternateId)
+  }
+  await request.delete('/api/sessions/'+original.id)
+ }
+})
