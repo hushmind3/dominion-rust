@@ -18,7 +18,7 @@ const COLD_CHARS:usize=240;
 /// marks. A filename is not self-contained translation source text.
 fn translation_target_is_resource(body:&str)->bool{
     let value=body.trim().trim_matches(|c:char|
-        matches!(c,'“'|'”'|'`')||c==char::from(34u8)||c==char::from(39u8)).trim();
+        matches!(c,'“'|'”'|'`'|'<'|'>'|'['|']')||c==char::from(34u8)||c==char::from(39u8)).trim();
     if value.is_empty(){return false;}
     if ["http://","https://","www.","file://","/","./","../","~/"]
         .iter().any(|prefix|value.starts_with(prefix)){return true;}
@@ -511,6 +511,7 @@ mod tests{
             "번역해: ./docs/specification.md",
             "translate: www.example.org",
             "영어로 번역: archived.csv",
+            "번역해: <specification.pdf>",
         ]{
             assert!(!no_tools_required(query),"resource must stay tool-capable: {query}");
         }
